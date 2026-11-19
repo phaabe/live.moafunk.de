@@ -9,6 +9,12 @@ export default defineConfig({
   globalSetup: './global-setup.ts',
   globalTeardown: './global-teardown.ts',
   reporter: [['list'], ['html', { open: 'never' }]],
+  // Own CI jobs, own checks on the test dashboard: `--project chaos` / `--project instagram`.
+  projects: [
+    { name: 'chaos', testIgnore: /instagram\.spec\.ts$/ },
+    // A click on a disabled button fails after a minute, not at the 30-minute test timeout.
+    { name: 'instagram', testMatch: /instagram\.spec\.ts$/, use: { actionTimeout: 60_000 } },
+  ],
   use: {
     baseURL: STAGING_URL,
     trace: 'retain-on-failure',

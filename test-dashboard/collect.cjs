@@ -203,22 +203,37 @@ function buildSummary({ now, epic, stream, deploys, current, results, soakMinute
     })
   );
 
-  // The chaos test show of the calling run: every night, by hand, or on a
-  // release PR. A run with extra minutes on air is a soak (L7).
-  const chaos = current?.jobs.find(
-    (j) => /(^|\/ )chaos-show$/.test(j.name) && ['success', 'failure', 'timed_out'].includes(j.conclusion)
-  );
-  const chaosLevel = (id, note) =>
-    level(id, {
-      checks: [{ name: 'chaos test show', status: statusOf(chaos.conclusion), seconds: seconds(chaos.started_at, chaos.completed_at) }],
-      run: runRef(current.run, chaos),
-      note,
-    });
+  // The e2e jobs of the calling run: every night, by hand, or on a release
+  // PR. A chaos run with extra minutes on air is a soak (L7).
+  const finished = (name) =>
+    current?.jobs.find(
+      (j) => new RegExp(`(^|/ )${name}$`).test(j.name) && ['success', 'failure', 'timed_out'].includes(j.conclusion)
+    );
+  const chaos = finished('chaos-show');
+  const instagram = finished('instagram-e2e');
+  const check = (job, name) => ({ name, status: statusOf(job.conclusion), seconds: seconds(job.started_at, job.completed_at) });
   const soak = Number(soakMinutes) > 0;
-  levels.push(chaos && !soak ? chaosLevel('L6') : (prev('L6') ?? level('L6', { status: 'not run' })));
+  // L6 has one check per e2e job; a job this run lacks keeps its last result.
+  const e2e = [
+    [chaos && !soak && chaos, 'chaos test show'],
+    [instagram, 'Instagram announcements'],
+  ];
+  const l6 = e2e
+    .map(([job, name]) => (job ? check(job, name) : prev('L6')?.checks.find((c) => c.name === name)))
+    .filter(Boolean);
+  const l6Job = e2e.map(([job]) => job).find(Boolean);
+  levels.push(
+    l6.length
+      ? level('L6', { checks: l6, run: l6Job ? runRef(current.run, l6Job) : prev('L6').run })
+      : level('L6', { status: 'not run' })
+  );
   levels.push(
     chaos && soak
-      ? chaosLevel('L7', `Soak: ${Number(soakMinutes)} extra minutes on air.`)
+      ? level('L7', {
+          checks: [check(chaos, 'chaos test show')],
+          run: runRef(current.run, chaos),
+          note: `Soak: ${Number(soakMinutes)} extra minutes on air.`,
+        })
       : (prev('L7') ?? level('L7', { status: 'not run' }))
   );
 

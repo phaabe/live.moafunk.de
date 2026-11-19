@@ -14,7 +14,7 @@
 #   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
 #                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
-#                                   e2e-recordings, e2e-cleanup)
+#                                   e2e-recordings, e2e-cleanup; for the Instagram test: e2e-instagram on <HH:MM>|off)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
@@ -560,9 +560,74 @@ ci_e2e() {
     e2e_recordings "${BASH_REMATCH[1]}"
   elif [[ "$request" == e2e-cleanup ]]; then
     e2e_cleanup
+  elif [[ "$request" =~ ^e2e-instagram\ on\ (([01][0-9]|2[0-3]):[0-5][0-9])$ ]]; then
+    e2e_instagram on "${BASH_REMATCH[1]}"
+  elif [[ "$request" == "e2e-instagram off" ]]; then
+    e2e_instagram off
+  elif [[ "$request" =~ ^e2e-instagram\ public\ ([0-9]{1,12})$ ]]; then
+    e2e_instagram public "${BASH_REMATCH[1]}"
   else
-    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup"
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
   fi
+}
+
+# Announcement settings for the Instagram e2e test. "on" saves the current
+# announce_* settings once, then raises the limits, turns off approval and the
+# pause, sends the post-announcement on the episode day and offers only the
+# feed time <HH:MM> (Berlin). "off" puts the saved settings back. "public
+# <show>" marks a test episode's SoundCloud track public, which unlocks its
+# post-announcement, without SoundCloud (soundcloud.spec.ts tests that).
+e2e_instagram() {
+  python3 - "$STAGING_DIR/data/unheard.db" "$STAGING_DIR/e2e-instagram.json" "$@" <<'PY'
+import json, os, sqlite3, sys
+
+db, saved, mode = sys.argv[1:4]
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(db, timeout=30)
+if mode == "public":
+    show = int(sys.argv[4])
+    title = con.execute("SELECT title FROM shows WHERE id = ?", (show,)).fetchone()
+    if not title or not (title[0] or "").startswith("e2e-"):
+        sys.exit(f"show {show} is not a test episode (e2e-...)")
+    con.execute("UPDATE shows SET soundcloud_public = 1 WHERE id = ?", (show,))
+    con.commit()
+    print(f"show {show}: SoundCloud track marked public")
+elif mode == "on":
+    if not os.path.exists(saved):
+        rows = dict(con.execute("SELECT key, value FROM app_settings WHERE key GLOB 'announce_*'"))
+        with open(saved, "w") as f:
+            json.dump(rows, f)
+    test = {
+        "announce_feed_per_day": "20",
+        "announce_feed_per_week": "50",
+        "announce_stories_per_day": "20",
+        "announce_limit_per_episode": "3",
+        "announce_post_days_after": "0",
+        "announce_approval_mode": "never",
+        "announce_paused": "false",
+        "announce_slots": sys.argv[4],
+    }
+    con.executemany(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        test.items(),
+    )
+    con.commit()
+    print(f"announcement test settings on, feed time {sys.argv[4]}")
+elif not os.path.exists(saved):
+    print("no saved announcement settings: nothing to restore")
+else:
+    with open(saved) as f:
+        rows = json.load(f)
+    con.execute("DELETE FROM app_settings WHERE key GLOB 'announce_*'")
+    con.executemany(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        rows.items(),
+    )
+    con.commit()
+    os.remove(saved)
+    print(f"announcement settings restored ({len(rows)} saved)")
+PY
 }
 
 # Delete the test Shows ("e2e-…" of e2e-host, or of staging-host from older

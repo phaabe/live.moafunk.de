@@ -193,6 +193,34 @@ test('a soak goes to L7; levels the run has no data for keep their last result',
   assert.equal(byId(buildSummary(plain)).L6.status, 'not run');
 });
 
+test('the Instagram e2e job is its own check in L6 and keeps its result when a run lacks it', () => {
+  const igJob = job('e2e-staging / instagram-e2e', [], { conclusion: 'success', started_at: at(600), completed_at: at(1500) });
+  const both = { ...base, current: { ...current, jobs: [...current.jobs, igJob] } };
+  const l6 = byId(buildSummary(both)).L6;
+  assert.deepEqual(
+    l6.checks.map((c) => [c.name, c.status, c.seconds]),
+    [
+      ['chaos test show', 'fail', 500],
+      ['Instagram announcements', 'pass', 900],
+    ]
+  );
+  assert.equal(l6.status, 'fail');
+
+  // A soak run has no L6 chaos check: both keep their last result.
+  const soak = byId(buildSummary({ ...both, soakMinutes: '90', previous: buildSummary(both) })).L6;
+  assert.deepEqual(soak.checks.map((c) => c.name), ['chaos test show', 'Instagram announcements']);
+  assert.equal(soak.checks[1].status, 'pass');
+
+  // Only the Instagram job ran: the chaos check comes from the last summary.
+  const onlyIg = { ...base, current: { run: run(7, '1111111'), jobs: [igJob] }, previous: buildSummary(base) };
+  const l = byId(buildSummary(onlyIg)).L6;
+  assert.deepEqual(l.checks.map((c) => [c.name, c.status]), [
+    ['chaos test show', 'fail'],
+    ['Instagram announcements', 'pass'],
+  ]);
+  assert.equal(l.run.url, igJob.html_url);
+});
+
 test('history keeps the last runs only', () => {
   let history = [];
   for (let i = 0; i < KEEP + 5; i++) history = appendHistory(history, { generated_at: String(i) });

@@ -73,6 +73,26 @@ test('the chaos test show uses only the staging CI key and the e2e host login', 
   assert.match(unhold.if, /always\(\)/, 'the hold is removed also after a failure');
 });
 
+test('the chaos test show and the Instagram e2e are two jobs, one after the other', () => {
+  assert.equal(job.name, '${{ matrix.job }}');
+  assert.deepEqual(job.strategy, {
+    'fail-fast': false,
+    'max-parallel': 1,
+    matrix: {
+      include: [
+        { job: 'chaos-show', project: 'chaos' },
+        { job: 'instagram-e2e', project: 'instagram' },
+      ],
+    },
+  });
+  const tests = job.steps.find((step) => step.name === 'Run the e2e tests of this job');
+  assert.equal(tests.env.PROJECT, '${{ matrix.project }}');
+  assert.equal(tests.run, 'npx playwright test --project "$PROJECT"');
+  const restore = job.steps.find((step) => /e2e-instagram off/.test(step.run ?? ''));
+  assert.match(restore.if, /always\(\)/, 'the settings come back also after a timeout or a cancel');
+  assert.match(restore.if, /matrix\.project == 'instagram'/);
+});
+
 test('a release run first checks that staging runs exactly the release image', () => {
   const names = job.steps.map((step) => step.name ?? step.uses);
   const check = job.steps.find((step) => step.name === 'Check staging runs the release commit');

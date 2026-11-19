@@ -474,6 +474,45 @@ else
 fi
 expect_refused "e2e-cleanup takes no arguments" "the CI key may only run" ci "e2e-cleanup 1"
 
+announce() { # the announce_* settings, sorted
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(f'{k}={v}' for k, v in c.execute(\"SELECT key, value FROM app_settings WHERE key GLOB 'announce_*' ORDER BY key\")))" "$BOX/data/unheard.db"
+}
+python3 - "$BOX/data/unheard.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+con.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('announce_feed_per_day', '1'), ('announce_slots', '12:00,18:00')")
+con.commit()
+PY
+before="$(announce)"
+ci "e2e-instagram on 14:05" >/dev/null
+ci "e2e-instagram on 14:35" >/dev/null
+on="$(announce)"
+if [[ "$on" == *announce_approval_mode=never* && "$on" == *announce_feed_per_day=20* && "$on" == *announce_slots=14:35* ]]; then
+  pass "e2e-instagram on sets the test limits and feed time"
+else
+  fail "e2e-instagram on sets the test limits and feed time: $on"
+fi
+ci "e2e-instagram off" >/dev/null
+if [[ "$(announce)" == "$before" ]]; then
+  pass "e2e-instagram off restores the settings from before the first on"
+else
+  fail "e2e-instagram off restores the settings from before the first on: $(announce)"
+fi
+if [[ "$(ci "e2e-instagram off")" == "no saved announcement settings: nothing to restore" ]]; then
+  pass "e2e-instagram off twice changes nothing"
+else
+  fail "e2e-instagram off twice changes nothing"
+fi
+python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('ALTER TABLE shows ADD COLUMN soundcloud_public INTEGER DEFAULT 0'); c.commit()" "$BOX/data/unheard.db"
+ci "e2e-instagram public 901" >/dev/null
+public="$(python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT group_concat(soundcloud_public) FROM (SELECT soundcloud_public FROM shows WHERE id IN (901, 902) ORDER BY id)').fetchone()[0])" "$BOX/data/unheard.db")"
+if [[ "$public" == "1,0" ]]; then pass "e2e-instagram public marks a test episode's track public"; else fail "e2e-instagram public marks a test episode's track public: $public"; fi
+expect_refused "e2e-instagram public refuses other shows" "is not a test episode" ci "e2e-instagram public 902"
+expect_refused "e2e-instagram public needs a show number" "the CI key may only run" ci "e2e-instagram public 1 OR 1=1"
+expect_refused "e2e-instagram needs a valid time" "the CI key may only run" ci "e2e-instagram on 24:00"
+expect_refused "e2e-instagram takes only on and off" "the CI key may only run" ci "e2e-instagram on 12:00; reboot"
+
 AUTH="$TMP/authorized_keys"
 cp "$HERE/ci-deploy.pub" "$BOX/ci-deploy.pub"
 ci_key="$(cat "$HERE/ci-deploy.pub")"
