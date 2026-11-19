@@ -1,10 +1,10 @@
 name: GATE - Require release checks
 
 # The required check that decides what may go into main (docs/deployment.md):
-# - head release/*: passes only when the chaos test show passed on the head
-#   commit while staging ran exactly its image: check "e2e-staging /
+# - head release/*: passes only when the newest chaos test show passed on the
+#   head commit while staging ran exactly its image: check "e2e-staging /
 #   chaos-show", which e2e-release.yml runs on the release PR (it checks the
-#   image first). Runs named only "chaos-show" (by hand, nightly) do not
+#   image before and after the test). Runs named only "chaos-show" (by hand, nightly) do not
 #   count: they test whatever staging runs, which need not be the commit they
 #   are attached to. The head must be a branch of this repository: a fork's
 #   PR runs the fork's workflow files, which could fake that check.
@@ -39,11 +39,13 @@ jobs:
               [[ "$HEAD_REPO" == "$REPO" ]] ||
                 { echo "::error::a release PR must come from a branch of $REPO, not $HEAD_REPO"; exit 1; }
               name="e2e-staging / chaos-show"
+              # Only the newest run counts: an old green attempt must not hide a newer red one.
               found="$(gh api -X GET "repos/$REPO/commits/$HEAD_SHA/check-runs" -f check_name="$name" |
-                jq -r '.check_runs[] | select(.app.slug == "github-actions") | "\(.conclusion // .status) \(.html_url)"')"
+                jq -r '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at, .id) | last // empty
+                  | "\(.conclusion // .status) \(.html_url)"')"
               echo "$name on $HEAD_SHA: ${found:-no run}"
-              grep -q '^success ' <<<"$found" || {
-                echo "::error::no green chaos test show on the release commit $HEAD_SHA yet. e2e-release.yml runs it on this PR and then re-runs this job. If it failed, re-run its failed jobs."
+              [[ "$found" == "success "* ]] || {
+                echo "::error::the newest chaos test show on the release commit $HEAD_SHA is not green. e2e-release.yml runs it on this PR and then re-runs this job. If it failed, re-run its failed jobs."
                 exit 1
               }
               echo "Release: the chaos test show passed on $HEAD_SHA" ;;

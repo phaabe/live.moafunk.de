@@ -90,7 +90,8 @@ jobs:
         if: inputs.release_sha != ''
         env:
           RELEASE_SHA: ${{ inputs.release_sha }}
-        run: |
+        # Anchor: the check after the tests runs the same script.
+        run: &check-release-image |
           set -euo pipefail
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full commit hash"; exit 1; }
           status="$(ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
@@ -139,6 +140,14 @@ jobs:
           STAGING_E2E_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_E2E_HOST_PASSWORD }}
           PROJECT: ${{ matrix.project }}
         run: npx playwright test --project "$PROJECT"
+
+      - name: Check staging still runs the release commit
+        # A redeploy by hand during the run ignores the hold. Then the test
+        # did not test the release, so the job must fail.
+        if: ${{ !cancelled() && inputs.release_sha != '' && env.STAGING_SSH_KEY != '' }}
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: *check-release-image
 
       - name: Restore the announcement settings (also after a failure)
         # The test restores them itself; this covers a timeout or a cancel.
