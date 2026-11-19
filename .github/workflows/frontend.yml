@@ -78,7 +78,7 @@ jobs:
       - name: Use fallback re-listen.html
         if: steps.generate-tracks.outcome == 'failure'
         run: |
-          echo "⚠️ SoundCloud API failed, using fallback re-listen.html"
+          echo "::warning title=SoundCloud tracks not updated::SoundCloud API failed, using fallback re-listen.html"
           echo "The static fallback page is already in src/pages/re-listen.html"
 
       - name: Run linter

@@ -5,6 +5,8 @@ import { STAGING_URL, TONE_WAV } from './lib/staging';
 export default defineConfig({
   testDir: './tests',
   workers: 1,
+  // A committed test.only would make CI run one test and pass.
+  forbidOnly: !!process.env.CI,
   retries: 0,
   globalSetup: './global-setup.ts',
   globalTeardown: './global-teardown.ts',

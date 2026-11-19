@@ -5,6 +5,7 @@ import staging from './playwright.config';
 // (frontend/scripts/studio-mock.mjs): no staging, no secrets.
 export default defineConfig({
   ...staging,
+  forbidOnly: !!process.env.CI,
   testDir: './tests-local',
   globalSetup: './local-setup.ts',
   globalTeardown: undefined,
