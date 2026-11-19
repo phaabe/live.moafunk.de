@@ -1,7 +1,7 @@
 {
   "screen": "studio-onair",
   "hash": "b0b2f0e3",
-  "status": "drift",
+  "status": "ok",
   "leftOut": [
     {
       "item": "h2: Moments",
@@ -20,8 +20,6 @@
       "release": "R4"
     }
   ],
-  "missing": [
-    "row: Listeners now | 37"
-  ],
+  "missing": [],
   "extra": []
 }

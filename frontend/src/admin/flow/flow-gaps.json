@@ -160,21 +160,6 @@
   "drift": [
     {
       "screen": "studio-onair",
-      "items": [
-        "row: Listeners now | 37"
-      ],
-      "why": "Hotfix: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "studio-onair",
-      "state": "reconnecting",
-      "items": [
-        "row: Listeners now | 37"
-      ],
-      "why": "Hotfix: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "studio-onair",
       "state": "reconnecting",
       "items": [
         "row: Connection | stable",
