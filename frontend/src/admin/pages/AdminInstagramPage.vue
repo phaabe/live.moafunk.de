@@ -40,6 +40,7 @@ const form = ref({
   feed_per_week: 0,
   stories_per_day: 0,
   pre_days_before: 0,
+  post_days_after: 0,
   slots: '',
   approval_mode: 'first_two' as ApprovalMode,
 });
@@ -52,6 +53,7 @@ const NUMBERS = [
   ['feed_per_week', 'Feed posts per week'],
   ['stories_per_day', 'Stories per day'],
   ['pre_days_before', 'Pre-announcement days before'],
+  ['post_days_after', 'Post-announcement days after'],
 ] as const;
 
 const MODES: { value: ApprovalMode; label: string }[] = [
@@ -72,6 +74,7 @@ function fillForm(s: AnnouncementSettings) {
     feed_per_week: s.feed_per_week,
     stories_per_day: s.stories_per_day,
     pre_days_before: s.pre_days_before,
+    post_days_after: s.post_days_after,
     slots: s.slots.join(', '),
     approval_mode: s.approval_mode,
   };

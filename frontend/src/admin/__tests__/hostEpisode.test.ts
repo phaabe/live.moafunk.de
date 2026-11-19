@@ -103,6 +103,7 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
     sent_at: null,
     permalink: null,
     error: null,
+    send_now: false,
     ...overrides,
   };
 }
@@ -111,6 +112,8 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
 const FR_2310_1800 = '2026-10-23T16:00:00Z';
 /** Mo 26.10. · 18:00 Berlin (winter time). */
 const MO_2610_1800 = '2026-10-26T17:00:00Z';
+/** Mi 28.10. · 18:00 Berlin: the post default, 3 days after So 25.10. */
+const MI_2810_1800 = '2026-10-28T17:00:00Z';
 
 let app: App | undefined;
 let root: HTMLDivElement;
@@ -892,6 +895,48 @@ describe('Pre-announcement composer', () => {
     expect(put.body).not.toHaveProperty('scheduled_at');
   });
 
+  it('posts now without a time when Post now is chosen', async () => {
+    const router = await open();
+    expect(radio('Post now').checked).toBe(false);
+    expect(text()).not.toContain('Post now sends it within a minute');
+    radio('Post now').click();
+    await nextTick();
+    expect(text()).toContain('Post now sends it within a minute');
+    type('Headline on the image', 'Sunday brunch');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+    const put = requests.find((r) => r.method === 'PUT')!;
+    expect(put.url).toBe('/api/shows/42/announcements/pre');
+    expect(put.body).toMatchObject({ headline: 'Sunday brunch', send_now: true });
+    expect(put.body).not.toHaveProperty('scheduled_at');
+  });
+
+  it('offers Post now when no time is free', async () => {
+    times = [];
+    await open();
+    expect(text()).toContain('No free time left.');
+    expect(radio('Post now')).toBeTruthy();
+  });
+
+  it('opens a sent-now row with Post now selected and asks for approval', async () => {
+    meta = { paused: false, needs_approval: true };
+    announcements = [
+      announcement('pre', { state: 'pending_approval', send_now: true, headline: 'Now!' }),
+    ];
+    await open('pre', 'Send for approval');
+    expect(radio('Post now').checked).toBe(true);
+    expect(radio('Fr 23.10. · 18:00').checked).toBe(false);
+    button('Send for approval').click();
+    await vi.waitFor(() => expect(requests.find((r) => r.method === 'PUT')).toBeDefined());
+    expect(requests.find((r) => r.method === 'PUT')!.body).toMatchObject({ send_now: true });
+  });
+
+  it('has no Post now in the post slot', async () => {
+    await open('post');
+    expect(radio('Post now')).toBeUndefined();
+  });
+
   it('says when posting is paused and when an admin checks the post first', async () => {
     meta = { paused: true, needs_approval: true };
     await open('pre', 'Send for approval');
@@ -982,7 +1027,8 @@ describe('Wrap-up · Post-announcement', () => {
   it('waits for the public track and does not hold up Publish', async () => {
     current = wrapup({ live_recorded: false });
     const router = await mount();
-    expect(postRow()).toContain('Mo 26.10. · 18:00 · waits for the public track');
+    // Default: 3 days after the episode at 18:00.
+    expect(postRow()).toContain('Mi 28.10. · 18:00 · waits for the public track');
     expect(button('Publish').disabled).toBe(false);
     button('Set up post-announcement').click();
     await vi.waitFor(() =>
@@ -1129,7 +1175,7 @@ describe('flow', () => {
       latest_recording: recordingReady,
       soundcloud_public: true,
     });
-    announcements = [announcement('post', { scheduled_at: MO_2610_1800 })];
+    announcements = [announcement('post', { scheduled_at: MI_2810_1800 })];
     await mount();
     await expectFlow('done', root);
   });

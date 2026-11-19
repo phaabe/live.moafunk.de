@@ -52,6 +52,8 @@ const caption = ref('');
 const collaborator = ref(true);
 const when = ref('');
 const layout = ref<'band' | 'split'>('band');
+/** `when` value of the "Post now" choice (pre slot only). */
+const NOW = 'now';
 
 const current = computed(() => inSlot(list.value, slot.value));
 /** After it is sent the caption is frozen. */
@@ -107,10 +109,11 @@ async function load() {
     collaborator.value = a ? a.collaborator : !!handle.value;
     layout.value = a?.layout ?? 'band';
     const free = offered.filter((t) => t.free);
-    when.value =
-      (a?.scheduled_at && offered.some((t) => t.scheduled_at === a.scheduled_at)
-        ? a.scheduled_at
-        : (free.find((t) => t.default) ?? free[0])?.scheduled_at) ?? '';
+    when.value = a?.send_now
+      ? NOW
+      : ((a?.scheduled_at && offered.some((t) => t.scheduled_at === a.scheduled_at)
+          ? a.scheduled_at
+          : (free.find((t) => t.default) ?? free[0])?.scheduled_at) ?? '');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the announcement';
   }
@@ -177,7 +180,7 @@ async function schedule() {
       ...(image.value === 'upload' && imageKey.value ? { image_key: imageKey.value } : {}),
       layout: layout.value,
       collaborator: !!handle.value && collaborator.value,
-      ...(when.value ? { scheduled_at: when.value } : {}),
+      ...(when.value === NOW ? { send_now: true } : when.value ? { scheduled_at: when.value } : {}),
     });
     await back();
   } catch (e) {
@@ -262,7 +265,7 @@ async function schedule() {
 
             <fieldset class="group" :disabled="sent">
               <h2 class="board-card-title"><BoardIcon name="calendar" />When</h2>
-              <div v-if="times.length" class="choices">
+              <div v-if="times.length || slot === 'pre'" class="choices">
                 <label v-for="t in times" :key="t.scheduled_at" class="check"
                   ><input
                     v-model="when"
@@ -272,8 +275,16 @@ async function schedule() {
                   />{{ postTime(t.scheduled_at)
                   }}<span v-if="!t.free" class="taken"> · {{ t.reason || 'Full' }}</span></label
                 >
+                <label v-if="slot === 'pre'" class="check"
+                  ><input v-model="when" type="radio" :value="NOW" />Post now</label
+                >
               </div>
-              <p v-else class="hint">
+              <p v-if="when === NOW" class="hint">
+                Post now sends it within a minute, for example when there is not enough time before
+                the show. The station limits per day and week still apply, and a new host's post
+                still waits for an admin.
+              </p>
+              <p v-if="!times.length" class="hint">
                 {{ slot === 'post' ? 'Waiting for SoundCloud' : 'No free time left.' }}
               </p>
             </fieldset>

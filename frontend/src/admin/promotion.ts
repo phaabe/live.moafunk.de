@@ -1,6 +1,6 @@
 import type { Announcement, AnnouncementSlot } from './api';
 import { episodeDay } from './episodeRow';
-import { nextDayDateStr } from './showTime';
+import { addDays, format, parseISO } from 'date-fns';
 
 /** Texts and rules of the Promotion card, the composer and the wrap-up (CONTEXT.md "Promotion"). */
 
@@ -55,9 +55,12 @@ export function movedNote(a: Announcement | undefined): string | null {
   return `Moved from ${sameDay ? from.slice(-5) : from}: the station already posts that day.`;
 }
 
-/** Default time of the post slot: the day after the episode at 18:00. */
+/**
+ * Default time of the post slot: 3 days after the episode at 18:00.
+ * shortcut: the station default; the admin setting `post_days_after` is not readable by hosts.
+ */
 export function defaultPostTime(date: string): string {
-  return `${episodeDay(nextDayDateStr(date))} · 18:00`;
+  return `${episodeDay(format(addDays(parseISO(date), 3), 'yyyy-MM-dd'))} · 18:00`;
 }
 
 /** The announcement in a slot that still counts (a cancelled one does not). */
