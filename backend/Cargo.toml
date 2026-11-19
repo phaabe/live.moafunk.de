@@ -83,3 +83,9 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 # WebSocket client for the stream handler tests (same version axum uses).
 tokio-tungstenite = "0.24"
+
+# Dev and test builds optimize the dependencies, not this crate. Tests that
+# hash passwords, use SQLite or draw images then run faster. Release builds
+# are not changed.
+[profile.dev.package."*"]
+opt-level = 2
