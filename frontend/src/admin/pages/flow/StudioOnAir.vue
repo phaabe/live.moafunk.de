@@ -17,7 +17,7 @@ import {
   DEVICE_ENDED_MESSAGE,
   type UploadQualityMode,
 } from '@admin/composables';
-import { streamApi, recordingApi } from '@admin/api';
+import { recordingApi } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
 
@@ -103,19 +103,6 @@ async function pollRecording() {
 const recordingPoll = flow.recordStream.value ? setInterval(pollRecording, 3000) : null;
 if (recordingPoll) void pollRecording();
 
-// ─── Listeners now ──────────────────────────────────────────────────────────
-const listeners = ref<number | null>(null);
-async function pollListeners() {
-  try {
-    const metrics = await streamApi.metrics();
-    listeners.value = metrics.online ? metrics.total_listeners : null;
-  } catch {
-    listeners.value = null;
-  }
-}
-const listenerPoll = setInterval(pollListeners, 10000);
-void pollListeners();
-
 // ─── Connection ─────────────────────────────────────────────────────────────
 // The upload telemetry also drives the automatic quality step-down that the
 // old connection card ran, so a weak line still adapts.
@@ -167,7 +154,6 @@ async function endEpisode() {
 
 onUnmounted(() => {
   clearInterval(clock);
-  clearInterval(listenerPoll);
   if (recordingPoll) clearInterval(recordingPoll);
   navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 });
@@ -215,10 +201,6 @@ onUnmounted(() => {
       </div>
     </section>
     <dl class="stat-tiles">
-      <div>
-        <dt><BoardIcon name="users" :size="14" />Listeners now</dt>
-        <dd>{{ listeners ?? '—' }}</dd>
-      </div>
       <div :class="['connection-tile', connectionTone]">
         <dt><BoardIcon name="wifi" :size="14" />Connection</dt>
         <dd class="connection">{{ connection }}</dd>
@@ -360,10 +342,6 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
   color: #fff;
   font: 600 var(--font-size-md) var(--font-ui);
-}
-
-.stat-tiles {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .stat-tiles dt {
