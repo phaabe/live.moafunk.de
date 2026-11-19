@@ -1168,6 +1168,17 @@ async fn refresh_account(state: &Arc<AppState>, account: &str) -> Result<Option<
     );
     Ok(Some(fresh.expires_in))
 }
+/// Refuse every Instagram post while an admin has turned Instagram off.
+pub async fn ensure_enabled(state: &Arc<AppState>) -> Result<()> {
+    if crate::db::is_service_enabled(&state.db, crate::db::INSTAGRAM_ENABLED).await {
+        Ok(())
+    } else {
+        Err(AppError::ServiceUnavailable(
+            "Instagram is temporarily not available.".to_string(),
+        ))
+    }
+}
+
 /// Post a show's cover image to Instagram
 ///
 /// This is the high-level function called by the API handler.
@@ -1180,6 +1191,7 @@ pub async fn post_show_to_instagram(
     show: &crate::models::Show,
     account: &str,
 ) -> Result<InstagramPostResult> {
+    ensure_enabled(state).await?;
     let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Check if cover exists
@@ -1261,6 +1273,7 @@ pub async fn post_artist_to_instagram(
     artist: &crate::models::Artist,
     account: &str,
 ) -> Result<InstagramPostResult> {
+    ensure_enabled(state).await?;
     let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Require a stored caption

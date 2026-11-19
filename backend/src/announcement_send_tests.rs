@@ -824,3 +824,34 @@ async fn admin_post_buttons_use_the_stored_token() {
         "{err}"
     );
 }
+
+/// Instagram turned off by an admin works like a pause for sends, and a host
+/// cannot save a new post.
+#[tokio::test]
+async fn instagram_off_sends_nothing_and_refuses_new_posts() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let pre = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+    let story = add(&state, SHOW, "onair", "armed", Some(berlin(5, 20)), host).await;
+    crate::db::set_setting(&state.db, crate::db::INSTAGRAM_ENABLED, "false")
+        .await
+        .unwrap();
+
+    check_due_announcements(&state, berlin(5, 20)).await;
+    announce_on_air(&state, SHOW, berlin(5, 20)).await;
+    assert!(ig.calls().is_empty(), "{:?}", ig.routes());
+    assert_eq!(row(&state, pre).await.state, "scheduled");
+    assert_eq!(row(&state, story).await.state, "armed");
+
+    let (status, body) = put_pre(&state, host, SHOW, json!({ "headline": "Soon" })).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "Instagram is temporarily not available.");
+
+    // Back on: the waiting post goes out at the next tick.
+    crate::db::set_setting(&state.db, crate::db::INSTAGRAM_ENABLED, "true")
+        .await
+        .unwrap();
+    check_due_announcements(&state, berlin(5, 20)).await;
+    assert_eq!(row(&state, pre).await.state, "sent");
+}

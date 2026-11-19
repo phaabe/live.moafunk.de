@@ -848,6 +848,8 @@ export interface AnnouncementMeta {
   paused: boolean;
   /** This host's posts wait for an admin first. */
   needs_approval: boolean;
+  /** Admin switches; a service that is off is "temporarily not available". */
+  services: ServiceSettings;
 }
 
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
@@ -1145,11 +1147,22 @@ export interface NotificationSettings {
   enabled: boolean;
 }
 
+/** Admin switches for the outside services. Off blocks every post there. */
+export interface ServiceSettings {
+  soundcloud: boolean;
+  instagram: boolean;
+}
+
 export const settingsApi = {
   getNotifications: () => api.get<NotificationSettings>('/api/settings/notifications'),
 
   setNotifications: (enabled: boolean) =>
     api.put<NotificationSettings>('/api/settings/notifications', { enabled }),
+
+  getServices: () => api.get<ServiceSettings>('/api/settings/services'),
+
+  setServices: (services: ServiceSettings) =>
+    api.put<ServiceSettings>('/api/settings/services', services),
 };
 
 // Users API

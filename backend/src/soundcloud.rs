@@ -359,6 +359,7 @@ pub async fn build_title(state: &Arc<AppState>, show: &models::Show) -> Result<S
 /// Sets title, description, artwork from the show's cover image.
 /// Stores the resulting track_id and URL in the database.
 pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCloudUploadResult> {
+    ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 
     // Fetch show
@@ -717,6 +718,17 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
 /// Pure decision so the policy is testable: upload only when the feature is
 /// enabled and the integration is configured. Not gated on "already uploaded":
 /// a newer recording deliberately *replaces* the show's existing track audio.
+/// Refuse every SoundCloud write while an admin has turned SoundCloud off.
+pub async fn ensure_enabled(state: &Arc<AppState>) -> Result<()> {
+    if crate::db::is_service_enabled(&state.db, crate::db::SOUNDCLOUD_ENABLED).await {
+        Ok(())
+    } else {
+        Err(AppError::ServiceUnavailable(
+            "SoundCloud is temporarily not available.".to_string(),
+        ))
+    }
+}
+
 pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
     enabled && configured
 }
@@ -735,6 +747,13 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
             enabled = state.config.soundcloud_auto_upload,
             configured = is_configured(state),
             "Skipping SoundCloud auto-upload (disabled or not configured)"
+        );
+        return;
+    }
+    if ensure_enabled(state).await.is_err() {
+        tracing::info!(
+            show_id,
+            "Skipping SoundCloud auto-upload (turned off by an admin)"
         );
         return;
     }
@@ -1053,6 +1072,7 @@ pub async fn set_track_privacy(
     show_id: i64,
     public: bool,
 ) -> Result<SoundCloudUploadResult> {
+    ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 
     // Fetch show to get track ID

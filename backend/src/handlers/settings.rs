@@ -76,3 +76,70 @@ pub async fn set_notifications(
         enabled: req.enabled,
     }))
 }
+
+/// The admin switches for the outside services. Off means hosts see
+/// "temporarily not available" and every post or upload there is refused.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceSettings {
+    pub soundcloud: bool,
+    pub instagram: bool,
+}
+
+pub async fn load_services(state: &AppState) -> ServiceSettings {
+    ServiceSettings {
+        soundcloud: db::is_service_enabled(&state.db, db::SOUNDCLOUD_ENABLED).await,
+        instagram: db::is_service_enabled(&state.db, db::INSTAGRAM_ENABLED).await,
+    }
+}
+
+/// GET /api/settings/services — any signed-in user; hosts need it to show
+/// "temporarily not available".
+pub async fn get_services(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    Ok(Json(load_services(&state).await))
+}
+
+/// PUT /api/settings/services — admin only; sets both switches.
+pub async fn set_services(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ServiceSettings>,
+) -> Result<impl IntoResponse> {
+    let token = auth::get_session_from_headers(&headers);
+    let user = auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    if !user.role_enum().can_access_admin() {
+        return Err(AppError::Forbidden("Admin access required".to_string()));
+    }
+
+    let before = load_services(&state).await;
+    for (key, on) in [
+        (db::SOUNDCLOUD_ENABLED, req.soundcloud),
+        (db::INSTAGRAM_ENABLED, req.instagram),
+    ] {
+        db::set_setting(&state.db, key, if on { "true" } else { "false" })
+            .await
+            .map_err(AppError::Database)?;
+    }
+
+    for (name, was, now) in [
+        ("SoundCloud", before.soundcloud, req.soundcloud),
+        ("Instagram", before.instagram, req.instagram),
+    ] {
+        if was != now {
+            let status = if now { "turned ON" } else { "turned OFF" };
+            tracing::info!(user = %user.username, service = name, on = now, "Service switch changed");
+            let msg = format!("{name} {status} by {}", user.username);
+            telegram_notify::notify_unconditional(&state, &msg).await;
+        }
+    }
+
+    Ok(Json(load_services(&state).await))
+}

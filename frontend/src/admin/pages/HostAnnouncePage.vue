@@ -18,6 +18,7 @@ import {
   EPISODE_LIMIT,
   HEADLINE_MAX,
   inSlot,
+  INSTAGRAM_OFF_NOTE,
   PAUSED_NOTE,
   PHOTO_MAX_MB,
   photoError as checkPhoto,
@@ -42,6 +43,7 @@ const saving = ref(false);
 /** Until load() is done its values would overwrite what the host typed. */
 const loading = ref(true);
 const paused = ref(false);
+const instagramOff = ref(false);
 const needsApproval = ref(false);
 
 const image = ref<AnnouncementImage>('cover');
@@ -98,6 +100,7 @@ async function load() {
     ]);
     show.value = loaded;
     paused.value = meta.paused;
+    instagramOff.value = !meta.services.instagram;
     needsApproval.value = meta.needs_approval;
     list.value = announcements;
     times.value = offered;
@@ -308,6 +311,7 @@ async function schedule() {
               :src="preview"
               :alt="`Preview · 4:5 post by moafunk_radio${handle && collaborator ? ` and ${handle}` : ''}`"
             />
+            <p v-if="instagramOff" class="notice">{{ INSTAGRAM_OFF_NOTE }}</p>
             <p v-if="paused" class="notice">{{ PAUSED_NOTE }}</p>
             <p v-if="needsApproval" class="hint">
               An admin checks this post first. It is scheduled after the approval.
@@ -324,7 +328,7 @@ async function schedule() {
               <BaseButton variant="secondary" @click="back">Cancel</BaseButton>
               <BaseButton
                 class="xl"
-                :disabled="!valid || sent"
+                :disabled="!valid || sent || instagramOff"
                 :loading="saving"
                 @click="schedule"
                 >{{ needsApproval ? 'Send for approval' : 'Schedule post' }}</BaseButton

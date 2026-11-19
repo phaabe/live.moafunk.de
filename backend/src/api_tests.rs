@@ -1562,3 +1562,46 @@ async fn a_host_uploads_a_recording_only_to_their_own_episode() {
     let key = body["key"].as_str().unwrap().to_string();
     assert!(soundcloud_reads(&state, &r2, &key).await > 0);
 }
+
+/// Service switches: everyone signed in reads them, only admins change them.
+#[tokio::test]
+async fn service_switches_read_by_all_set_by_admins() {
+    use handlers::settings::{get_services, set_services};
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    let get = |user| {
+        let state = state.clone();
+        async move { reply(get_services(State(state.clone()), login(&state, user).await).await).await }
+    };
+    let off = json!({ "soundcloud": false, "instagram": true });
+
+    assert_eq!(get(None).await.0, NOBODY);
+    assert_eq!(
+        get(Some(p.host)).await,
+        (OK, json!({ "soundcloud": true, "instagram": true }))
+    );
+    for user in [None, Some(p.guest), Some(p.host)] {
+        let code = status(
+            set_services(
+                State(state.clone()),
+                login(&state, user).await,
+                req(off.clone()),
+            )
+            .await,
+        );
+        assert_eq!(code, if user.is_none() { NOBODY } else { DENIED });
+    }
+    assert_eq!(
+        reply(
+            set_services(
+                State(state.clone()),
+                login(&state, Some(p.admin)).await,
+                req(off.clone())
+            )
+            .await
+        )
+        .await,
+        (OK, off.clone())
+    );
+    assert_eq!(get(Some(p.host)).await, (OK, off));
+}

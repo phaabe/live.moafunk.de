@@ -10,7 +10,11 @@ import BoardIcon from './BoardIcon.vue';
 // and admins switch the track public or private; public unlocks the
 // post-announcement.
 
-const props = defineProps<{ show: ShowDetail }>();
+const props = defineProps<{
+  show: ShowDetail;
+  /** An admin turned SoundCloud off. */
+  soundcloudOff?: boolean;
+}>();
 const emit = defineEmits<{ uploaded: []; changed: [] }>();
 
 const uploading = ref(false);
@@ -116,11 +120,12 @@ async function switchPublic() {
         {{ isPublic ? 'Public on SoundCloud' : 'Private on SoundCloud' }}:
         <a :href="link" target="_blank" rel="noopener">{{ link }}</a>
       </p>
+      <p v-if="soundcloudOff" class="notice">SoundCloud is temporarily not available.</p>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div>
         <BaseButton
           variant="secondary"
-          :disabled="!hasRecording || uploading"
+          :disabled="!hasRecording || uploading || soundcloudOff"
           :loading="sending"
           @click="sendToSoundCloud"
         >
@@ -129,7 +134,7 @@ async function switchPublic() {
         <BaseButton
           v-if="link"
           variant="secondary"
-          :disabled="sending"
+          :disabled="sending || soundcloudOff"
           :loading="switching"
           @click="switchPublic"
         >
@@ -141,6 +146,14 @@ async function switchPublic() {
 </template>
 
 <style scoped>
+.notice {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #6b5a1e;
+  border-radius: var(--radius-lg);
+  color: #f3d77a;
+}
+
 .status {
   margin: 0;
   overflow-wrap: anywhere;
