@@ -1042,7 +1042,7 @@ async fn main() -> anyhow::Result<()> {
                      AND (telegram_preview_sent_at IS NULL OR telegram_preview_sent_at < ?)",
                 )
                 .bind(&today)
-                .bind(&format!("{today}T00:00:00"))
+                .bind(format!("{today}T00:00:00"))
                 .fetch_all(&state.db)
                 .await
                 {

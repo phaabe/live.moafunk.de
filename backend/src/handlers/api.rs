@@ -4822,7 +4822,7 @@ pub async fn api_upload_to_soundcloud(
                     .bind(id)
                     .fetch_one(&state.db)
                     .await
-                    .map_err(|e| AppError::Database(e))?,
+                    .map_err(AppError::Database)?,
             )
             .await
             .unwrap_or_else(|_| format!("Show #{id}"));

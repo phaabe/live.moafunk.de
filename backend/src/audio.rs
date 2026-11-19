@@ -272,7 +272,7 @@ pub async fn get_duration<P: AsRef<Path>>(path: P) -> Result<u64> {
     let last_pts = stdout
         .lines()
         .filter_map(|line| line.trim().parse::<f64>().ok())
-        .last();
+        .next_back();
 
     match last_pts {
         Some(duration_secs) => {

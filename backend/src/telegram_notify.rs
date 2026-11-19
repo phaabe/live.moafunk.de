@@ -74,6 +74,7 @@ struct TgResponse {
 /// Send a photo via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_photo_raw(
     token: &str,
     chat_id: i64,
@@ -130,6 +131,7 @@ pub(crate) async fn send_photo_raw(
 /// Send a video via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_video_raw(
     token: &str,
     chat_id: i64,
@@ -184,6 +186,7 @@ pub async fn send_video_raw(
 }
 
 /// Send an audio file via the Telegram Bot API using raw reqwest multipart.
+#[allow(clippy::too_many_arguments)]
 async fn send_audio_raw(
     token: &str,
     chat_id: i64,
@@ -285,6 +288,7 @@ pub async fn edit_message_caption_raw(
 /// Edit the media (photo or video) of an existing message.
 ///
 /// `media_type` should be `"photo"` or `"video"`.
+#[allow(clippy::too_many_arguments)]
 pub async fn edit_message_media_raw(
     token: &str,
     chat_id: i64,
@@ -640,7 +644,7 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
         .telegram_bot_token
         .as_deref()
         .unwrap_or_default();
-    let photo_msg_id = if let Some(ref pic_key) = artist
+    let photo_msg_id = if let Some(pic_key) = artist
         .pic_overlay_key
         .as_ref()
         .or(artist.pic_cropped_key.as_ref())
@@ -918,9 +922,9 @@ async fn send_show_update_notification(
     let chat = ChatId(chat_id);
 
     // Send photo with caption if show has a cover
-    let cover_key = show.cover_generated_at.and_then(|_| {
+    let cover_key = show.cover_generated_at.map(|_| {
         // Cover exists if cover_generated_at is set
-        Some(format!("shows/{}/cover.png", show.id))
+        format!("shows/{}/cover.png", show.id)
     });
 
     let token = state

@@ -808,7 +808,8 @@ impl InstagramClient {
                         )),
                     });
                 }
-                "IN_PROGRESS" | _ => {
+                // "IN_PROGRESS" or any other status: keep polling
+                _ => {
                     if attempt == MAX_POLL_ATTEMPTS {
                         return Ok(InstagramPostResult {
                             success: false,

@@ -702,7 +702,7 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
     // Newest first: SoundCloud track ids grow over time.
-    tracks.sort_by(|a, b| b.id.cmp(&a.id));
+    tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
     for track in tracks.iter().skip(keep.max(1)) {
         delete_track(&client, access_token, &track.id.to_string()).await?;
         tracing::info!(
