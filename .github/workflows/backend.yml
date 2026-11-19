@@ -4,10 +4,11 @@ on:
   push:
     # The staging branch builds sha-* images for the staging server. Only main moves `latest`.
     branches: [main, staging]
+    # Build when any file that backend/Dockerfile copies changes. The admin SPA
+    # is built from all of frontend/, not only src/admin.
     paths:
       - backend/**
-      - frontend/src/admin/**
-      - frontend/package*.json
+      - frontend/**
       - .github/workflows/backend.yml
   workflow_dispatch:
     inputs:
