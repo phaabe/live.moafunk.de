@@ -195,6 +195,12 @@ jobs:
             npm test -- --run
           fi
 
+      # frontend.yml builds the website only on main. This step shows a
+      # broken build on the PR.
+      - name: Build the website
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm run build
+
       - name: Keep the results for the test dashboard
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
         uses: actions/upload-artifact@v4
