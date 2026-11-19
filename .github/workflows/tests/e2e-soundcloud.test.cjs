@@ -27,11 +27,13 @@ test('the SoundCloud test runs only its own spec', () => {
   assert.equal(job.env.E2E_RUN, '${{ github.run_id }}');
 });
 
-test('the SoundCloud test never runs during a chaos show or a deploy', () => {
+test('the SoundCloud test never runs during a chaos show, and holds staging against deploys', () => {
   // Its start deletes every leftover e2e-* Show, the chaos show's too.
   assert.deepEqual(job.concurrency, { group: 'staging-box', 'cancel-in-progress': false });
   assert.deepEqual(job.concurrency, chaos.concurrency);
-  assert.deepEqual(load('backend.yml').jobs['deploy-staging'].concurrency, chaos.concurrency);
+  // A deploy waits for the hold (backend-build.test.cjs), not in this group.
+  assert.notDeepEqual(load('backend.yml').jobs['deploy-staging'].concurrency, chaos.concurrency);
+  assert.match(step('Hold staging for this run').run, /"e2e-hold \$E2E_RUN"/);
 });
 
 test('the SoundCloud test uses only the staging CI key and the e2e host login', () => {
