@@ -33,6 +33,15 @@ const PRODUCER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// dropped socket can stay open on the server for minutes (nginx: 300 s idle).
 const LIVE_AUDIO_STALE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Max time the prerecorded ffmpeg waits for data from its input URL. A stalled
+/// R2 download otherwise hangs ffmpeg for good, and the slot stays "on air".
+/// Only a read with no data at all counts: a long show plays to its end.
+/// Liquidsoap drops a silent source after 30 s too.
+#[cfg(not(test))]
+const PRERECORDED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const PRERECORDED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Where the live producer ffmpeg pushes the encoded audio.
 ///
 /// This selects only the **output** leg of the live-stream ffmpeg (encoder +
@@ -884,11 +893,15 @@ pub async fn start_prerecorded_stream(
 
         // Spawn FFmpeg with file/URL input:
         // -re: read at native frame rate (essential for streaming prerecorded content)
+        // -rw_timeout (microseconds): end on a stalled input instead of hanging.
+        let read_timeout_us = PRERECORDED_READ_TIMEOUT.as_micros().to_string();
         let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "warning",
+                "-rw_timeout",
+                read_timeout_us.as_str(),
                 "-re",
                 "-i",
                 input_url,
@@ -1456,6 +1469,43 @@ mod tests {
             .expect("child blocked on a full stderr pipe")
             .unwrap();
         assert!(status.success());
+    }
+
+    /// A prerecorded input that stops sending must end the stream, so the slot
+    /// does not stay "on air" (a stalled R2 download did that on staging).
+    #[tokio::test]
+    async fn prerecorded_stream_ends_when_its_input_stalls() {
+        use tokio::io::AsyncReadExt;
+        // An HTTP source that sends its header, then nothing.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/set.mp3", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1000000\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let shared = new_shared_state();
+        let target = PushTarget::Rtmp {
+            destination: "pipe:1".to_string(),
+        };
+        start_prerecorded_stream(&shared, "host".into(), &url, &target)
+            .await
+            .unwrap();
+        assert!(shared.lock().await.is_active());
+
+        // The read timeout (2 s in tests) and one watcher tick (2 s) free the slot.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while shared.lock().await.is_active() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the stalled prerecorded stream still holds the slot");
     }
 
     #[tokio::test]
