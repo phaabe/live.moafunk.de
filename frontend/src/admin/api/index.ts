@@ -1001,13 +1001,35 @@ export interface SeriesDetail extends Series {
 /** A row of the host Dashboard: an upcoming episode of any host. */
 export interface UpcomingEpisode {
   id: number;
+  /** The episode's own title, e.g. "Brunchtime #31". */
+  title: string;
   date: string;
   start_time: string | null;
   end_time: string | null;
   show_name: string;
+  /** The Show's slug: its page and its cover in the Shows grid. */
+  series_slug: string;
   host_username: string;
   mode: 'live' | 'prerecorded';
   mode_label: string;
+}
+
+/** A past row of the host Dashboard: an episode of any host whose broadcast is over. */
+export interface PastEpisode extends UpcomingEpisode {
+  status: Exclude<EpisodeStatus, 'upcoming'>;
+  /** "Finished · wrap-up open" | "Finished" */
+  status_label: string;
+}
+
+/** A tile of the host Dashboard's Shows grid: a Show of any host. */
+export interface SeriesOverviewItem {
+  id: number;
+  slug: string;
+  name: string;
+  cover_url: string | null;
+  host_username: string;
+  /** Episodes whose broadcast is over (wrap-up open or finished). */
+  finished_episodes: number;
 }
 
 export interface NewSeries {
@@ -1121,6 +1143,12 @@ export const seriesApi = {
 
   /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
   update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
+
+  /** All hosts' past episodes (wrap-up open or finished), newest first, at most 50. */
+  past: () => api.get<{ episodes: PastEpisode[] }>('/api/past-episodes'),
+
+  /** All hosts' Shows with cover, host and finished episodes, most episodes first. */
+  overview: () => api.get<{ series: SeriesOverviewItem[] }>('/api/series-overview'),
 };
 
 async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {

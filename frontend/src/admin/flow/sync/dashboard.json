@@ -9,10 +9,31 @@
     }
   ],
   "missing": [
-    "nav: Schedule",
-    "nav: My Shows"
+    "h2: Upcoming shows",
+    "row: So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live",
+    "row: Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live",
+    "row: Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded",
+    "row: So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded"
   ],
   "extra": [
-    "link: My Show"
+    "h2: On air",
+    "h2: My next show",
+    "h2: Episodes",
+    "h2: Chat",
+    "h2: Shows",
+    "button: Past",
+    "button: Upcoming",
+    "button: Send",
+    "link: Listen live",
+    "link: Open episode",
+    "link: Di 20.10. · 20:00–22:00 · Night Shift · jonas | Finished · Live",
+    "link: So 18.10. · 12:00–14:00 · Brunchtime · lena | Finished · wrap-up open · Live",
+    "link: Fr 16.10. · 18:00–20:00 · Dub Kitchen · mira | Finished · Pre-recorded",
+    "link: So 11.10. · 12:00–14:00 · Brunchtime · lena | Finished · Pre-recorded",
+    "link: Brunchtime · Yours | lena · 31 episodes",
+    "link: Night Shift | jonas · 12 episodes",
+    "link: UNHEARD | moafunk · 8 episodes",
+    "link: Dub Kitchen | mira · 5 episodes",
+    "field: Message to the group"
   ]
 }
