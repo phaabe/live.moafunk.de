@@ -661,6 +661,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::announcements::api_announcement_meta),
         )
         .route(
+            "/api/shows/:id/announcements/status",
+            get(handlers::announcements::api_announcement_status),
+        )
+        .route(
             "/api/shows/:id/announcements/uploads",
             post(handlers::announcements::api_upload_announcement_image),
         )
