@@ -33,18 +33,28 @@ export function dbToLevel(db: number): number {
  * (converted to dBFS) for the moving bar plus an instantaneous peak with
  * peak-hold + slow decay. Mirrors `useAudioMeter`'s lifecycle: it auto
  * start/stops when the stream changes and cleans up on unmount.
+ *
+ * `channel` (0 = left, 1 = right) meters one side of the stream (On Air's
+ * L/R meters, #1053). Without it the meter reads the mixed signal, as before.
  */
-export function useDbMeter(mediaStream: Ref<MediaStream | null>) {
+export function useDbMeter(mediaStream: Ref<MediaStream | null>, channel?: 0 | 1) {
   /** Smoothed RMS level in dBFS (DB_FLOOR..DB_CEIL). */
   const db = ref(DB_FLOOR);
   /** Held peak level in dBFS (DB_FLOOR..DB_CEIL). */
   const peakDb = ref(DB_FLOOR);
   /** RMS level mapped to 0..1 for bar width. */
   const level = ref(0);
+  /**
+   * True while the meter reads real audio: its context runs. A context the
+   * browser keeps suspended reads silence, which is not "no sound".
+   */
+  const running = ref(false);
 
   let audioContext: AudioContext | null = null;
   let analyser: AnalyserNode | null = null;
   let source: MediaStreamAudioSourceNode | null = null;
+  let upmix: GainNode | null = null;
+  let splitter: ChannelSplitterNode | null = null;
   let animationId: number | null = null;
 
   // Peak-hold bookkeeping. We track wall-clock-ish time via rAF timestamps.
@@ -62,13 +72,27 @@ export function useDbMeter(mediaStream: Ref<MediaStream | null>) {
       analyser.smoothingTimeConstant = 0;
 
       source = audioContext.createMediaStreamSource(mediaStream.value);
-      source.connect(analyser);
+      if (channel === undefined) {
+        source.connect(analyser);
+      } else {
+        // A splitter never up-mixes: a mono input would leave the right side
+        // silent. The gain node copies mono to both sides first.
+        upmix = audioContext.createGain();
+        upmix.channelCount = 2;
+        upmix.channelCountMode = 'explicit';
+        upmix.channelInterpretation = 'speakers';
+        splitter = audioContext.createChannelSplitter(2);
+        source.connect(upmix);
+        upmix.connect(splitter);
+        splitter.connect(analyser, channel);
+      }
 
       const samples = new Float32Array(analyser.fftSize);
 
       const update = (ts: number) => {
         if (!analyser) return;
 
+        running.value = audioContext?.state === 'running';
         analyser.getFloatTimeDomainData(samples);
 
         // RMS over the frame → dBFS.
@@ -122,6 +146,14 @@ export function useDbMeter(mediaStream: Ref<MediaStream | null>) {
       source.disconnect();
       source = null;
     }
+    if (upmix) {
+      upmix.disconnect();
+      upmix = null;
+    }
+    if (splitter) {
+      splitter.disconnect();
+      splitter = null;
+    }
     if (audioContext) {
       audioContext.close();
       audioContext = null;
@@ -131,6 +163,7 @@ export function useDbMeter(mediaStream: Ref<MediaStream | null>) {
     db.value = DB_FLOOR;
     peakDb.value = DB_FLOOR;
     level.value = 0;
+    running.value = false;
     peakValueDb = DB_FLOOR;
     peakHeldUntil = 0;
     lastFrameTs = 0;
@@ -154,6 +187,7 @@ export function useDbMeter(mediaStream: Ref<MediaStream | null>) {
     db,
     peakDb,
     level,
+    running,
     start,
     stop,
   };

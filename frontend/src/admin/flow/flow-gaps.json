@@ -113,52 +113,27 @@
     {
       "screen": "studio-onair",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-reconnecting",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-lost",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-noinput",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-end",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     }
   ],
   "allowed": [
@@ -187,37 +162,136 @@
     {
       "screen": "studio-onair",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-reconnecting",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | reconnecting…",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-lost",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | lost",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-noinput",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-end",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "dashboard",
