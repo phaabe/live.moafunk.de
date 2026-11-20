@@ -787,19 +787,58 @@ fn tracks_to_keep_counts_tracks_and_upload_time() {
     };
     let soak = tracks(&[92, 1, 1, 92]);
     // The upload adds one track: 2 of "keep 3" stay.
-    assert_eq!(tracks_to_keep(&soak, 3, None), 2);
-    assert_eq!(tracks_to_keep(&soak, 1, None), 0);
+    assert_eq!(tracks_to_keep(&soak, 3, None, 0), 2);
+    assert_eq!(tracks_to_keep(&soak, 1, None, 0), 0);
     // Time left: nothing more goes.
-    assert_eq!(tracks_to_keep(&soak, 10, Some(1)), 4);
+    assert_eq!(tracks_to_keep(&soak, 10, Some(1), 0), 4);
     // 66 minutes over: only the old soak track (92 min) goes.
-    assert_eq!(tracks_to_keep(&soak, 10, Some(-66 * 60)), 3);
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-66 * 60), 0), 3);
     // Exactly 0 left is still refused: one more track goes.
-    assert_eq!(tracks_to_keep(&soak, 10, Some(-92 * 60)), 2);
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-92 * 60), 0), 2);
     // Far over: everything goes.
-    assert_eq!(tracks_to_keep(&soak, 10, Some(-100_000)), 0);
+    assert_eq!(tracks_to_keep(&soak, 10, Some(-100_000), 0), 0);
     // The tracks cut by the count already free time.
-    assert_eq!(tracks_to_keep(&soak, 4, Some(-66 * 60)), 3);
-    assert_eq!(tracks_to_keep(&[], 10, Some(-5)), 0);
+    assert_eq!(tracks_to_keep(&soak, 4, Some(-66 * 60), 0), 3);
+    assert_eq!(tracks_to_keep(&[], 10, Some(-5), 0), 0);
+    // The new track needs its time too: with 30 minutes left, a 92-minute
+    // soak track first frees the old soak track (92 min).
+    assert_eq!(tracks_to_keep(&soak, 10, Some(30 * 60), 92 * 60), 3);
+    // A short track fits in the time left: nothing goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(30 * 60), 60), 4);
+    // More than the account can ever hold: everything goes.
+    assert_eq!(tracks_to_keep(&soak, 10, Some(0), 100_000), 0);
+}
+
+#[test]
+fn upload_seconds_for_counts_an_mp3_never_shorter_than_it_is() {
+    // 92 minutes at 64 kbit/s: exactly its length.
+    assert_eq!(upload_seconds_for(92 * 60 * 8_000), 92 * 60);
+    // The same at 320 kbit/s counts five times as long.
+    assert_eq!(upload_seconds_for(92 * 60 * 40_000), 5 * 92 * 60);
+    assert_eq!(upload_seconds_for(0), 0);
+}
+
+/// A long recording gets its upload time before the upload: the oldest tracks
+/// go until more time is left than the new track takes.
+#[tokio::test]
+async fn staging_upload_frees_the_time_a_long_recording_takes() {
+    let (state, _temp, fake, r2) = setup(json!({
+        "app_env": "staging",
+        "soundcloud_account": "moafunk-test",
+        "soundcloud_keep_tracks": 10
+    }))
+    .await;
+    *fake.tracks.lock().unwrap() = vec![300, 100, 200];
+    // One minute left, the recording counts 150 s: two tracks of one minute go.
+    *fake.seconds_left.lock().unwrap() = Some(60);
+    let id = show_with_recording(&state, &r2).await;
+    r2.insert(&state, "shows/rec.mp3", &vec![0u8; 150 * 8_000]);
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    assert_eq!(
+        deletes_before_the_upload(&fake),
+        vec!["DELETE /tracks/200", "DELETE /tracks/100"]
+    );
 }
 
 /// The cleanup deletes nothing outside staging, without an account pin, or

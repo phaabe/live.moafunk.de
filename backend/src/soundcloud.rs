@@ -439,6 +439,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         content_type = recording_content_type.as_str(),
         "Downloaded recording from R2"
     );
+    let upload_seconds = upload_seconds_for(recording_bytes.len());
 
     // Determine filename for the upload
     let filename = source_filename.as_str();
@@ -505,7 +506,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     // Staging only: make room on the test account first. An account over its
     // upload time refuses every upload, so cleaning up after an upload would
     // never run again. Best effort.
-    if let Err(e) = cleanup_old_tracks(state, &access_token).await {
+    if let Err(e) = cleanup_old_tracks(state, &access_token, upload_seconds).await {
         tracing::error!(error = %e, "Failed to delete old tracks before the upload");
     }
 
@@ -632,17 +633,33 @@ struct TrackSummary {
 /// deleted. The upload adds one track, so `keep - 1` stay. Then the oldest go
 /// until the account has upload time left: SoundCloud refuses an upload (401)
 /// while `upload_seconds_left` is 0 or less, and takes any length above 0.
-fn tracks_to_keep(tracks: &[TrackSummary], keep: usize, seconds_left: Option<i64>) -> usize {
+/// So the oldest go until more time is left than the new track (`needed`
+/// seconds) takes: a long track must not leave the account without time for
+/// the next upload. Deleted time seems to come back with a delay (an upload
+/// 0.1 s after a delete still got 401), so it is freed one upload early.
+fn tracks_to_keep(
+    tracks: &[TrackSummary],
+    keep: usize,
+    seconds_left: Option<i64>,
+    needed: i64,
+) -> usize {
     let seconds = |t: &TrackSummary| t.duration.unwrap_or(0) / 1000;
     let mut kept = (keep.max(1) - 1).min(tracks.len());
     if let Some(mut left) = seconds_left {
         left += tracks[kept..].iter().map(seconds).sum::<i64>();
-        while left <= 0 && kept > 0 {
+        while left <= needed && kept > 0 {
             kept -= 1;
             left += seconds(&tracks[kept]);
         }
     }
     kept
+}
+
+/// Upload time (seconds) a file of `bytes` takes on SoundCloud: its length.
+// shortcut: the length at 64 kbit/s, never shorter for an MP3 of 64 kbit/s or
+// more; a lower bitrate can still leave the account over its time.
+fn upload_seconds_for(bytes: usize) -> i64 {
+    (bytes / 8_000) as i64
 }
 
 /// The items of a list answer. SoundCloud wraps a paginated list in
@@ -703,10 +720,15 @@ async fn check_account(state: &AppState, access_token: &str) -> Result<()> {
 
 /// Staging only, before an upload: make room on the test account. With the
 /// new track, the newest `SOUNDCLOUD_KEEP_TRACKS` tracks stay; more go while
-/// the account has no upload time left (see `tracks_to_keep`). Needs
+/// the account has no upload time left (see `tracks_to_keep`), or less than
+/// the new track's `upload_seconds`. Needs
 /// APP_ENV=staging, SOUNDCLOUD_ACCOUNT and a token of that account, so it can
 /// never delete station tracks.
-async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> {
+async fn cleanup_old_tracks(
+    state: &AppState,
+    access_token: &str,
+    upload_seconds: i64,
+) -> Result<()> {
     let Some(keep) = state.config.soundcloud_keep_tracks else {
         return Ok(());
     };
@@ -763,7 +785,7 @@ async fn cleanup_old_tracks(state: &AppState, access_token: &str) -> Result<()> 
         .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
     // Newest first: SoundCloud track ids grow over time.
     tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
-    let kept = tracks_to_keep(&tracks, keep, seconds_left);
+    let kept = tracks_to_keep(&tracks, keep, seconds_left, upload_seconds);
     for track in &tracks[kept..] {
         delete_track(&client, access_token, &track.id.to_string()).await?;
         tracing::info!(
