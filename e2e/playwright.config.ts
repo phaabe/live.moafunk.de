@@ -13,8 +13,8 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never' }]],
   // Own CI jobs, own checks on the test dashboard: `--project chaos` / `--project instagram`.
   projects: [
-    { name: 'chaos', testIgnore: /instagram\.spec\.ts$/ },
-    // A click on a disabled button fails after a minute, not at the 30-minute test timeout.
+    // A click on a missing or disabled button fails after a minute, not at the test timeout.
+    { name: 'chaos', testIgnore: /instagram\.spec\.ts$/, use: { actionTimeout: 60_000 } },
     { name: 'instagram', testMatch: /instagram\.spec\.ts$/, use: { actionTimeout: 60_000 } },
   ],
   use: {
