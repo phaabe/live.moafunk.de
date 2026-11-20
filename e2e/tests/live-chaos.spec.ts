@@ -1,7 +1,7 @@
 // The chaos test show: a live episode on staging that must survive a
 // network cut, a Liquidsoap restart and a page reload by itself, and end in
 // exactly one recording as long as the time on air.
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Dialog, type Page } from '@playwright/test';
 import {
   RUN,
   DURATION_MIN,
@@ -14,7 +14,7 @@ import {
   nextMinute,
   toneBack,
 } from '../lib/staging';
-import { soundcheckAndGoLive } from '../lib/studio';
+import { pickInput, soundcheckAndGoLive } from '../lib/studio';
 
 /** After each disturbance /live.mp3 carries the tone again within this. */
 const RECOVER_S = 15;
@@ -76,9 +76,17 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   await test.step('a page reload', async () => {
     const reloaded = Date.now();
+    // On air the page asks before it unloads: leave.
+    const leave = (dialog: Dialog) => void dialog.accept();
+    page.once('dialog', leave);
     await page.reload();
+    page.off('dialog', leave);
     // On Air sends a tab that is not live to the Studio.
-    await soundcheckAndGoLive(page);
+    // The show stays on air: the Studio goes back on air with only an input, no soundcheck.
+    await page.waitForURL(/#\/stream\/live/);
+    await pickInput(page);
+    await page.getByRole('button', { name: 'Go back on air' }).click();
+    await page.waitForURL(/#\/stream\/on-air/, { timeout: 30_000 });
     offAirMs += Date.now() - reloaded;
     // Up to 20 s after the reload, the harbor can still play the old page's
     // audio. So the tone must not stop for 15 s until then, and be there after.
