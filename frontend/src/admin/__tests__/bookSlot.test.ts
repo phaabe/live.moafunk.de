@@ -58,6 +58,9 @@ beforeEach(() => {
       requests.push({ url, method, body });
       if (url === '/api/series/brunchtime') return Response.json({ ...BRUNCHTIME, episodes: [] });
       if (url === '/api/series/stepper') return Response.json({ ...STEPPER, episodes: [] });
+      // Another host's Show: viewable, but not bookable.
+      if (url === '/api/series/other')
+        return Response.json({ ...series('other', 'Other'), can_edit: false, episodes: [] });
       if (url === '/api/series/stepper/episodes') return bookResponse();
       if (url === '/api/series') return Response.json({ series: [BRUNCHTIME, NIGHT] });
       if (url === '/api/series/brunchtime/slots') {
@@ -193,6 +196,25 @@ describe('Book Slot', () => {
     show.value = 'night';
     show.dispatchEvent(new Event('change'));
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/night/book'));
+  });
+
+  it('picks the free slot chosen on the Show page (?date=) and keeps it for Pre-recorded', async () => {
+    const router = await mount('/shows/brunchtime/book?date=2026-11-01');
+    expect(select('Date').value).toBe('2026-11-01');
+    (root.querySelector('input[value="prerecorded"]') as HTMLInputElement).dispatchEvent(
+      new Event('change')
+    );
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe(
+        '/shows/brunchtime/book?mode=prerecorded&date=2026-11-01'
+      )
+    );
+  });
+
+  it("sends another host back to the Show's read-only page", async () => {
+    const router = await mount('/shows/other/book');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/other'));
+    expect(requests.some((r) => r.url === '/api/series/other/slots')).toBe(false);
   });
 });
 

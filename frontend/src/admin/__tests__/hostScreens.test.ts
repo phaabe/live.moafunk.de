@@ -8,7 +8,6 @@ import { hostPage } from '../hostPage';
 import { getBerlinNowISO } from '../showTime';
 import NavBar from '@shared/components/NavBar.vue';
 import LoginPage from '../pages/LoginPage.vue';
-import HostSchedulePage from '../pages/HostSchedulePage.vue';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
 import type { Series, SeriesDetail, User } from '../api';
 import { expectFlow } from '../flow/expectFlow';
@@ -307,65 +306,6 @@ describe('router guard', () => {
   });
 });
 
-describe('Schedule', () => {
-  it("lists the host's next episodes, soonest first", async () => {
-    await mount(HostSchedulePage, 'host');
-    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(2));
-    const text = root.textContent ?? '';
-    expect(text).toContain('Schedule');
-    expect(text).toContain('Your next episodes');
-    expect(text).not.toContain('On air now');
-    for (const absent of ['Month', 'Open calendar', 'Free slots']) {
-      expect(text).not.toContain(absent);
-    }
-    const rows = [...root.querySelectorAll('.episodes a')].map((a) => ({
-      text: rowParts(a),
-      href: a.getAttribute('href'),
-    }));
-    expect(rows).toEqual([
-      { text: 'So 25.10. · Brunchtime | Upcoming · Live', href: '/shows/42' },
-      { text: 'So 08.11. · Brunchtime | Upcoming · Pre-recorded', href: '/shows/43' },
-    ]);
-  });
-
-  it('shows what is on air while the stream is live', async () => {
-    streamActive = true;
-    await mount(HostSchedulePage, 'host');
-    await vi.waitFor(() => expect(root.textContent).toContain('On air · Brunchtime · until 23:59'));
-    expect(root.textContent).toContain('On air now');
-  });
-});
-
-describe('Schedule states', () => {
-  it('opens On Air from the strip when the show on air is the host’s own', async () => {
-    streamActive = true;
-    const router = await mount(HostSchedulePage, 'host');
-    await vi.waitFor(() => expect(root.querySelector('a.on-air-strip')).not.toBeNull());
-    (root.querySelector('a.on-air-strip') as HTMLAnchorElement).click();
-    await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/stream/on-air?show=42')
-    );
-  });
-
-  it('shows another host’s show on air without a link', async () => {
-    streamActive = true;
-    mySeries = [NIGHT];
-    await mount(HostSchedulePage, 'host');
-    await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
-    expect(root.querySelector('.on-air-strip')?.tagName).toBe('SECTION');
-  });
-
-  it('says so when the episodes cannot load', async () => {
-    failing = ['/api/series'];
-    await mount(HostSchedulePage, 'host');
-    await vi.waitFor(() =>
-      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
-        'Could not load your episodes.'
-      )
-    );
-  });
-});
-
 describe('My Shows', () => {
   /** A card's details as "Label | value". */
   const facts = (card: Element) => [...card.querySelectorAll('dl > div')].map((d) => rowParts(d));
@@ -470,17 +410,6 @@ describe('My Shows states', () => {
 });
 
 describe('flow', () => {
-  it('Schedule matches the flow', async () => {
-    streamActive = true;
-    // The clock is pinned to 12:30 or 13:30 in Berlin, so this show is on air.
-    onAir = { start: '12:00', end: '14:00' };
-    mySeries = [BRUNCHTIME];
-    await mount({ render: () => [h(NavBar), h(HostSchedulePage)] }, 'host');
-    await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
-    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(2));
-    await expectFlow('schedule', root);
-  });
-
   it('My Shows matches the flow', async () => {
     mySeries = [BRUNCHTIME];
     await mount({ render: () => [h(NavBar), h(HostMyShowsPage)] }, 'host');

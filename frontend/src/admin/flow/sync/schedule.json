@@ -4,27 +4,37 @@
   "status": "drift",
   "leftOut": [
     {
-      "item": "h2: Free slots",
-      "release": "R3"
-    },
-    {
-      "item": "row: So 01.11. · 12:00–14:00 | Free",
-      "release": "R3"
-    },
-    {
-      "item": "row: So 15.11. · 12:00–14:00 | Free",
-      "release": "R3"
-    },
-    {
       "item": "nav: Pool",
       "release": "UNHEARD"
     }
   ],
   "missing": [
+    "h1: Schedule",
+    "pill: On air · Brunchtime · until 14:00",
+    "h2: Your next episodes",
+    "row: So 25.10. · Brunchtime | Upcoming · Live",
+    "row: So 08.11. · Brunchtime | Upcoming · Pre-recorded",
+    "nav: Dashboard",
     "nav: Schedule",
-    "nav: My Shows"
+    "nav: My Shows",
+    "nav: Change Password",
+    "nav: Recovery Email",
+    "nav: Logout"
   ],
   "extra": [
-    "link: My Show"
+    "h1: Brunchtime",
+    "h2: Next episode",
+    "h2: Upcoming episodes",
+    "h2: Past episodes",
+    "button: Edit",
+    "button: Open episode",
+    "button: Book Slot",
+    "button: Book",
+    "link: < My Show",
+    "link: On air now | Brunchtime | lena | until 14:00",
+    "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
+    "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
+    "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
+    "row: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
   ]
 }

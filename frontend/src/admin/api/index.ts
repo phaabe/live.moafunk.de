@@ -991,9 +991,21 @@ export interface SeriesEpisode {
   mode_label: string;
   status: EpisodeStatus;
   status_label: string;
+  /** A pre-recorded episode has its set file. */
+  has_file?: boolean;
+  /** Set once the recording is on SoundCloud. */
+  soundcloud?: 'public' | 'private' | null;
+}
+
+/** A host of a Show. Today that is its owner; a Show may get more later. */
+export interface SeriesHost {
+  username: string;
 }
 
 export interface SeriesDetail extends Series {
+  /** The caller may book and manage its episodes: its owner or an admin. */
+  can_edit?: boolean;
+  hosts?: SeriesHost[];
   /** Newest first. */
   episodes: SeriesEpisode[];
 }
@@ -1080,7 +1092,7 @@ export const seriesApi = {
   /** All hosts' upcoming episodes, by date and start time. */
   upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
 
-  /** One of the caller's series, or null when it is not theirs (404). */
+  /** A series with its episodes, any host's (read-only unless `can_edit`); null when unknown (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
     const resp = await apiFetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;

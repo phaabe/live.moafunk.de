@@ -23,7 +23,6 @@ const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
 const HostDashboardPage = () => import('./pages/HostDashboardPage.vue');
-const HostSchedulePage = () => import('./pages/HostSchedulePage.vue');
 const HostMyShowsPage = () => import('./pages/HostMyShowsPage.vue');
 const ConfigPage = () => import('./pages/ConfigPage.vue');
 
@@ -235,10 +234,11 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
+      // Schedule merged into the Show pages (issue 1051): on air now, next
+      // episodes and free slots are on each Show's page, reached from My Show.
       path: '/schedule',
       name: 'schedule',
-      component: HostSchedulePage,
-      meta: { requiresAuth: true, roles: ['host'] },
+      redirect: '/shows',
     },
     {
       path: '/artists',
@@ -275,7 +275,8 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
-      // A Show (series) by its slug, with its episodes. Owner only (API 404).
+      // A Show (series) by its slug, with its episodes. Every host may view
+      // it; only its owner (or an admin) books (API `can_edit`).
       path: '/shows/:slug',
       name: 'show-series',
       component: ShowSeriesPage,
@@ -418,7 +419,7 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
-      // Admins only: hosts have Schedule instead (the role guard sends them to Dashboard).
+      // Admins only: hosts see their dates on their Show pages (the role guard sends them to Dashboard).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {

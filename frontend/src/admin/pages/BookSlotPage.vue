@@ -22,7 +22,8 @@ const slots = ref<SeriesSlot[]>([]);
 /** "Replace file": the booked episode keeps its date and time. */
 const replacing = ref<ReplaceTarget | null>(null);
 
-const date = ref('');
+/** A free slot on the Show page opens Book Slot with its date (?date=YYYY-MM-DD). */
+const date = ref(typeof route.query.date === 'string' ? route.query.date : '');
 const time = ref('');
 const error = ref<string | null>(null);
 const booking = ref(false);
@@ -80,8 +81,9 @@ async function load() {
   uploaded.value = null;
   try {
     const [found, list] = await Promise.all([seriesApi.get(slug.value), seriesApi.list()]);
-    if (!found) {
-      await router.replace('/shows');
+    // Another host's Show is read-only: its page, not Book Slot.
+    if (!found || found.can_edit === false) {
+      await router.replace(found ? `/shows/${found.slug}` : '/shows');
       return;
     }
     series.value = found;
@@ -100,7 +102,11 @@ function chooseShow(event: Event) {
 }
 
 function choosePrerecorded() {
-  router.push({ path: `/shows/${slug.value}/book`, query: { mode: 'prerecorded' } });
+  // A free slot picked on the Show page stays picked.
+  const picked = route.query.date;
+  const query =
+    typeof picked === 'string' ? { mode: 'prerecorded', date: picked } : { mode: 'prerecorded' };
+  router.push({ path: `/shows/${slug.value}/book`, query });
 }
 
 async function uploadFile(file: File | undefined) {

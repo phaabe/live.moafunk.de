@@ -57,15 +57,6 @@
       "release": "R1"
     },
     {
-      "screen": "schedule",
-      "release": "R3",
-      "items": [
-        "h2: Free slots",
-        "row: So 01.11. · 12:00–14:00 | Free",
-        "row: So 15.11. · 12:00–14:00 | Free"
-      ]
-    },
-    {
       "screen": "dashboard",
       "release": "UNHEARD",
       "items": ["nav: Pool"]
@@ -143,22 +134,112 @@
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
-      "screen": "schedule",
-      "items": ["button: Toggle menu", "button: Close menu"],
-      "why": "The flow note says the nav folds into a menu on phones."
-    },
-    {
       "screen": "my-shows",
       "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
-    },
-    {
-      "screen": "schedule",
-      "items": ["link: On air now | On air · Brunchtime · until 14:00"],
-      "why": "The flow note says the strip opens On Air when the show on air is yours."
     }
   ],
   "drift": [
+    {
+      "screen": "show",
+      "items": [
+        "h2: Details",
+        "field: Name",
+        "field: Description",
+        "field: Repeats",
+        "field: Day",
+        "field: Time",
+        "field: Instagram handle",
+        "button: Save",
+        "button: Edit"
+      ],
+      "why": "Redesign #1051 (approved in the issue): the Show page is read-only; the Details form moved to My Show, which Edit opens in edit mode (#/shows?edit=<slug>). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "show",
+      "items": [
+        "back: My Shows",
+        "link: < My Show"
+      ],
+      "why": "Redesign #1051 (approved in the issue): the back link names the page My Show (#1050). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "show",
+      "items": [
+        "h2: Episodes",
+        "row: So 25.10. · Live | Upcoming",
+        "row: So 18.10. · Live | Finished · wrap-up open",
+        "row: So 11.10. · Pre-recorded | Finished",
+        "h2: Upcoming episodes",
+        "h2: Past episodes",
+        "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
+        "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
+        "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
+        "row: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
+      ],
+      "why": "Redesign #1051 (approved in the issue): Episodes splits into Upcoming episodes and Past episodes; rows show the time, past rows also the SoundCloud state. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "show",
+      "items": [
+        "h2: Next episode",
+        "button: Open episode",
+        "h2: Free slots",
+        "button: Book",
+        "row: So 01.11. | · 12:00–14:00 Free",
+        "row: So 15.11. | · 12:00–14:00 Free"
+      ],
+      "why": "Redesign #1051 (approved in the issue): new Next episode card (countdown, next step, Open episode) and, from Schedule, Free slots with Book for the owner. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "schedule",
+      "items": [
+        "h1: Schedule",
+        "h2: Your next episodes",
+        "row: So 25.10. · Brunchtime | Upcoming · Live",
+        "row: So 08.11. · Brunchtime | Upcoming · Pre-recorded",
+        "h1: Brunchtime",
+        "h2: Next episode",
+        "h2: Upcoming episodes",
+        "h2: Past episodes",
+        "button: Edit",
+        "button: Open episode",
+        "link: < My Show",
+        "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
+        "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
+        "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
+        "row: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
+      ],
+      "why": "Redesign #1051 (approved in the issue): Schedule merges into each Show's page (#/shows/<slug>, /schedule redirects to My Show); its next episodes are the Next episode and Upcoming episodes cards there. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "schedule",
+      "items": [
+        "pill: On air · Brunchtime · until 14:00",
+        "link: On air now | Brunchtime | lena | until 14:00"
+      ],
+      "why": "Redesign #1051 (approved in the issue): the On air now strip shows the show, its host and its end; it still opens On Air only for your own episode. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "schedule",
+      "items": [
+        "button: Book Slot",
+        "button: Book"
+      ],
+      "why": "Redesign #1051 (approved in the issue): each free slot has Book; Book Slot in the Free slots header books other dates (owner only). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "schedule",
+      "items": [
+        "nav: Dashboard",
+        "nav: Schedule",
+        "nav: My Shows",
+        "nav: Change Password",
+        "nav: Recovery Email",
+        "nav: Logout"
+      ],
+      "why": "Redesign #1051 (approved in the issue): Schedule is no page of its own any more, so its check runs on the Show page, which has no nav (the nav is checked on Dashboard and My Show). Update the flow in Flow Lab, then pin the new rev."
+    },
     {
       "screen": "dashboard",
       "items": [
