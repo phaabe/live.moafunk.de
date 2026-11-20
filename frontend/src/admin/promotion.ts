@@ -65,13 +65,21 @@ export function defaultPostTime(date: string): string {
   return `${episodeDay(format(addDays(parseISO(date), 3), 'yyyy-MM-dd'))} · 18:00`;
 }
 
+/**
+ * What the slot readings need of an announcement: the full row (the episode's
+ * hosts) or its status (every other host, no error text).
+ */
+export type SlotReading = Pick<Announcement, 'slot' | 'state' | 'scheduled_at' | 'sent_at'> & {
+  error?: string | null;
+};
+
 /** The announcement in a slot that still counts (a cancelled one does not). */
-export function inSlot(list: Announcement[], slot: AnnouncementSlot): Announcement | undefined {
+export function inSlot<T extends SlotReading>(list: T[], slot: AnnouncementSlot): T | undefined {
   return list.find((a) => a.slot === slot && a.state !== 'cancelled');
 }
 
 /** A slot the host may still edit or cancel: set up and not sent. */
-export function editable(a: Announcement | undefined): boolean {
+export function editable(a: SlotReading | undefined): boolean {
   return !!a && a.state !== 'draft' && a.state !== 'sent';
 }
 
@@ -79,11 +87,7 @@ export function editable(a: Announcement | undefined): boolean {
  * The row reading of a slot. `trackPublic` only matters for the post slot,
  * which is sent only when the SoundCloud track is public.
  */
-export function slotState(
-  list: Announcement[],
-  slot: AnnouncementSlot,
-  trackPublic = true
-): string {
+export function slotState(list: SlotReading[], slot: AnnouncementSlot, trackPublic = true): string {
   const a = inSlot(list, slot);
   if (!a) {
     return list.some((x) => x.slot === slot && x.state === 'cancelled')

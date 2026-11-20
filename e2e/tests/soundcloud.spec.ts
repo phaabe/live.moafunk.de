@@ -77,7 +77,7 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
 
   await test.step('Upload to SoundCloud gives a track link', async () => {
     await send.click();
-    await expect(page.getByRole('link', { name: /soundcloud\.com/ })).toBeVisible({
+    await expect(page.getByRole('link', { name: 'Open on SoundCloud' })).toBeVisible({
       timeout: 3 * 60_000,
     });
     await expect(page.getByRole('alert')).toHaveCount(0);

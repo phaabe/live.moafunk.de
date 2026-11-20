@@ -1,8 +1,40 @@
 {
   "screen": "episode-pre-nofile",
   "hash": "4f432b4a",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: So 08.11. · Brunchtime",
+    "pill: Pre-recorded · no file yet · plays at 12:00",
+    "h2: Next step",
+    "h2: Details",
+    "field: Title",
+    "field: Description",
+    "field: Date",
+    "field: Time",
+    "choice: Live",
+    "choice: Pre-recorded",
+    "button: Save"
+  ],
+  "extra": [
+    "h1: Brunchtime #32",
+    "h2: Soundcheck",
+    "h2: Show time",
+    "h2: Recording & SoundCloud",
+    "h2: Social media",
+    "pill: Upcoming",
+    "button: Edit",
+    "button: Set up pre-announcement",
+    "link: live.moafunk.de",
+    "field: Recording file",
+    "check: On air · story 9:16 Sent when you go live",
+    "row: Pre-show | starts in 7 days",
+    "row: Show time | 12:00–14:00",
+    "row: Post-show | after 14:00",
+    "row: Mode | Pre-recorded set",
+    "row: SoundCloud | After the show",
+    "row: Pre · feed post 4:5 Before the show | Not set up",
+    "row: On air · story 9:16 Sent when you go live | Off",
+    "row: Post · feed post 4:5 Set up after the show | Not set up"
+  ]
 }

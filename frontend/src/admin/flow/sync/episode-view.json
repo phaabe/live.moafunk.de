@@ -1,8 +1,30 @@
 {
   "screen": "episode-view",
   "hash": "e507e038",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: Di 27.10. · Night Shift",
+    "pill: Upcoming · Live · 20:00–22:00",
+    "h2: Details",
+    "row: Host | jonas"
+  ],
+  "extra": [
+    "h1: Night Shift",
+    "h2: Soundcheck",
+    "h2: Show time",
+    "h2: Recording & SoundCloud",
+    "h2: Social media",
+    "pill: Upcoming",
+    "link: live.moafunk.de",
+    "row: Pre-show | starts in 7 days",
+    "row: Show time | 20:00–22:00",
+    "row: Post-show | after 22:00",
+    "row: Studio | Opens Di 27.10. · 19:30",
+    "row: Mode | Live from the Studio",
+    "row: SoundCloud | After the show",
+    "row: Pre · feed post 4:5 Before the show | Not set up",
+    "row: On air · story 9:16 Sent when you go live | Off",
+    "row: Post · feed post 4:5 Set up after the show | Not set up"
+  ]
 }

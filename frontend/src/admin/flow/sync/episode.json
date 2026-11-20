@@ -1,13 +1,49 @@
 {
   "screen": "episode",
   "hash": "e7a8a2aa",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [
     {
       "item": "button: Create guest link",
       "release": "R5"
     }
   ],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: So 25.10. · Brunchtime",
+    "pill: Upcoming · Live · 12:00–14:00",
+    "h2: Next step",
+    "h2: Details",
+    "field: Title",
+    "field: Description",
+    "field: Date",
+    "field: Time",
+    "choice: Live",
+    "choice: Pre-recorded",
+    "button: Save",
+    "button: Cancel booking",
+    "h2: Promotion · Instagram",
+    "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
+    "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public",
+    "h2: Recording",
+    "button: Upload to SoundCloud"
+  ],
+  "extra": [
+    "h1: Brunchtime #31",
+    "h2: Soundcheck",
+    "h2: Show time",
+    "h2: Recording & SoundCloud",
+    "h2: Social media",
+    "pill: Upcoming",
+    "button: Edit",
+    "link: live.moafunk.de",
+    "row: Pre-show | starts in 5 days",
+    "row: Show time | 12:00–14:00",
+    "row: Post-show | after 14:00",
+    "row: Studio | Opens So 25.10. · 11:30",
+    "row: Mode | Live from the Studio",
+    "row: SoundCloud | After the show",
+    "row: Pre · feed post 4:5 Fr 23.10. · 18:00 | Scheduled",
+    "row: On air · story 9:16 Sent when you go live | Scheduled",
+    "row: Post · feed post 4:5 Set up after the show | Not set up"
+  ]
 }

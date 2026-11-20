@@ -852,9 +852,21 @@ export interface AnnouncementMeta {
   services: ServiceSettings;
 }
 
+/**
+ * Where an announcement is, without its text, image or error: what every host
+ * may see on another host's episode (GET …/announcements/status). Drafts are left out.
+ */
+export type AnnouncementStatus = Pick<
+  Announcement,
+  'slot' | 'channel' | 'state' | 'scheduled_at' | 'sent_at' | 'permalink'
+>;
+
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
 
 export const announcementsApi = {
+  /** Read-only status of the slots, for every signed-in user. */
+  status: (showId: number) => api.get<AnnouncementStatus[]>(`${announcementsPath(showId)}/status`),
+
   list: async (showId: number): Promise<Announcement[]> => {
     const r = await api.get<Announcement[] | { announcements: Announcement[] }>(
       announcementsPath(showId)
