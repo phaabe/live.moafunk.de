@@ -1,7 +1,7 @@
 {
   "screen": "schedule",
   "hash": "49407601",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [
     {
       "item": "h2: Free slots",
@@ -20,6 +20,11 @@
       "release": "UNHEARD"
     }
   ],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "nav: Schedule",
+    "nav: My Shows"
+  ],
+  "extra": [
+    "link: My Show"
+  ]
 }

@@ -219,12 +219,11 @@ const links = (selector: string) =>
   ]);
 
 describe('nav', () => {
-  it('gives hosts exactly Dashboard, Schedule and My Shows, on desktop and mobile', async () => {
+  it('gives hosts exactly Dashboard and My Show, on desktop and mobile', async () => {
     await mount(NavBar, 'host');
     const expected = [
       ['Dashboard', '/dashboard'],
-      ['Schedule', '/schedule'],
-      ['My Shows', '/shows'],
+      ['My Show', '/shows'],
     ];
     expect(links('.nav-links')).toEqual(expected);
     expect(links('.mobile-menu-links')).toEqual(expected);
@@ -448,20 +447,47 @@ describe('Schedule states', () => {
 });
 
 describe('My Shows', () => {
-  it("lists the host's Shows with their rhythm", async () => {
-    const router = await mount(HostMyShowsPage, 'host');
-    await vi.waitFor(() => expect(root.querySelectorAll('.shows li')).toHaveLength(2));
-    const rows = [...root.querySelectorAll('.shows a')].map((a) => ({
-      text: [...a.querySelectorAll('span')].map((s) => s.textContent?.trim()).join(' | '),
-      href: a.getAttribute('href'),
+  /** A card's details as "Label | value". */
+  const facts = (card: Element) => [...card.querySelectorAll('dl > div')].map((d) => rowParts(d));
+  const cardButtons = (card: Element) =>
+    [...card.querySelectorAll('button')].map((b) => ({
+      text: b.textContent?.trim(),
+      primary: b.classList.contains('variant-primary'),
     }));
-    expect(rows).toEqual([
-      { text: 'Brunchtime | Sundays · 12:00–14:00', href: '/shows/brunchtime' },
-      { text: 'Night | ', href: '/shows/night' },
+
+  it('shows a single Show as one card with its details as plain text', async () => {
+    mySeries = [
+      {
+        ...BRUNCHTIME,
+        description: 'Sunday brunch sounds, every week from 12:00.',
+        instagram_handle: 'brunchtime',
+      },
+    ];
+    const router = await mount(HostMyShowsPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.my-show-card')).toHaveLength(1));
+    expect(root.querySelector('h1')?.textContent).toBe('My Show');
+    expect(root.querySelector('.show-grid')).toBeNull();
+    const card = root.querySelector('.my-show-card')!;
+    expect(card.querySelector('h2')?.textContent?.trim()).toBe('Brunchtime');
+    expect(card.querySelector('.description')?.textContent).toBe(
+      'Sunday brunch sounds, every week from 12:00.'
+    );
+    expect(facts(card)).toEqual([
+      'Repeats | Every week',
+      'Day | Sunday',
+      'Time | 12:00–14:00',
+      'Instagram | @brunchtime',
+      'Hosts | lena',
     ]);
+    expect(card.querySelector('.read-only')?.textContent?.trim()).toBe('Read only');
+    expect(card.querySelectorAll('input, select, textarea')).toHaveLength(0);
+    expect(cardButtons(card)).toEqual([
+      { text: 'Book Slot', primary: true },
+      { text: 'Edit', primary: false },
+    ]);
+    expect(card.querySelector('.name-link')?.getAttribute('href')).toBe('/shows/brunchtime');
     const text = root.textContent ?? '';
-    expect(text).toContain('My Shows');
-    for (const absent of ['UNHEARD', 'Prepare to stream', 'All Shows']) {
+    for (const absent of ['UNHEARD', 'Episodes', 'Upcoming', 'Free slots']) {
       expect(text).not.toContain(absent);
     }
 
@@ -469,21 +495,46 @@ describe('My Shows', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/new'));
   });
 
+  it('puts more Shows in a grid, each card opening its Show page', async () => {
+    await mount(HostMyShowsPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.my-show-card')).toHaveLength(2));
+    expect(root.querySelector('h1')?.textContent).toBe('Your shows');
+    const cards = [...root.querySelectorAll('.show-grid > .my-show-card')];
+    expect(cards.map((c) => c.querySelector('.name-link')?.getAttribute('href'))).toEqual([
+      '/shows/brunchtime',
+      '/shows/night',
+    ]);
+    expect(facts(cards[0])).toEqual([
+      'Repeats | Every week',
+      'Day · Time | Sunday · 12:00–14:00',
+      'Instagram | Not set',
+      'Hosts | lena',
+    ]);
+    // No card shouts louder than the others: Book Slot is plain in the grid.
+    for (const card of cards) {
+      expect(cardButtons(card)).toEqual([
+        { text: 'Book Slot', primary: false },
+        { text: 'Edit', primary: false },
+      ]);
+    }
+  });
+
   it('offers New show when the host has no Shows yet', async () => {
     mySeries = [];
     await mount(HostMyShowsPage, 'host');
-    await vi.waitFor(() => expect(root.textContent).toContain('New show'));
-    expect(root.querySelectorAll('.shows li')).toHaveLength(0);
+    await vi.waitFor(() => expect(root.textContent).toContain('You have no show yet.'));
+    expect(root.textContent).toContain('New show');
+    expect(root.querySelectorAll('.my-show-card')).toHaveLength(0);
   });
 });
 
 describe('My Shows states', () => {
-  it('shows each Show’s cover in its row', async () => {
+  it('shows each Show’s cover in its card', async () => {
     mySeries = [{ ...BRUNCHTIME, cover_url: '/covers/brunchtime.jpg' }, NIGHT];
     await mount(HostMyShowsPage, 'host');
-    await vi.waitFor(() => expect(root.querySelectorAll('.shows li')).toHaveLength(2));
-    const covers = [...root.querySelectorAll('.shows li')].map(
-      (li) => li.querySelector('.thumb img')?.getAttribute('src') ?? null
+    await vi.waitFor(() => expect(root.querySelectorAll('.my-show-card')).toHaveLength(2));
+    const covers = [...root.querySelectorAll('.my-show-card')].map(
+      (card) => card.querySelector('.cover img')?.getAttribute('src') ?? null
     );
     expect(covers).toEqual(['/covers/brunchtime.jpg', null]);
   });
@@ -494,6 +545,7 @@ describe('My Shows states', () => {
     await vi.waitFor(() =>
       expect(root.querySelector('[role="alert"]')?.textContent).toBe('Could not load your shows.')
     );
+    expect(root.textContent).not.toContain('You have no show yet.');
   });
 });
 
@@ -518,7 +570,7 @@ describe('flow', () => {
   it('My Shows matches the flow', async () => {
     mySeries = [BRUNCHTIME];
     await mount({ render: () => [h(NavBar), h(HostMyShowsPage)] }, 'host');
-    await vi.waitFor(() => expect(root.querySelectorAll('.shows li')).toHaveLength(1));
+    await vi.waitFor(() => expect(root.querySelectorAll('.my-show-card')).toHaveLength(1));
     await expectFlow('my-shows', root);
   });
 

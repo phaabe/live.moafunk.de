@@ -218,6 +218,51 @@
         "row: Listeners now | 37"
       ],
       "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "dashboard",
+      "items": [
+        "nav: Schedule",
+        "nav: My Shows",
+        "link: My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "schedule",
+      "items": [
+        "nav: Schedule",
+        "nav: My Shows",
+        "link: My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-shows",
+      "items": [
+        "nav: Schedule",
+        "nav: My Shows",
+        "link: My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-shows",
+      "items": [
+        "h1: My Shows",
+        "row: Brunchtime | Sundays · 12:00–14:00",
+        "h1: My Show",
+        "h2: Brunchtime",
+        "link: Brunchtime",
+        "button: Book Slot",
+        "button: Edit",
+        "row: Repeats | Every week",
+        "row: Day | Sunday",
+        "row: Time | 12:00–14:00",
+        "row: Instagram | Not set",
+        "row: Hosts | lena"
+      ],
+      "why": "Redesign #1050 (approved in the issue): My Show shows each Show as a card (one card, or a grid of two per row) with its name, the details as plain text (Repeats, Day, Time, Instagram, Hosts), Book Slot and Edit; the name opens the Show page. It replaces the title My Shows and the list row. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

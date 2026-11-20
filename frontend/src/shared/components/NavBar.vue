@@ -24,7 +24,6 @@ const navItems: NavItem[] = [
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
   },
-  { label: 'Schedule', path: '/schedule', roles: ['host'], category: 'Radio' },
   {
     label: 'Calendar',
     path: '/calendar',
@@ -33,7 +32,7 @@ const navItems: NavItem[] = [
   },
   {
     label: 'Shows',
-    hostLabel: 'My Shows',
+    hostLabel: 'My Show',
     path: '/shows',
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
@@ -203,7 +202,7 @@ watch(
         <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">✕</button>
       </div>
       <div class="mobile-menu-links">
-        <!-- Hosts have three items (Dashboard, Schedule, My Shows): no category toggle. -->
+        <!-- Hosts have two items (Dashboard, My Show): no category toggle. -->
         <template v-if="isHost">
           <router-link
             v-for="item in visibleNavItems"
