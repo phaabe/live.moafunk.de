@@ -1,5 +1,7 @@
-//! Host API for show series ("Shows" in the host flow). Every route only sees
-//! the caller's own series; another user's slug is a 404.
+//! Host API for show series ("Shows" in the host flow). Every host may view a
+//! series and its episodes (GET /api/series/:slug); only its owner edits it,
+//! and only the owner or an admin books its episodes. The list and the edit
+//! route only see the caller's own series; another user's slug is a 404 there.
 
 use std::sync::Arc;
 
@@ -34,6 +36,22 @@ pub(super) struct SeriesRow {
 const SERIES_COLUMNS: &str = "id, slug, name, description, cover_key, owner_user_id, \
                               repeat_rule, weekday, start_time, end_time, instagram_handle";
 
+/// A series by slug, whoever owns it. An unknown slug is 404.
+async fn load_series_by_slug(state: &Arc<AppState>, slug: &str) -> Result<SeriesRow> {
+    sqlx::query_as(&format!(
+        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
+    ))
+    .bind(slug)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Show not found".to_string()))
+}
+
+/// The owner or an admin may book and manage the episodes of a series.
+fn may_book(row: &SeriesRow, user: &crate::models::User) -> bool {
+    row.owner_user_id == user.id || user.role_enum().can_access_admin()
+}
+
 /// A series by slug for its owner or an admin (booking endpoints). Another
 /// host gets 403; an unknown slug is 404.
 pub(super) async fn load_series_for_editor(
@@ -41,14 +59,8 @@ pub(super) async fn load_series_for_editor(
     user: &crate::models::User,
     slug: &str,
 ) -> Result<SeriesRow> {
-    let row: SeriesRow = sqlx::query_as(&format!(
-        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
-    ))
-    .bind(slug)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
-    if row.owner_user_id != user.id && !user.role_enum().can_access_admin() {
+    let row = load_series_by_slug(state, slug).await?;
+    if !may_book(&row, user) {
         return Err(AppError::Forbidden(
             "You can only book episodes of your own shows".to_string(),
         ));
@@ -380,6 +392,9 @@ struct EpisodeRow {
     stream_mode: Option<String>,
     wrapup_published_at: Option<String>,
     live_ended_at: Option<String>,
+    has_file: bool,
+    on_soundcloud: bool,
+    soundcloud_public: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -396,29 +411,55 @@ pub struct EpisodeItem {
     status: EpisodeStatus,
     /// "Upcoming" | "Finished · wrap-up open" | "Finished"
     status_label: &'static str,
+    /// A pre-recorded episode has its set file.
+    has_file: bool,
+    /// "public" | "private" once the recording is on SoundCloud, else null.
+    soundcloud: Option<&'static str>,
+}
+
+/// A host of a series. Today that is its owner; a series may get more later.
+#[derive(Debug, Serialize)]
+pub struct SeriesHost {
+    username: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SeriesDetail {
     #[serde(flatten)]
     series: SeriesItem,
+    /// The caller may book and manage its episodes (its owner or an admin).
+    /// Editing the series itself (PUT) stays with its owner.
+    can_edit: bool,
+    hosts: Vec<SeriesHost>,
     /// Newest first.
     episodes: Vec<EpisodeItem>,
 }
 
-/// GET /api/series/:slug — one of the caller's series with its episodes.
+/// GET /api/series/:slug — a series with its episodes. Every host may view
+/// it; `can_edit` says whether the caller may manage it.
 pub async fn api_get_series(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
-    let row = load_own_series(&state, user.id, &slug).await?;
+    let row = load_series_by_slug(&state, &slug).await?;
+    let can_edit = may_book(&row, &user);
     let rhythm_end = row.rhythm().map(|r| r.end_time);
+
+    let hosts: Vec<SeriesHost> = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+        .bind(row.owner_user_id)
+        .fetch_all(&state.db)
+        .await?
+        .into_iter()
+        .map(|username| SeriesHost { username })
+        .collect();
 
     let rows: Vec<EpisodeRow> = sqlx::query_as(
         "SELECT id, title, date, start_time, end_time, stream_mode, wrapup_published_at, \
-                live_ended_at \
+                live_ended_at, prerecorded_filename IS NOT NULL AS has_file, \
+                soundcloud_url IS NOT NULL AS on_soundcloud, \
+                COALESCE(soundcloud_public, 0) != 0 AS soundcloud_public \
          FROM shows WHERE template_id = ? \
          ORDER BY date DESC, start_time DESC, id DESC",
     )
@@ -457,12 +498,20 @@ pub async fn api_get_series(
                 mode_label,
                 status,
                 status_label: status.label(),
+                has_file: e.has_file,
+                soundcloud: match (e.on_soundcloud, e.soundcloud_public) {
+                    (false, _) => None,
+                    (true, true) => Some("public"),
+                    (true, false) => Some("private"),
+                },
             }
         })
         .collect();
 
     Ok(Json(SeriesDetail {
         series: series_item(&state, row).await,
+        can_edit,
+        hosts,
         episodes,
     }))
 }

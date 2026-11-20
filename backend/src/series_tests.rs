@@ -195,8 +195,10 @@ async fn host_creates_a_series_and_sees_its_episodes_by_slug() {
     );
 }
 
+/// Every host may view a series (read-only); only its owner lists it, and
+/// only the owner or an admin may manage it.
 #[tokio::test]
-async fn series_are_only_visible_to_their_owner() {
+async fn every_host_views_a_series_and_only_its_owner_lists_it() {
     let (state, _temp) = state().await;
     let alice = add_user(&state, "alice", "host").await;
     let bob = add_user(&state, "bob", "host").await;
@@ -204,13 +206,19 @@ async fn series_are_only_visible_to_their_owner() {
     let guest = add_user(&state, "guest", "guest").await;
     create(&state, alice, BRUNCHTIME).await.unwrap();
 
+    for (user, can_edit) in [(alice, true), (bob, false), (admin, true)] {
+        let detail = get(&state, user, "brunchtime").await.unwrap();
+        assert_eq!(detail["name"], "Brunchtime");
+        assert_eq!(detail["can_edit"], can_edit);
+        assert_eq!(detail["hosts"], json!([{ "username": "alice" }]));
+    }
     for user in [bob, admin] {
-        assert!(matches!(
-            get(&state, user, "brunchtime").await,
-            Err(AppError::NotFound(_))
-        ));
         assert_eq!(list(&state, user).await["series"], json!([]));
     }
+    assert!(matches!(
+        get(&state, bob, "no-such-show").await,
+        Err(AppError::NotFound(_))
+    ));
     assert!(matches!(
         get(&state, guest, "brunchtime").await,
         Err(AppError::Forbidden(_))
@@ -325,6 +333,68 @@ async fn a_failed_cover_upload_leaves_no_series() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+/// Episode rows carry the set file and the SoundCloud state, so the Show page
+/// can show the recording state of past episodes.
+#[tokio::test]
+async fn episodes_carry_their_file_and_soundcloud_state() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    let series_id = create(&state, host, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let set = episode(&state, series_id, "2099-01-11", "prerecorded").await;
+    let no_set = episode(&state, series_id, "2099-01-04", "prerecorded").await;
+    let public = episode(&state, series_id, "2020-01-12", "live").await;
+    let private = episode(&state, series_id, "2020-01-05", "live").await;
+    let none = episode(&state, series_id, "2019-12-29", "live").await;
+    for (sql, id) in [
+        (
+            "UPDATE shows SET prerecorded_filename = 'set.mp3' WHERE id = ?",
+            set,
+        ),
+        (
+            "UPDATE shows SET soundcloud_url = 'https://soundcloud.com/x/1', \
+             soundcloud_public = 1 WHERE id = ?",
+            public,
+        ),
+        (
+            "UPDATE shows SET soundcloud_url = 'https://soundcloud.com/x/2', \
+             soundcloud_public = 0 WHERE id = ?",
+            private,
+        ),
+    ] {
+        sqlx::query(sql).bind(id).execute(&state.db).await.unwrap();
+    }
+
+    // Another host sees the same rows.
+    for user in [host, other] {
+        let detail = get(&state, user, "brunchtime").await.unwrap();
+        let rows: Vec<(i64, bool, Value)> = detail["episodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["id"].as_i64().unwrap(),
+                    e["has_file"].as_bool().unwrap(),
+                    e["soundcloud"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (set, true, Value::Null),
+                (no_set, false, Value::Null),
+                (public, false, json!("public")),
+                (private, false, json!("private")),
+                (none, false, Value::Null),
+            ]
+        );
+    }
 }
 
 /// The end time never cuts a show: the episode on air stays open past it.
