@@ -255,7 +255,7 @@ const router = createRouter({
     {
       path: '/shows',
       name: 'shows',
-      // Hosts get My Shows (their series); admins keep the Shows page.
+      // Hosts get My Show (their series as cards); admins keep the Shows page.
       component: hostPage(HostMyShowsPage, ShowsPage),
       // Merged Shows + My Shows page — everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },

@@ -248,7 +248,7 @@ async function publish() {
         <span class="dot" aria-hidden="true"></span>{{ instagramPill }}
       </p>
       <div>
-        <BaseButton @click="router.push('/schedule')">Back to Schedule</BaseButton>
+        <BaseButton @click="router.push(backTo)">Back to Show</BaseButton>
       </div>
     </template>
 

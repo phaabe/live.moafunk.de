@@ -13,7 +13,9 @@
     "row: So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live",
     "row: Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live",
     "row: Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded",
-    "row: So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded"
+    "row: So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded",
+    "nav: Schedule",
+    "nav: My Shows"
   ],
   "extra": [
     "h2: On air",
@@ -24,6 +26,7 @@
     "button: Past",
     "button: Upcoming",
     "button: Send",
+    "link: My Show",
     "link: Listen live",
     "link: Open episode",
     "link: Di 20.10. · 20:00–22:00 · Night Shift · jonas | Finished · Live",

@@ -438,15 +438,6 @@
       "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
     },
     {
-      "screen": "schedule",
-      "items": [
-        "nav: Schedule",
-        "nav: My Shows",
-        "link: My Show"
-      ],
-      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
-    },
-    {
       "screen": "my-shows",
       "items": [
         "nav: Schedule",
@@ -611,6 +602,22 @@
         "row: Post · feed post 4:5 Set up after the show | Not set up"
       ],
       "why": "Redesign #1052 (approved in the issue): another host's episode is the same page read-only: the heading box with the host and \"Read only\", the progress bar and the four cards with every status and the public links, no Edit and no buttons. The title is the heading; the Details card and its Host row go. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "done",
+      "items": [
+        "button: Back to Schedule",
+        "button: Back to Show"
+      ],
+      "why": "Redesign #1048 (Schedule merged into the Show page in #1051, approved in the issue): Published goes Back to Show, the episode's Show page. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "new-show",
+      "items": [
+        "back: My Shows",
+        "link: < My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host page is called My Show, so the back link reads < My Show. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

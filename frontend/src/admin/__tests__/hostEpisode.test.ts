@@ -920,8 +920,8 @@ describe('Wrap-up and Done', () => {
     button('Publish').click();
     await vi.waitFor(() => expect(text()).toContain('Episode published'));
     expect(text()).not.toContain('SoundCloud');
-    button('Back to Schedule').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/schedule'));
+    button('Back to Show').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
   });
 
   it('switches between the wrap-up and the episode on one path', async () => {
@@ -1020,7 +1020,7 @@ describe('Wrap-up and Done', () => {
     current = episode({ date: PAST, episode_status: 'finished' });
     await mount();
     expect(text()).toContain('Episode published');
-    expect(text()).toContain('Back to Schedule');
+    expect(text()).toContain('Back to Show');
   });
 });
 

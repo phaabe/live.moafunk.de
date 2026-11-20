@@ -290,7 +290,7 @@ describe('New Show', () => {
     await vi.waitFor(() => expect(root.textContent).toContain('New Show'));
     const text = root.textContent ?? '';
     for (const part of [
-      '< My Shows',
+      '< My Show',
       'A show is your series. You book its episodes after this.',
       'Show cover · drop an image',
       'Name',
