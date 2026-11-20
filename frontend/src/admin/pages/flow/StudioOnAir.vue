@@ -14,10 +14,12 @@ import {
   useStreamSocket,
   useUploadHealth,
   useAutoBitrate,
+  DEVICE_ENDED_MESSAGE,
   type UploadQualityMode,
 } from '@admin/composables';
-import { streamApi, recordingApi } from '@admin/api';
+import { recordingApi } from '@admin/api';
 import DbMeter from '@admin/components/DbMeter.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 
 /**
  * On Air for a live episode (flow screen `studio-onair`). Only End Episode
@@ -40,9 +42,44 @@ const socket = useStreamSocket({
     error.value = message;
   },
 });
+// ─── Audio input gone (flow screen `studio-onair-noinput`) ──────────────────
+// The device's track ended: listeners hear silence. The notice and Audio
+// input stay until a new input sends audio.
+const inputGone = ref(false);
+const pickedInput = ref('');
 audioCapture.setOnError((message) => {
-  error.value = message;
+  if (message !== DEVICE_ENDED_MESSAGE) {
+    error.value = message;
+    return;
+  }
+  inputGone.value = true;
+  void audioCapture.listDevices();
 });
+// A plugged-in device shows up in the list.
+function onDeviceChange() {
+  if (inputGone.value) void audioCapture.listDevices();
+}
+navigator.mediaDevices?.addEventListener('devicechange', onDeviceChange);
+
+async function pickInput() {
+  const id = pickedInput.value;
+  // Back to the placeholder, so picking the same input again is a change too.
+  pickedInput.value = '';
+  if (!id) return;
+  const ok =
+    id === 'screen'
+      ? await audioCapture.captureScreenAudio()
+      : await audioCapture.captureDevice(id);
+  if (!ok) {
+    error.value = audioCapture.error.value;
+    return;
+  }
+  // The capture stopped the old recorder; the new one sends to the same socket.
+  if (audioCapture.startRecording()) {
+    inputGone.value = false;
+    error.value = null;
+  }
+}
 
 // ─── On air · hh:mm:ss · REC ────────────────────────────────────────────────
 const now = ref(Date.now());
@@ -66,19 +103,6 @@ async function pollRecording() {
 const recordingPoll = flow.recordStream.value ? setInterval(pollRecording, 3000) : null;
 if (recordingPoll) void pollRecording();
 
-// ─── Listeners now ──────────────────────────────────────────────────────────
-const listeners = ref<number | null>(null);
-async function pollListeners() {
-  try {
-    const metrics = await streamApi.metrics();
-    listeners.value = metrics.online ? metrics.total_listeners : null;
-  } catch {
-    listeners.value = null;
-  }
-}
-const listenerPoll = setInterval(pollListeners, 10000);
-void pollListeners();
-
 // ─── Connection ─────────────────────────────────────────────────────────────
 // The upload telemetry also drives the automatic quality step-down that the
 // old connection card ran, so a weak line still adapts.
@@ -93,6 +117,12 @@ useAutoBitrate({
   ticks: health.ticks,
   onChange: (kbps) => audioCapture.setStreamBitsPerSecond(kbps * 1000),
 });
+/** Colour of the Connection tile: stable green, reconnecting or slow amber, lost red. */
+const connectionTone = computed(() => {
+  if (connection.value === 'stable') return 'ok';
+  return connection.value === 'lost' ? 'bad' : 'warn';
+});
+
 const connection = computed(() => {
   switch (socket.state.value) {
     case 'live':
@@ -107,8 +137,13 @@ const connection = computed(() => {
 });
 
 // ─── End Episode ────────────────────────────────────────────────────────────
+// The first End Episode only asks; the stream and the recording go on until
+// the second one.
+const confirming = ref(false);
 async function endEpisode() {
   ending.value = true;
+  // Send the recorder's last chunk before "stop" closes the stream.
+  await audioCapture.stopRecordingAndFlush();
   // "stop" ends the stream and the recording on the backend.
   socket.stopStream();
   audioCapture.stopCapture();
@@ -119,100 +154,277 @@ async function endEpisode() {
 
 onUnmounted(() => {
   clearInterval(clock);
-  clearInterval(listenerPoll);
   if (recordingPoll) clearInterval(recordingPoll);
+  navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 });
 </script>
 
 <template>
-  <div class="on-air">
-    <h1 class="page-title">Studio</h1>
-    <p class="pill live">On air · {{ elapsed }}<template v-if="recording"> · REC</template></p>
-
-    <DbMeter
-      :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
-      label="Live level"
-    />
-
-    <dl class="facts">
-      <div class="fact">
-        <dt>Listeners now</dt>
-        <dd>{{ listeners ?? '—' }}</dd>
-      </div>
-      <div class="fact">
-        <dt>Connection</dt>
-        <dd :class="['connection', connection === 'stable' ? 'ok' : 'warn']">{{ connection }}</dd>
-      </div>
-    </dl>
-
-    <p v-if="socket.audioDropped.value" class="field-error" role="alert">
+  <div class="on-air host-page">
+    <h1 class="page-title studio-title">Studio</h1>
+    <!-- Text stays "On air · 00:42:10 · REC"; the clock is drawn big to read from afar. -->
+    <p class="pill status-banner live on-air-pill">
+      <span class="dot" aria-hidden="true"></span><span class="on-air-label">On air</span
+      ><span class="sep"> · </span><span class="on-air-clock">{{ elapsed }}</span
+      ><template v-if="recording"
+        ><span class="sep"> · </span
+        ><span class="rec"><i aria-hidden="true"></i>REC</span></template
+      >
+    </p>
+    <p v-if="socket.audioDropped.value" class="notice warn" role="alert">
       The connection was down for more than 10 minutes. The recording misses some audio.
     </p>
-    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-    <div>
-      <BaseButton variant="danger" :loading="ending" @click="endEpisode">End Episode</BaseButton>
+    <section v-if="inputGone" class="fix">
+      <p class="field-error" role="alert">{{ DEVICE_ENDED_MESSAGE }}</p>
+      <label class="input-field">
+        <span class="label">Audio input</span>
+        <select v-model="pickedInput" class="input-select" @change="pickInput">
+          <option value="">Select audio input</option>
+          <option
+            v-for="device in audioCapture.devices.value"
+            :key="device.deviceId"
+            :value="device.deviceId"
+          >
+            {{ device.label }}
+          </option>
+          <option value="screen">Screen audio</option>
+        </select>
+      </label>
+    </section>
+    <p v-if="error" class="notice bad" role="alert">{{ error }}</p>
+    <section class="board-card meter">
+      <div class="board-card-body">
+        <DbMeter
+          :media-stream="audioCapture.processedStream.value ?? audioCapture.mediaStream.value"
+          label="Live level"
+        />
+      </div>
+    </section>
+    <dl class="stat-tiles">
+      <div :class="['connection-tile', connectionTone]">
+        <dt><BoardIcon name="wifi" :size="14" />Connection</dt>
+        <dd class="connection">{{ connection }}</dd>
+      </div>
+    </dl>
+    <!-- End Episode asks once (flow screen studio-onair-end): one slip must not end the broadcast. -->
+    <div :class="['end', { confirming }]">
+      <template v-if="confirming">
+        <p class="end-question">End the episode?</p>
+        <div class="end-actions">
+          <BaseButton variant="secondary" class="xl" :disabled="ending" @click="confirming = false"
+            >Keep on air</BaseButton
+          >
+          <BaseButton variant="danger" class="xl" :loading="ending" @click="endEpisode"
+            >End Episode</BaseButton
+          >
+        </div>
+      </template>
+      <BaseButton v-else variant="danger" class="xl end-button" @click="confirming = true"
+        >End Episode</BaseButton
+      >
     </div>
   </div>
 </template>
 
 <style scoped>
 .on-air {
-  max-width: 560px;
+  max-width: 1120px;
   margin: 0 auto;
+}
+
+.studio-title {
+  font-size: 1.25rem;
+  letter-spacing: 0.06em;
+  color: #a8a8bc;
+}
+
+.on-air-pill {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    'dot label rec'
+    'clock clock clock';
+  align-items: center;
+  gap: 6px 10px;
+  padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
+}
+
+.on-air-pill .dot {
+  grid-area: dot;
+}
+
+.on-air-label {
+  grid-area: label;
+  font: 700 13px var(--font-ui);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.on-air-clock {
+  grid-area: clock;
+  font: 700 clamp(3.5rem, 12vw, 7.5rem) / 1 var(--font-family);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.rec {
+  grid-area: rec;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: var(--color-error);
+  color: #000;
+  font: 700 12px var(--font-family);
+  letter-spacing: 0.1em;
+}
+
+.rec i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #000;
+}
+
+.notice {
+  margin: 0;
+  padding: var(--spacing-md);
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
+}
+
+.notice.bad,
+.fix {
+  border-color: #6b2424;
+  border-left-color: var(--color-error);
+  background: rgba(239, 68, 68, 0.12);
+  color: #ffd2cc;
+}
+
+.fix {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: 12px;
+  padding: var(--spacing-md);
+  border: 1px solid #6b2424;
+  border-left: 4px solid var(--color-error);
+  border-radius: var(--radius-xl);
 }
 
-.page-title {
-  margin: 0;
+.fix .field-error {
+  color: #ffd2cc;
+  font-weight: 700;
 }
 
-.pill {
-  align-self: flex-start;
-  margin: 0;
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  font-variant-numeric: tabular-nums;
-}
-
-.pill.live {
-  border-color: var(--color-error);
-  color: var(--color-error);
-  font-weight: var(--font-weight-bold);
-}
-
-.facts {
-  margin: 0;
+.input-field {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xs);
+  gap: 6px;
 }
 
-.fact {
+.input-field .label {
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffc2bb;
+}
+
+.input-select {
+  min-height: 48px;
+  padding: 0 var(--spacing-md);
+  background: #06060f;
+  border: 2px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  color: #fff;
+  font: 600 var(--font-size-md) var(--font-ui);
+}
+
+.stat-tiles dt {
   display: flex;
-  justify-content: space-between;
-  gap: var(--spacing-md);
+  align-items: center;
+  gap: 6px;
 }
 
-.fact dt {
-  color: var(--color-text-muted);
+.stat-tiles dd {
+  font: 700 2.5rem/1.1 var(--font-family);
 }
 
-.fact dd {
+.stat-tiles dd.connection {
+  font-size: 1.5rem;
+  line-height: 1.7;
+}
+
+.connection-tile.ok dd {
+  color: #4ade80;
+}
+
+.connection-tile.warn {
+  border-color: #5a4416;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.connection-tile.warn dd {
+  color: #fbbf24;
+}
+
+.connection-tile.bad {
+  border-color: #6b2424;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.connection-tile.bad dd {
+  color: #ff8a80;
+}
+
+.end {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid #1e1e34;
+}
+
+.end-button {
+  min-width: 240px;
+}
+
+.end.confirming {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  border: 2px solid #5c2020;
+  border-radius: var(--radius-xl);
+  background: #120808;
+}
+
+.end-question {
   margin: 0;
-  font-variant-numeric: tabular-nums;
+  font: 700 1.25rem var(--font-family);
+  color: #fff;
 }
 
-.connection.warn {
-  color: var(--color-warning);
+.end-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spacing-sm);
 }
 
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
+/* Phones: End Episode alone in a bar at the bottom, in thumb reach. */
+@media (max-width: 640px) {
+  .end {
+    position: sticky;
+    bottom: 0;
+    padding: var(--spacing-sm) 0 var(--spacing-md);
+    background: #000;
+  }
+
+  .end-button {
+    width: 100%;
+  }
 }
 </style>

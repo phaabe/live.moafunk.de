@@ -5,12 +5,21 @@ import {
   useAudioCapture,
   useStreamSocket,
   useUploadHealth,
+  useDbMeter,
+  useSoundcheck,
+  createReturnFeed,
+  getStreamSocketStats,
   STREAM_AUDIO_BITS_PER_SECOND,
   BROWSER_UNSUPPORTED_MESSAGE,
   streamRecordingMimeType,
   type UseStreamSocketOptions,
+  type ReturnFeed,
+  type SoundcheckSource,
+  type SoundcheckStep,
+  type SoundcheckStepState,
 } from '@admin/composables';
 import DbMeter from '@admin/components/DbMeter.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
 
@@ -24,11 +33,16 @@ import { config } from '@/config';
  * to navigate. Uses the useAudioCapture / useHostFlow singletons, so capture
  * survives into the on-air step regardless of which surface ran the test.
  *
- * `studio` renders the flow's Studio controls: the input level meter, "Audio
- * input" (screen audio is one of its options) and "Test broadcast sounds
- * right", which can be ticked once a test broadcast sent audio.
+ * `studio` renders the flow's Studio card: the input level meter, "Audio
+ * input" (screen audio is one of its options) and the soundcheck: the host
+ * tests the music and the mic, then useSoundcheck checks the server and the
+ * return feed and proposes the result. With `inputOnly` (Studio · Back on
+ * air) the card shows only the meter and the input, no soundcheck.
  */
-const props = withDefaults(defineProps<{ studio?: boolean }>(), { studio: false });
+const props = withDefaults(defineProps<{ studio?: boolean; inputOnly?: boolean }>(), {
+  studio: false,
+  inputOnly: false,
+});
 
 const emit = defineEmits<{
   /** The host confirmed the test stream sounds right (test marked passed). */
@@ -187,36 +201,38 @@ function stopTestRecording() {
   testRecorder = null;
 }
 
-async function runTest() {
-  if (!previewUrl) {
-    testPhase.value = 'error';
-    testError.value = 'Test stream is not configured on this server.';
-    return;
-  }
-  if (!browserSupported) {
-    testPhase.value = 'error';
-    testError.value = BROWSER_UNSUPPORTED_MESSAGE;
-    return;
-  }
+/** Start the test broadcast and its recorder. Rejects with the reason. */
+async function startBroadcast() {
+  if (!previewUrl) throw new Error('Test stream is not configured on this server.');
+  if (!browserSupported) throw new Error(BROWSER_UNSUPPORTED_MESSAGE);
 
   testError.value = null;
   testPhase.value = 'connecting';
   sentChunks.value = 0;
-  // A new test has to be listened to again.
-  flow.setLiveTestPassed(false);
   // A user gesture: start the capture's audio context if it is suspended.
   audioCapture.resumeAudioContext();
 
+  useStreamSocket(socketCallbacks);
   try {
-    useStreamSocket(socketCallbacks);
     // Connect in TEST mode → backend pushes to `/test`, not `/live`.
     await streamSocket.connect(false, undefined, true);
-    if (!startTestRecording()) {
-      streamSocket.stopStream();
-    }
   } catch {
+    throw new Error('Failed to connect to the test stream.');
+  }
+  if (!startTestRecording()) {
+    streamSocket.stopStream();
+    throw new Error(testError.value ?? 'Failed to start audio');
+  }
+}
+
+async function runTest() {
+  // A new test has to be listened to again.
+  flow.setLiveTestPassed(false);
+  try {
+    await startBroadcast();
+  } catch (e) {
     testPhase.value = 'error';
-    testError.value = 'Failed to connect to the test stream.';
+    testError.value = e instanceof Error ? e.message : 'Failed to connect to the test stream.';
     stopTestRecording();
   }
 }
@@ -229,6 +245,7 @@ function stopTestBroadcast() {
 
 /** Reset test state (e.g. after switching inputs). */
 function resetTest() {
+  soundcheck.reset();
   stopTestBroadcast();
   testPhase.value = 'ready';
   testError.value = null;
@@ -246,18 +263,58 @@ function markTestPassed() {
   emit('passed');
 }
 
-/** Studio: ticked once a test broadcast sent audio (or the test passed before). */
-const canTickTest = computed(
-  () => flow.liveTestPassed.value || (testPhase.value === 'live' && sentChunks.value > 0)
+// ─── Studio soundcheck ───────────────────────────────────────────────────────
+// What is sent is what is measured: the processed stream when there is one.
+const sentStream = computed(() =>
+  props.studio ? (audioCapture.processedStream.value ?? audioCapture.mediaStream.value) : null
 );
+const sentMeter = useDbMeter(sentStream);
 
-function onTestSoundsRight(event: Event) {
-  if ((event.target as HTMLInputElement).checked) {
-    markTestPassed();
-  } else {
-    flow.setLiveTestPassed(false);
-  }
-}
+// One context for the return feed. Made in a click, so it may play.
+let returnContext: AudioContext | null = null;
+const noReturn: ReturnFeed = {
+  peakDb: () => null,
+  playing: () => false,
+  setAudible: () => {},
+  close: () => {},
+};
+
+const soundcheck = useSoundcheck({
+  inputLevel: () =>
+    audioCapture.isCapturing.value && sentStream.value
+      ? { rmsDb: sentMeter.db.value, peakDb: sentMeter.peakDb.value }
+      : null,
+  inputLabel: () => capturedLabel.value,
+  startBroadcast,
+  stopBroadcast: stopTestBroadcast,
+  broadcastError: () => (testPhase.value === 'error' ? testError.value : null),
+  sentChunks: () => sentChunks.value,
+  // Counted by the server and sent back with each pong: proof that audio arrived.
+  serverChunks: () => getStreamSocketStats().serverChunks,
+  openReturn: () => {
+    if (!previewUrl) return noReturn;
+    returnContext ??= new AudioContext();
+    return createReturnFeed(previewUrl, returnContext);
+  },
+  setPassed: (passed) => flow.setLiveTestPassed(passed),
+});
+
+const STATE_LABELS: Record<SoundcheckStepState, string> = {
+  pending: 'Waiting',
+  running: 'Checking',
+  ok: 'OK',
+  warn: 'Warning',
+  fail: 'Failed',
+  skipped: 'Skipped',
+};
+
+// Music and Mic have their buttons in the row; the host starts each test.
+const isSource = (id: SoundcheckStep['id']) => id === 'music' || id === 'mic';
+const testSource = (id: SoundcheckStep['id']) => void soundcheck.test(id as SoundcheckSource);
+const skipSource = (id: SoundcheckStep['id']) => void soundcheck.skip(id as SoundcheckSource);
+
+// Go Live uses the same socket: the page stops the test before it connects.
+defineExpose({ stopTest: () => soundcheck.dispose() });
 
 // ─── Rehearsal connection verdict (#275) ─────────────────────────────────────
 // The same browser-side upload telemetry as the on-air connection card runs
@@ -277,6 +334,8 @@ onUnmounted(() => {
     deviceRefreshInterval = null;
   }
   // Never leave a producer pushing to `/test` after navigating away.
+  soundcheck.dispose();
+  void returnContext?.close();
   if (testActive.value) {
     stopTestBroadcast();
   }
@@ -286,69 +345,160 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="studio" class="live-setup">
+  <div v-if="studio" class="live-setup studio-chain">
     <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
-
-    <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
-
-    <label class="ls-field">
-      <span class="ls-label">Audio input</span>
-      <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
-        <option value="">Select audio input</option>
-        <option
-          v-for="device in audioCapture.devices.value"
-          :key="device.deviceId"
-          :value="device.deviceId"
+    <!-- One card: input, then the soundcheck. Go Live is on the page. -->
+    <section class="studio-step">
+      <span class="step-icon" aria-hidden="true"><BoardIcon name="mic" :size="18" /></span>
+      <div class="step-body">
+        <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
+        <label class="ls-field">
+          <span class="ls-label">Audio input</span>
+          <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
+            <option value="">Select audio input</option>
+            <option
+              v-for="device in audioCapture.devices.value"
+              :key="device.deviceId"
+              :value="device.deviceId"
+            >
+              {{ device.label }}
+            </option>
+            <option value="screen">Screen audio</option>
+          </select>
+        </label>
+        <p v-if="!inputOnly" class="ls-muted">
+          Music and mic use this one input. You do not need two: test them one after the other
+          below.
+        </p>
+        <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
+        <ol v-if="!inputOnly" class="sc-steps" aria-live="polite">
+          <li
+            v-for="step in soundcheck.steps.value"
+            :key="step.id"
+            :class="['sc-step', step.state]"
+          >
+            <span class="sc-state" role="img" :aria-label="STATE_LABELS[step.state]"></span>
+            <span :id="`sc-name-${step.id}`" class="sc-name">{{ step.name }}</span>
+            <span class="sc-detail">{{ step.detail }}</span>
+            <span v-if="isSource(step.id)" class="sc-buttons">
+              <button
+                v-if="step.state === 'running'"
+                class="ls-btn-secondary"
+                type="button"
+                :aria-describedby="`sc-name-${step.id}`"
+                @click="soundcheck.stop()"
+              >
+                Stop
+              </button>
+              <template v-else-if="step.state === 'pending' || step.state === 'skipped'">
+                <button
+                  class="ls-btn-primary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="testSource(step.id)"
+                >
+                  Start test
+                </button>
+                <button
+                  v-if="step.state === 'pending'"
+                  class="ls-btn-secondary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="skipSource(step.id)"
+                >
+                  Skip
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  class="ls-btn-secondary"
+                  type="button"
+                  :disabled="soundcheck.running.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="testSource(step.id)"
+                >
+                  Re-run
+                </button>
+                <button
+                  class="ls-btn-secondary"
+                  type="button"
+                  :aria-pressed="soundcheck.listening.value"
+                  :aria-describedby="`sc-name-${step.id}`"
+                  @click="soundcheck.setListening(!soundcheck.listening.value)"
+                >
+                  {{ soundcheck.listening.value ? 'Stop listening' : 'Listen to return feed' }}
+                </button>
+              </template>
+            </span>
+          </li>
+        </ol>
+        <div v-if="!inputOnly" class="sc-result" aria-live="polite">
+          <p v-if="soundcheck.prompt.value" class="sc-question">
+            {{ soundcheck.prompt.value }}
+          </p>
+          <p v-else-if="flow.liveTestPassed.value" class="pill status-banner ok">
+            <span class="dot" aria-hidden="true"></span
+            >{{
+              soundcheck.outcome.value === 'ok'
+                ? 'Sounds good — ready to go live'
+                : 'Soundcheck confirmed · ready to go live'
+            }}
+          </p>
+          <p v-else-if="soundcheck.outcome.value === 'manual'" class="sc-question">
+            Do you hear your audio? This browser cannot measure the return feed.
+          </p>
+          <p v-else-if="soundcheck.problem.value" class="notice" role="alert">
+            {{ soundcheck.problem.value }}
+          </p>
+        </div>
+        <div v-if="!inputOnly" class="sc-actions">
+          <template v-if="!soundcheck.running.value">
+            <button
+              v-if="soundcheck.outcome.value === 'manual' && !flow.liveTestPassed.value"
+              class="ls-btn-success"
+              type="button"
+              @click="soundcheck.confirm()"
+            >
+              Sounds right
+            </button>
+            <button
+              v-if="flow.liveTestPassed.value || soundcheck.outcome.value === 'manual'"
+              class="ls-btn-secondary"
+              type="button"
+              @click="soundcheck.reject()"
+            >
+              Not OK
+            </button>
+            <button
+              v-else-if="soundcheck.outcome.value === 'problem' && soundcheck.canOverride.value"
+              class="ls-btn-secondary"
+              type="button"
+              @click="soundcheck.confirm()"
+            >
+              Confirm anyway
+            </button>
+          </template>
+        </div>
+        <p v-if="soundcheck.listening.value" class="ls-muted">
+          Use <strong>headphones</strong>: the return feed runs a few seconds behind live, so
+          speakers will echo.
+        </p>
+        <p v-if="soundcheck.listenError.value" class="ls-error" role="alert">
+          {{ soundcheck.listenError.value }}
+        </p>
+        <button
+          v-if="isDev && !inputOnly && !flow.liveTestPassed.value"
+          class="ls-dev-skip"
+          type="button"
+          @click="markTestPassed"
         >
-          {{ device.label }}
-        </option>
-        <option value="screen">Screen audio</option>
-      </select>
-    </label>
-    <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
-
-    <div class="ls-check-row">
-      <label class="ls-check">
-        <input
-          type="checkbox"
-          :checked="flow.liveTestPassed.value"
-          :disabled="!canTickTest"
-          @change="onTestSoundsRight"
-        />
-        Test broadcast sounds right
-      </label>
-      <button v-if="testActive" class="ls-btn-secondary" type="button" @click="retryTest">
-        Stop test
-      </button>
-      <button
-        v-else
-        class="ls-btn-secondary"
-        type="button"
-        :disabled="!browserSupported || !audioCapture.isCapturing.value || !previewUrl"
-        @click="runTest"
-      >
-        Start test
-      </button>
-    </div>
-    <StreamPreviewPlayer v-if="testPhase === 'live' && previewUrl" :src="previewUrl" />
-    <p v-if="testPhase === 'connecting'" class="ls-muted">Connecting to the test stream…</p>
-    <p v-else-if="testPhase === 'live' && sentChunks === 0" class="ls-muted">
-      Waiting for audio… If this stays, check that your input is active.
-    </p>
-    <p v-else-if="testPhase === 'error'" class="ls-error">
-      {{ testError || 'An error occurred during the test.' }}
-    </p>
-
-    <button
-      v-if="isDev && !flow.liveTestPassed.value"
-      class="ls-dev-skip"
-      type="button"
-      @click="markTestPassed"
-    >
-      🛠 Skip test (dev)
-    </button>
+          🛠 Skip test (dev)
+        </button>
+      </div>
+    </section>
   </div>
-
   <div v-else class="live-setup">
     <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
 
@@ -485,22 +635,6 @@ onUnmounted(() => {
 .ls-label {
   font-size: var(--font-size-sm);
   color: var(--color-text-muted);
-}
-
-.ls-check-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-sm);
-  flex-wrap: wrap;
-}
-
-.ls-check {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  font-size: var(--font-size-sm);
-  color: var(--color-text);
 }
 
 .ls-device-row {
@@ -763,5 +897,222 @@ onUnmounted(() => {
   border: 2px dashed #000;
   border-radius: var(--radius-md);
   cursor: pointer;
+}
+
+/* Studio: one card, all of it visible. */
+
+.studio-step {
+  display: flex;
+  gap: 12px;
+  padding: var(--spacing-md);
+  background: var(--color-surface);
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-xl);
+}
+
+.step-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1.5px solid var(--color-primary);
+  border-radius: 16px;
+  background: var(--color-surface-alt);
+  color: var(--color-primary);
+}
+
+.step-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.studio-chain .ls-label {
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.studio-chain .ls-select {
+  min-height: 44px;
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-md);
+}
+
+.studio-chain button {
+  min-height: 44px;
+}
+
+.studio-chain button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.sc-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-lg);
+}
+
+.sc-step {
+  display: grid;
+  grid-template-columns: 24px 7.5em 1fr auto;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: 60px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.sc-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.sc-buttons .ls-btn-primary {
+  align-self: auto;
+}
+
+.sc-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Phones: the buttons go under the row's text. */
+@media (max-width: 640px) {
+  .sc-step {
+    grid-template-columns: 24px 1fr;
+  }
+
+  .sc-detail,
+  .sc-buttons {
+    grid-column: 2;
+  }
+}
+
+.sc-step + .sc-step {
+  border-top: 1px solid #2a2a42;
+}
+
+.sc-name {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* The state is a shape and a colour; its name is the aria-label. */
+.sc-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #4a4a66;
+  border-radius: 50%;
+  font: 700 13px/1 var(--font-ui);
+}
+
+.sc-step.running .sc-state {
+  border-color: var(--color-primary);
+  border-top-color: transparent;
+  animation: sc-spin 0.9s linear infinite;
+}
+
+.sc-step.ok .sc-state {
+  border-color: var(--color-success);
+  background: var(--color-success);
+  color: #000;
+}
+
+.sc-step.ok .sc-state::before {
+  content: '✓';
+}
+
+.sc-step.warn .sc-state {
+  border-color: var(--color-warning);
+  border-radius: 4px;
+  background: var(--color-warning);
+  color: #000;
+}
+
+.sc-step.warn .sc-state::before {
+  content: '!';
+}
+
+.sc-step.fail .sc-state {
+  border-color: var(--color-error);
+  border-radius: 4px;
+  background: var(--color-error);
+  color: #000;
+}
+
+.sc-step.fail .sc-state::before {
+  content: '✕';
+}
+
+.sc-step.skipped .sc-state::before {
+  content: '–';
+}
+
+.sc-step.ok .sc-detail,
+.sc-step.running .sc-detail {
+  color: var(--color-text);
+}
+
+.sc-step.warn .sc-detail {
+  color: #fde7b0;
+}
+
+.sc-step.fail .sc-detail {
+  color: #ffd2cc;
+}
+
+@keyframes sc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-step.running .sc-state {
+    animation: none;
+  }
+}
+
+.sc-result:empty {
+  display: none;
+}
+
+.sc-result p {
+  margin: 0;
+}
+
+.sc-question {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.sc-result .notice {
+  padding: var(--spacing-md);
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
+}
+
+.sc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
 }
 </style>

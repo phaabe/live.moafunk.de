@@ -51,7 +51,8 @@ async fn create_session_in_db(pool: &sqlx::SqlitePool, user_id: i64) -> Result<S
     sqlx::query("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)")
         .bind(&token)
         .bind(user_id)
-        .bind(expires_at.to_rfc3339())
+        // SQLite's own format, so `expires_at` compares right with `datetime('now')`.
+        .bind(expires_at.format("%Y-%m-%d %H:%M:%S").to_string())
         .execute(&mut *tx)
         .await?;
 
@@ -120,11 +121,12 @@ pub fn can_control_stream(user: &models::User, current_user: Option<&str>) -> bo
 pub async fn get_current_user(state: &Arc<AppState>, token: Option<&str>) -> Option<models::User> {
     let token = token?;
 
+    // Older rows hold RFC 3339 (`...T...+00:00`); `datetime()` reads both formats.
     let user: Option<models::User> = sqlx::query_as(
         r#"
         SELECT u.* FROM users u
         INNER JOIN sessions s ON s.user_id = u.id
-        WHERE s.token = ? AND s.expires_at > datetime('now')
+        WHERE s.token = ? AND datetime(s.expires_at) > datetime('now')
         "#,
     )
     .bind(token)
@@ -277,6 +279,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first, later);
+    }
+
+    /// A session lives seven days and is refused one minute after it ends,
+    /// also on the same day and also for rows stored as RFC 3339.
+    #[tokio::test]
+    async fn sessions_expire_on_time_in_both_stored_formats() {
+        let (state, _temp) = crate::broadcast_tests::state().await;
+        let host = crate::broadcast_tests::add_user(&state, "host", "host").await;
+        let token = create_session(&state, host).await.unwrap();
+        let in_seven_days: bool = sqlx::query_scalar(
+            "SELECT expires_at > datetime('now', '+7 days', '-1 minute') \
+             AND expires_at < datetime('now', '+7 days', '+1 minute') \
+             FROM sessions WHERE token = ?",
+        )
+        .bind(&token)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert!(in_seven_days);
+        assert!(get_current_user(&state, Some(&token)).await.is_some());
+
+        let minute = Duration::minutes(1);
+        for (expires_at, valid) in [
+            ((Utc::now() - minute).to_rfc3339(), false),
+            ((Utc::now() + minute).to_rfc3339(), true),
+            (
+                (Utc::now() - minute)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+                false,
+            ),
+        ] {
+            sqlx::query("UPDATE sessions SET expires_at = ? WHERE token = ?")
+                .bind(&expires_at)
+                .bind(&token)
+                .execute(&state.db)
+                .await
+                .unwrap();
+            assert_eq!(
+                get_current_user(&state, Some(&token)).await.is_some(),
+                valid,
+                "{expires_at}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -116,6 +116,10 @@ pub struct Config {
     // Prod account (moafunk_radio)
     pub instagram_access_token_prod: Option<String>,
     pub instagram_business_account_id_prod: Option<String>,
+    /// Instagram account this server posts announcements to: `dev` (test
+    /// account) or `prod`. Set per environment, never per request.
+    #[serde(default = "default_instagram_account")]
+    pub instagram_account: String,
     // Facebook App credentials for token refresh
     pub facebook_app_id: Option<String>,
     pub facebook_app_secret: Option<String>,
@@ -137,6 +141,16 @@ pub struct Config {
     /// configured and authorized; otherwise the auto-upload silently no-ops.
     #[serde(default = "default_true")]
     pub soundcloud_auto_upload: bool,
+    /// SoundCloud account (permalink) this server uploads to. When set, a
+    /// login with any other account is refused (production: the station
+    /// account, staging: the test account).
+    pub soundcloud_account: Option<String>,
+    /// Staging only: after each upload keep this many newest tracks of
+    /// `soundcloud_account` and delete the older ones.
+    pub soundcloud_keep_tracks: Option<usize>,
+    /// Production only: staging's SoundCloud callback. The app has one redirect
+    /// URI (production's), so logins started on staging are sent on to it.
+    pub soundcloud_forward_url: Option<String>,
 
     // Telegram Bot settings (optional - for admin notifications and control)
     /// Master kill-switch for the Telegram bot. Defaults to `false` (off): the
@@ -162,6 +176,10 @@ pub struct Config {
     pub admin_base_url: String,
 }
 
+fn default_instagram_account() -> String {
+    "dev".to_string()
+}
+
 fn default_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -183,7 +201,8 @@ fn default_database_url() -> String {
 }
 
 fn default_max_file_size() -> u64 {
-    180
+    // The artist form allows 500 MB per file (unheard-artists-form.ts).
+    500
 }
 
 fn default_max_upload_size() -> u64 {

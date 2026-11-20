@@ -449,6 +449,56 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // Length of a pre-recorded set booked through Book Slot (from ffprobe).
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     crate::series::migrate(pool).await?;
+    // The host's own Instagram account, without '@'.
+    add_column_if_missing(pool, "show_templates", "instagram_handle", "TEXT").await?;
+    // Announcements of an episode: one per (episode, slot, channel).
+    // scheduled_at is UTC RFC 3339; anchor_offset_minutes is relative to the
+    // episode start.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS announcements (
+            id INTEGER PRIMARY KEY,
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            slot TEXT NOT NULL CHECK (slot IN ('pre', 'onair', 'post')),
+            channel TEXT NOT NULL DEFAULT 'instagram',
+            state TEXT NOT NULL CHECK (state IN ('draft', 'pending_approval', 'scheduled',
+                'armed', 'waiting_soundcloud', 'sent', 'failed', 'cancelled', 'rejected')),
+            anchor_offset_minutes INTEGER,
+            scheduled_at TEXT,
+            headline TEXT,
+            caption TEXT,
+            image_source TEXT NOT NULL DEFAULT 'cover'
+                CHECK (image_source IN ('cover', 'upload', 'guest')),
+            image_key TEXT,
+            layout TEXT NOT NULL DEFAULT 'band' CHECK (layout IN ('band', 'split')),
+            collaborator INTEGER NOT NULL DEFAULT 1,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            sent_at TEXT,
+            permalink TEXT,
+            media_id TEXT,
+            error TEXT,
+            UNIQUE (show_id, slot, channel)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Set while the scheduler sends the row, so a restart never posts twice.
+    add_column_if_missing(pool, "announcements", "send_claimed_at", "TEXT").await?;
+    // The host's time before the backend moved the post (approve, unlock,
+    // retry); NULL while the post goes out at the host's time.
+    add_column_if_missing(pool, "announcements", "requested_at", "TEXT").await?;
+    // The host chose "Post now" for the pre post.
+    add_column_if_missing(
+        pool,
+        "announcements",
+        "send_now",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     // Pending submissions for chunked uploads (each file sent separately to stay under 100MB)
     sqlx::query(
@@ -623,6 +673,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "pending_submissions", "peaks_json_track1", "TEXT").await?;
     add_column_if_missing(pool, "pending_submissions", "peaks_json_track2", "TEXT").await?;
     add_column_if_missing(pool, "pending_submissions", "peaks_json_voice", "TEXT").await?;
+    // The artist a finalize created, so a second finalize creates none.
+    add_column_if_missing(pool, "pending_submissions", "artist_id", "INTEGER").await?;
 
     // Clean up expired pending file uploads
     sqlx::query("DELETE FROM pending_file_uploads WHERE expires_at < datetime('now')")
@@ -697,6 +749,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // (`r2_shows_bucket_name`), set on stream-end for every captured broadcast.
     // Lets the API offer a download immediately, without a manual finalize.
     add_column_if_missing(pool, "recording_versions", "archive_key", "TEXT").await?;
+
+    // Refreshed Instagram tokens, one row per account (`dev` / `prod`), so a
+    // staging refresh never touches the prod token.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS instagram_tokens (
+            account TEXT PRIMARY KEY,
+            access_token TEXT NOT NULL,
+            expires_at TEXT,
+            refreshed_at TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
 
     crate::recovery::migrate(pool).await?;
 
@@ -1041,6 +1106,15 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
         Ok(Some(val)) => val != "false",
         _ => true, // fail-open: default to enabled
     }
+}
+
+/// Admin switches for the outside services (ticket 1012).
+pub const SOUNDCLOUD_ENABLED: &str = "soundcloud_enabled";
+pub const INSTAGRAM_ENABLED: &str = "instagram_enabled";
+
+/// Whether the service switch `key` is on. Missing or unreadable means on.
+pub async fn is_service_enabled(pool: &SqlitePool, key: &str) -> bool {
+    !matches!(get_setting(pool, key).await, Ok(Some(v)) if v == "false")
 }
 
 /// Claim a scheduled prerecorded start. Returns true only for the first caller;

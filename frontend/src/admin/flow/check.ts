@@ -104,7 +104,13 @@ function candidates(root: Element): Candidate[] {
   });
   // A field with two inputs (start and end time) has a .label but no <label>.
   add('field', '.label', (el) => (el.closest('label') ? '' : norm(el.textContent)));
-  add('row', 'li, dl > div', (el) => (el.querySelector('a') ? '' : rowText(el)));
+  // A row's own buttons are items of their own, not part of its text.
+  add('row', 'li, dl > div', (el) => {
+    if (el.querySelector('a')) return '';
+    const copy = el.cloneNode(true) as Element;
+    copy.querySelectorAll('button').forEach((b) => b.remove());
+    return rowText(copy);
+  });
   return out;
 }
 

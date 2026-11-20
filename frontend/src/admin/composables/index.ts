@@ -13,12 +13,24 @@ export {
   useAudioCapture,
   STREAM_AUDIO_BITS_PER_SECOND,
   BROWSER_UNSUPPORTED_MESSAGE,
+  DEVICE_ENDED_MESSAGE,
   streamRecordingMimeType,
   type AudioDevice,
   type UseAudioCaptureOptions,
 } from './useAudioCapture';
 export { useAudioMeter } from './useAudioMeter';
 export { useDbMeter, dbToLevel, DB_FLOOR, DB_CEIL } from './useDbMeter';
+export {
+  useSoundcheck,
+  createReturnFeed,
+  formatDb,
+  type ReturnFeed,
+  type SoundcheckDeps,
+  type SoundcheckStep,
+  type SoundcheckSource,
+  type SoundcheckStepState,
+  type SoundcheckOutcome,
+} from './useSoundcheck';
 export { useSpectrum, groupBands, SPECTRUM_BANDS } from './useSpectrum';
 export {
   useUploadHealth,
@@ -42,12 +54,7 @@ export {
   type UploadQualityMode,
   type AutoBitrateState,
 } from './useAutoBitrate';
-export {
-  useLiveChat,
-  parseChatFrame,
-  type ChatMessage,
-  type ChatFrame,
-} from './useLiveChat';
+export { useLiveChat, parseChatFrame, type ChatMessage, type ChatFrame } from './useLiveChat';
 export {
   useRecordingSession,
   type TrackType,
@@ -73,7 +80,6 @@ export {
 } from './useOverlayRenderer';
 export { useHostFlow, type FlowStep, type UploadMode, type UploadProgress } from './useHostFlow';
 export { useShowPhase, type ShowPhase, type PhaseSource } from './useShowPhase';
-export { useStreamTest, type StreamTestState, type UseStreamTestOptions } from './useStreamTest';
 export {
   useShowWizard,
   type WizardMode,

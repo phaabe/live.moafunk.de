@@ -1,8 +1,8 @@
-import { createRouter, createWebHashHistory, type LocationQuery } from 'vue-router';
+import { createRouter, createWebHashHistory, type LocationQuery, type Router } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { hostPage } from './hostPage';
 import { berlinToUtcDate, isShowEnded } from './showTime';
-import type { MyShowInfo } from './api';
+import { setUnauthorizedHandler, type MyShowInfo } from './api';
 
 // Lazy-loaded route components
 const LoginPage = () => import('./pages/LoginPage.vue');
@@ -12,6 +12,7 @@ const ShowsPage = () => import('./pages/ShowsPage.vue');
 const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const HostEpisodePage = () => import('./pages/HostEpisodePage.vue');
+const HostAnnouncePage = () => import('./pages/HostAnnouncePage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
@@ -21,6 +22,7 @@ const ChangePasswordPage = () => import('./pages/ChangePasswordPage.vue');
 const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
+const HostDashboardPage = () => import('./pages/HostDashboardPage.vue');
 const HostSchedulePage = () => import('./pages/HostSchedulePage.vue');
 const HostMyShowsPage = () => import('./pages/HostMyShowsPage.vue');
 const ConfigPage = () => import('./pages/ConfigPage.vue');
@@ -227,10 +229,16 @@ const router = createRouter({
     {
       path: '/dashboard',
       name: 'dashboard',
-      // Hosts get the Schedule screen; admins keep the Dashboard.
-      component: hostPage(HostSchedulePage, DashboardPage),
+      // Hosts get the flow's Dashboard; admins keep theirs.
+      component: hostPage(HostDashboardPage, DashboardPage),
       // Landing page for everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      path: '/schedule',
+      name: 'schedule',
+      component: HostSchedulePage,
+      meta: { requiresAuth: true, roles: ['host'] },
     },
     {
       path: '/artists',
@@ -283,6 +291,13 @@ const router = createRouter({
       // detail of the show they're assigned to. Finer-grained edit gating lives
       // in ShowDetailPage + the backend (which restricts guests to their show).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host', 'guest'] },
+    },
+    {
+      // Flow screen `announce`: the composer of an episode's pre- or post-announcement.
+      path: '/shows/:id(\\d+)/announce/:slot(pre|post)',
+      name: 'show-announce',
+      component: HostAnnouncePage,
+      meta: { requiresAuth: true, roles: ['host'] },
     },
     {
       path: '/stream',
@@ -403,13 +418,19 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
-      // Admins only: hosts have Schedule instead (the role guard sends them there).
+      // Admins only: hosts have Schedule instead (the role guard sends them to Dashboard).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
       path: '/config',
       name: 'config',
       component: ConfigPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      path: '/admin/instagram',
+      name: 'admin-instagram',
+      component: () => import('./pages/AdminInstagramPage.vue'),
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
@@ -442,6 +463,32 @@ async function landingRoute(role: string | undefined): Promise<string> {
   }
   return '/dashboard';
 }
+
+/**
+ * The page to open after login, from `?redirect=`. Only an app page that needs
+ * a login: never the login page, a recovery page or another site.
+ */
+export function returnPath(appRouter: Router, value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/')) return null;
+  const target = appRouter.resolve(value);
+  return target.matched.length > 0 && target.meta.requiresAuth !== false ? target.fullPath : null;
+}
+
+/**
+ * An API call answered 401: the session has expired. Forget the user and open
+ * the login page, which leads back to this page. Without a user there is
+ * nothing to end: the auth check at page load (the guard handles it) or a later
+ * 401 of parallel calls (the first one already navigates).
+ */
+export function expireSession(): void {
+  const authStore = useAuthStore();
+  if (!authStore.user) return;
+  authStore.user = null;
+  const redirect = returnPath(router, router.currentRoute.value.fullPath);
+  void router.push({ name: 'login', query: redirect ? { redirect } : {} });
+}
+
+setUnauthorizedHandler(expireSession);
 
 // Navigation guard for auth
 router.beforeEach(async (to, _from, next) => {

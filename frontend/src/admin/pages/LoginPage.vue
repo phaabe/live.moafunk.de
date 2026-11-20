@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { returnPath } from '../router';
 import { BaseButton, FormInput } from '@shared/components';
 
 const router = useRouter();
@@ -15,11 +16,10 @@ async function handleSubmit() {
   const success = await authStore.login(username.value, password.value);
 
   if (success) {
-    const explicitRedirect = route.query.redirect as string | undefined;
-    // Hosts land on Schedule, everyone else on the calendar (guests are sent
+    // Hosts land on Dashboard, everyone else on the calendar (guests are sent
     // on to their show by the router's role guard).
     const defaultRoute = authStore.user?.role === 'host' ? '/dashboard' : '/calendar';
-    router.push(explicitRedirect || defaultRoute);
+    router.push(returnPath(router, route.query.redirect) ?? defaultRoute);
   }
 }
 </script>

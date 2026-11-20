@@ -1,0 +1,61 @@
+name: OPS - Publish test dashboard
+
+# Puts the latest result of every test level (L0–L8) and the coverage on
+# SITE_URL: test-dashboard/collect.cjs reads the runs over the API, appends to
+# the live history.json and the Vercel CLI deploys the static page. Called by
+# backend.yml after each staging deploy, by e2e-staging.yml after every
+# chaos run (nightly, by hand, release PR) and by e2e-soundcloud.yml after
+# every SoundCloud run. Nothing secret goes to Vercel.
+on:
+  workflow_call:
+    inputs:
+      soak-minutes:
+        description: The chaos run's extra minutes on air (0 = no soak)
+        type: string
+        default: '0'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One update at a time, so no run loses another one's history entry.
+    concurrency:
+      group: test-dashboard
+      cancel-in-progress: false
+    env:
+      SITE_URL: https://moafunk-tests.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Collect the results of every level
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SOAK_MINUTES: ${{ inputs.soak-minutes }}
+        run: node test-dashboard/collect.cjs "$RUNNER_TEMP/site"
+
+      - name: Get the Vercel token from Bitwarden
+        id: vercel
+        uses: bitwarden/sm-action@v2
+        with:
+          access_token: ${{ secrets.BW_ACCESS_TOKEN }}
+          secrets: |
+            8f9a9b95-7d4a-458f-be6e-b50400b59ace > VERCEL_TOKEN
+
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ steps.vercel.outputs.VERCEL_TOKEN }}
+          # Not secret: they only name the project `moafunk-tests` (team anneoneones-projects).
+          VERCEL_ORG_ID: team_Mh4tRrI5C0V7BW2apbk7diK5
+          VERCEL_PROJECT_ID: prj_ywI3PDezEEYc0z74cRDBdt2DI9c1
+        run: |
+          set -euo pipefail
+          npx --yes vercel@59.17.0 deploy "$RUNNER_TEMP/site" --prod --yes --token "$VERCEL_TOKEN"
+          echo "Test dashboard: $SITE_URL" >>"$GITHUB_STEP_SUMMARY"

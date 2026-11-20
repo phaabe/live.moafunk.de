@@ -189,6 +189,20 @@ function showMessage(message: string, isError = false): void {
   formMessage.style.display = 'block';
 }
 
+/** The server sends errors as JSON {"error": "..."}; a proxy may send an HTML page. */
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  const text = (await response.text()).trim();
+  if (text.startsWith('{')) {
+    try {
+      const { error } = JSON.parse(text) as { error?: unknown };
+      return typeof error === 'string' && error ? error : fallback;
+    } catch {
+      // Not JSON after all: fall through to the plain text.
+    }
+  }
+  return text && !text.startsWith('<') ? text : fallback;
+}
+
 function updateProgress(percent: number, text: string): void {
   progressFill.style.width = `${percent}%`;
   progressText.textContent = text;
@@ -203,10 +217,6 @@ form.addEventListener('submit', async (e) => {
     const message = error instanceof Error ? error.message : 'File validation failed';
     showMessage(message, true);
     return;
-  }
-
-  if (artistPicCropper) {
-    await updateCroppedBlob();
   }
 
   // Gather files for chunked upload
@@ -227,6 +237,11 @@ form.addEventListener('submit', async (e) => {
   formMessage.style.display = 'none';
 
   try {
+    // After the button is disabled: a second click while the picture renders must not submit again.
+    if (artistPicCropper) {
+      await updateCroppedBlob();
+    }
+
     // Step 1: Initialize with text fields + images (small, fits under 100MB)
     updateProgress(5, 'Initializing submission...');
 
@@ -279,8 +294,7 @@ form.addEventListener('submit', async (e) => {
     });
 
     if (!initResponse.ok) {
-      const errorText = await initResponse.text();
-      throw new Error(errorText || 'Failed to initialize submission');
+      throw new Error(await errorMessage(initResponse, 'Failed to initialize submission'));
     }
 
     const initResult = (await initResponse.json()) as { session_id: string };
@@ -342,8 +356,7 @@ form.addEventListener('submit', async (e) => {
         });
 
         if (!fileResponse.ok) {
-          const errorText = await fileResponse.text();
-          throw new Error(errorText || `Failed to upload ${label}`);
+          throw new Error(await errorMessage(fileResponse, `Failed to upload ${label}`));
         }
       } else {
         // Large file: use chunked upload
@@ -363,8 +376,9 @@ form.addEventListener('submit', async (e) => {
         });
 
         if (!initChunkResponse.ok) {
-          const errorText = await initChunkResponse.text();
-          throw new Error(errorText || `Failed to initialize ${label} upload`);
+          throw new Error(
+            await errorMessage(initChunkResponse, `Failed to initialize ${label} upload`)
+          );
         }
 
         const initChunkResult = (await initChunkResponse.json()) as { file_session_id: string };
@@ -394,9 +408,11 @@ form.addEventListener('submit', async (e) => {
           );
 
           if (!chunkResponse.ok) {
-            const errorText = await chunkResponse.text();
             throw new Error(
-              errorText || `Failed to upload ${label} chunk ${chunkIndex + 1}/${totalChunks}`
+              await errorMessage(
+                chunkResponse,
+                `Failed to upload ${label} chunk ${chunkIndex + 1}/${totalChunks}`
+              )
             );
           }
         }
@@ -411,8 +427,9 @@ form.addEventListener('submit', async (e) => {
         );
 
         if (!finalizeChunkResponse.ok) {
-          const errorText = await finalizeChunkResponse.text();
-          throw new Error(errorText || `Failed to finalize ${label} upload`);
+          throw new Error(
+            await errorMessage(finalizeChunkResponse, `Failed to finalize ${label} upload`)
+          );
         }
       }
     }
@@ -425,8 +442,7 @@ form.addEventListener('submit', async (e) => {
     });
 
     if (!finalizeResponse.ok) {
-      const errorText = await finalizeResponse.text();
-      throw new Error(errorText || 'Failed to finalize submission');
+      throw new Error(await errorMessage(finalizeResponse, 'Failed to finalize submission'));
     }
 
     const result = (await finalizeResponse.json()) as { message?: string };

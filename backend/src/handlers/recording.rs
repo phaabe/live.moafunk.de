@@ -1389,6 +1389,16 @@ pub async fn reexport_to_archive(
     let _ = tokio::fs::remove_file(&temp_path).await;
     let archive_key = publish?;
 
+    // The row's archive key is what the API offers as the download.
+    if let Err(e) = crate::db::set_recording_archive_key(&state.db, version.id, &archive_key).await
+    {
+        tracing::error!(
+            "Re-export: failed to store archive key on version {}: {}",
+            version.id,
+            e
+        );
+    }
+
     // The capture is a complete raw recording — clear any stale `failed` status so
     // it stops counting as a missing archive (the dead-man's-switch).
     if version.status == "failed" {
@@ -1741,7 +1751,7 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
             let progress =
                 FinalizeProgress::complete(format!("Recording finalized: {}", final_key));
             if let Ok(json) = serde_json::to_string(&progress) {
-                let _ = sender.send(Message::Text(json.into())).await;
+                let _ = sender.send(Message::Text(json)).await;
             }
         }
         Err(e) => {
@@ -1770,7 +1780,7 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
 
             let progress = FinalizeProgress::error(e.to_string());
             if let Ok(json) = serde_json::to_string(&progress) {
-                let _ = sender.send(Message::Text(json.into())).await;
+                let _ = sender.send(Message::Text(json)).await;
             }
         }
     }
@@ -1779,7 +1789,7 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
     let _ = sender.close().await;
 
     // Drain any remaining messages
-    while let Some(_) = receiver.next().await {}
+    while receiver.next().await.is_some() {}
 }
 
 /// Run the complete finalize process, reporting progress via WebSocket.
@@ -1891,7 +1901,7 @@ async fn run_finalize(
         let local_filename = format!(
             "track_{}_{}",
             i,
-            track_key.split('/').last().unwrap_or("track.mp3")
+            track_key.split('/').next_back().unwrap_or("track.mp3")
         );
         let track_path = session_dir.join(&local_filename);
 
@@ -1969,10 +1979,8 @@ async fn run_finalize(
         let ffmpeg_result =
             build_and_run_ffmpeg(&raw_path, &markers, &track_files, &output_path, sender).await;
 
-        if let Err(e) = ffmpeg_result {
-            // Don't clean up on error - checkpoint allows resume
-            return Err(e);
-        }
+        // Don't clean up on error - checkpoint allows resume
+        ffmpeg_result?;
 
         checkpoint.mark_merge_complete();
         checkpoint.update_phase(FinalizePhase::Merged);
@@ -2116,6 +2124,8 @@ async fn publish_stream_to_shows_archive(
 /// 1. Takes the raw recording as the base
 /// 2. Delays each track to its recorded offset
 /// 3. Mixes all tracks together
+// Signature kept as is; `&Path` would be the cleaner parameter type.
+#[allow(clippy::ptr_arg)]
 async fn build_and_run_ffmpeg(
     raw_path: &PathBuf,
     markers: &[TrackMarker],
@@ -2248,7 +2258,7 @@ async fn send_progress_msg(
     progress: FinalizeProgress,
 ) {
     if let Ok(json) = serde_json::to_string(&progress) {
-        let _ = sender.send(Message::Text(json.into())).await;
+        let _ = sender.send(Message::Text(json)).await;
     }
 }
 
@@ -2406,6 +2416,7 @@ mod tests {
             config: config.clone(),
             s3_client: s3_client.clone(),
             stream_state: crate::stream_bridge::new_shared_state(),
+            soundcheck_state: crate::stream_bridge::new_shared_state(),
             stream_metrics: crate::stream_metrics::new_shared(),
             recording_manager: crate::recording::new_shared_manager(temp_dir.clone()),
             recording_finalizer: Arc::default(),
@@ -2565,6 +2576,7 @@ mod tests {
             s3_client: storage::build_s3_client(&config),
             config,
             stream_state: crate::stream_bridge::new_shared_state(),
+            soundcheck_state: crate::stream_bridge::new_shared_state(),
             stream_metrics: crate::stream_metrics::new_shared(),
             recording_manager: crate::recording::new_shared_manager(temp.path().to_path_buf()),
             recording_finalizer: Arc::default(),

@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moafunk tests</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --ink: #111418; --ink-2: #4a5361; --muted: #5b6470;
+    --line: #e1e4e8; --soft: #eef1f5; --pass: #17803d; --fail: #c7322d; --none: #7c8490;
+    --fail-tint: #fdf1f0; --none-tint: #f7f8fa; --accent: #2f5bea; --accent-soft: #dce4fb; --link: #2448c7;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111315; --card: #1a1c1f; --ink: #f1f2f4; --ink-2: #b4bac3; --muted: #959ca7;
+      --line: #2c3036; --soft: #24282d; --pass: #2f9e55; --fail: #e05252; --none: #7c8490;
+      --fail-tint: #2a1b1b; --none-tint: #1e2124; --accent: #6e8ff0; --accent-soft: #263258; --link: #8fa8f5;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--link); }
+  main { max-width: 1160px; margin: 0 auto; padding: 32px 20px 56px; display: flex; flex-direction: column; gap: 24px; }
+  h1, h2, h3, .big { font-family: "Space Grotesk", Inter, system-ui, sans-serif; font-weight: 600; margin: 0; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-weight: 500; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .muted { color: var(--muted); } .ink-2 { color: var(--ink-2); }
+
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 24px; }
+  .eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  h1 { font-size: 34px; line-height: 1.1; margin: 6px 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-2); }
+  .legend li, .pill, .chip { display: inline-flex; align-items: center; gap: 6px; }
+
+  .icon { flex: none; }
+  .icon circle.solid { fill: var(--none); } .icon.pass circle.solid { fill: var(--pass); } .icon.fail circle.solid { fill: var(--fail); }
+  .icon circle.ring { fill: none; stroke: var(--none); stroke-width: 1.5; stroke-dasharray: 3 2.5; }
+
+  .glance { display: flex; flex-direction: column; gap: 16px; }
+  .glance-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+  .glance-head h2 { font-size: 20px; }
+  .cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .cell { display: flex; flex-direction: column; gap: 6px; min-height: 120px; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+          border-top: 4px solid var(--none); color: var(--ink); text-decoration: none; background: var(--none-tint); }
+  .cell.pass { border-top-color: var(--pass); background: var(--card); }
+  .cell.fail { border-top-color: var(--fail); background: var(--fail-tint); }
+  .cell.not-built { border-top-style: dashed; }
+  .cell .top { display: flex; align-items: center; justify-content: space-between; }
+  .cell .name { font-size: 14px; font-weight: 600; line-height: 1.25; }
+  .cell .where { margin-top: auto; font-size: 12px; color: var(--muted); }
+  .cell .count { font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .cell:hover { border-color: var(--accent); }
+  .cell[aria-current] { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .coverage { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .cov { display: flex; flex-direction: column; gap: 10px; }
+  .cov-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+  .cov-head strong { font-size: 14px; }
+  .cov-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+  .big { font-size: 40px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .meter { height: 8px; border-radius: 999px; background: var(--accent-soft); overflow: hidden; }
+  .meter span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+  .spark { display: block; width: 100%; max-width: 280px; height: 36px; }
+  .spark polyline { fill: none; stroke: var(--muted); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .spark circle { fill: transparent; } .spark circle.now { fill: var(--accent); }
+  .small { margin: 0; font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+
+  .levels { display: flex; flex-direction: column; gap: 12px; }
+  .level { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 16px; }
+  .level.fail { border-color: var(--fail); }
+  .level-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+  .pill { padding: 4px 10px 4px 5px; border-radius: 999px; border: 1px solid var(--line); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .level.fail .pill { border-color: var(--fail); }
+  .level h3 { flex: 1 1 260px; font-size: 20px; line-height: 1.2; }
+  .level h3 .mono { font-size: 15px; color: var(--muted); margin-right: 8px; }
+  .trend { display: flex; gap: 3px; align-items: center; }
+  .trend span { width: 7px; height: 18px; border-radius: 2px; border: 1px dashed var(--line); }
+  .trend span.pass { background: var(--pass); border: 0; } .trend span.fail { background: var(--fail); border: 0; }
+  .trend span.not-run, .trend span.not-built { background: var(--none); border: 0; opacity: .6; }
+  .what { margin: 0; max-width: 72ch; }
+  .facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .when { padding: 3px 9px; border-radius: 6px; background: var(--soft); color: var(--ink); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .chip { padding: 4px 9px; border-radius: 8px; border: 1px solid var(--line); font-size: 13px; }
+  .chip.fail { border-color: var(--fail); }
+  details { border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--link); padding: 6px 0; }
+  dl { margin: 8px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px 24px; }
+  dt { font-size: 13px; font-weight: 600; }
+  dd { margin: 2px 0 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+  .tests h4 { margin: 0 0 6px; font-size: 15px; }
+  .suite { border-top: 0; padding-top: 0; }
+  .suite summary { padding: 4px 0; font-size: 13px; font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+  .suite summary .icon { vertical-align: -3px; margin-right: 6px; }
+  .suite summary .muted { margin-left: 10px; font-weight: 400; white-space: nowrap; }
+  .suite ul { list-style: none; margin: 2px 0 8px; padding: 0 0 0 22px; }
+  .suite li { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; overflow-wrap: anywhere; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .error { color: var(--fail); }
+  footer { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="eyebrow mono">moafunk · staging</div>
+      <h1>Test results</h1>
+      <p class="small" id="sub">Loading…</p>
+    </div>
+    <ul class="legend" id="legend" aria-label="Status legend"></ul>
+  </header>
+  <section class="card glance" aria-label="All test types at a glance">
+    <div class="glance-head"><h2 id="headline"></h2><span class="small" id="tally"></span></div>
+    <div class="cells" id="cells"></div>
+    <p class="small">Click a test type to see all its tests.</p>
+  </section>
+  <section class="levels" id="detail" aria-label="Tests of the chosen type" aria-live="polite"></section>
+  <section class="coverage" id="coverage" aria-label="Code coverage"></section>
+  <footer>
+    Test types follow the testing concept, from fast code checks (L0) up to the live site (L8). CI updates this page after each
+    staging deploy and each chaos show (nightly, by hand, release PR). Data: <a href="summary.json">summary.json</a> ·
+    <a href="tests.json">tests.json</a> (every test) · <a href="history.json">history.json</a> (last 50 runs) · source
+    <a href="https://github.com/phaabe/live.moafunk.de/tree/staging/test-dashboard">test-dashboard/</a>.
+  </footer>
+</main>
+<script>
+  const STATUSES = ['pass', 'fail', 'not run', 'not built'];
+  const TREND = 20;
+  const CI = 'Every push and PR';
+
+  // What each level tests, in plain words. `about` explains each check or part.
+  const ABOUT = {
+    L0: { short: 'Static', where: 'CI', when: CI,
+      what: 'Reads the code without running it. Catches format, style and type mistakes before any test runs.',
+      about: [
+        ['rustfmt', 'The Rust code is in the standard format.'],
+        ['Clippy', 'Rust linter: common mistakes and unclear code. Warnings do not fail the run yet.'],
+        ['shellcheck', 'Bugs in the shell scripts: deploy, staging, backup, show-day check.'],
+        ['ESLint', 'Mistakes in the frontend TypeScript and JavaScript.'],
+        ['vue-tsc', 'Type check of the whole frontend, .vue files included.']] },
+    L1: { short: 'Unit', where: 'CI', when: CI,
+      what: 'Runs small pieces of code on their own, with no server and no network. Each runs in milliseconds.',
+      about: [
+        ['cargo test', 'Backend logic: scheduler, recording, stream bridge, auth, storage, config, Telegram, SoundCloud.'],
+        ['vitest', 'Frontend composables and pages in a fake browser (jsdom): mic capture, auto bitrate, stream socket, show wizard, time ranges.'],
+        ['workflow rules', 'The CI workflows themselves: which jobs run when, which secrets they get, that a deploy uses the exact image.']] },
+    L2: { short: 'Screens', where: 'CI', when: CI,
+      what: 'Mounts each host screen with mock data and compares it with the Flow Lab flow. A missing or an extra heading, button, link, label or row fails.',
+      about: [
+        ['14 screens and states', 'Login, schedule, my shows, new show, show, book slot, upload, episode, before the show, studio, on air (also while reconnecting), wrap-up, done.'],
+        ['Flow sync', 'Every flow screen has a check, and /flow-sync.json reports each one.']] },
+    L3: { short: 'Integration', where: 'CI', when: CI,
+      what: 'Sends whole requests to the real API handlers, with a real SQLite database and a fake R2 store. These tests run inside cargo test (L1), so they have no own duration.',
+      about: [
+        ['booking', 'Slots follow the rhythm, a booking makes one episode, upload a set, cancel, publish, who may book.'],
+        ['broadcast', 'Who may go live, recording on or off, reconnect and takeover keep one recording, a pre-recorded set starts at air time.'],
+        ['recovery', 'A password reset ends old sessions and limits requests.'],
+        ['series', 'Create shows, only the owner sees them, a bad rhythm is refused.']] },
+    L4: { short: 'Contracts', where: 'CI', when: 'Not built yet',
+      what: 'Would build the frontend API types from the Rust structs and fail when the two drift apart.',
+      about: [['Parked', 'https://github.com/phaabe/live.moafunk.de/issues/874']] },
+    L5: { short: 'System', where: 'CI', when: 'Every PR · backend pushes',
+      what: 'Runs the real stream chain in CI, with the production images and configs: backend and ffmpeg into Liquidsoap into Icecast. Then it listens to what comes out.',
+      about: [
+        ['Live broadcast', 'The tone reaches listeners on /live.mp3, and the mount is silent after the show ends.'],
+        ['Rehearsal', 'A soundcheck reaches /test.mp3 and never the public /live.mp3.']] },
+    L6: { short: 'End-to-end', where: 'staging', when: 'Nightly · by hand',
+      what: 'A real Chromium with a fake mic runs whole shows on staging.live.moafunk.de and listens to the stream like a listener.',
+      about: [
+        ['1 · Go live', 'Create a show, book a live slot a minute ahead, soundcheck, Go Live.'],
+        ['2 · Break it three times', 'A 20 s network cut, a Liquidsoap restart, a page reload. Each time the tone must be back on air within 15 s.'],
+        ['3 · Finish', 'End Episode, Wrap-up, Publish: the episode is Finished.'],
+        ['4 · One recording', 'Exactly one recording, as long as the time on air, is in the archive.'],
+        ['Pre-recorded show', 'An uploaded set goes on air by itself at its time, then Wrap-up and Publish.'],
+        ['Instagram announcements', 'Own job. On the Instagram test account: the pre-announcement with Post now, the on-air story at Go Live, and the post-announcement at its time once the episode is marked public on SoundCloud.'],
+        ['SoundCloud', 'Staging is connected to the SoundCloud test account, and a recording a host uploads gets a track link. Part of the chaos run, and also on its own every night at 02:00 UTC.']] },
+    L7: { short: 'Soak', where: 'staging', when: 'Each release PR',
+      what: 'Long and rare runs before a release: does the stack hold for a whole show, and can we come back from a backup?',
+      about: [
+        ['Soak', 'The chaos test show with 90 extra minutes on air, on each release PR. By hand: duration 90.'],
+        ['Restore drill', 'The latest backup goes into staging before the release PR, so its soak runs on production data. By hand.']] },
+    L8: { short: 'Production', where: 'production', when: 'After each production deploy',
+      what: 'Read-only checks on the live site. They change nothing.',
+      about: [
+        ['Smoke test', '/health is healthy, /api/stream/status answers, the admin page and its script load, and the API runs exactly the deployed image.'],
+        ['Show-day check', 'Runs on the production box the day before and in the hour before each show, and posts the result to Telegram. Not reported here.']] },
+  };
+
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    n.append(...kids.filter((k) => k != null && k !== false && k !== ''));
+    return n;
+  };
+  const cls = (status) => status.replace(' ', '-');
+  const dur = (s) => (s == null ? null : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`);
+  const ago = (iso) => {
+    const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    if (m < 48 * 60) return `${Math.round(m / 60)} h ago`;
+    return `${Math.round(m / 1440)} days ago`;
+  };
+  const num = (n) => n.toLocaleString('en');
+  const linkify = (text) => text.split(/(https:\/\/\S+)/).map((p, i) => (i % 2 ? el('a', { href: p }, p) : p));
+
+  // Status icon: a filled circle with a mark, or a dashed ring for "not built".
+  const MARK = { pass: 'M5.5 10.5l3 3L14.5 7', fail: 'M6.5 6.5l7 7M13.5 6.5l-7 7', 'not run': 'M6 10h8' };
+  function icon(status, size = 18) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', `icon ${cls(status)}`);
+    svg.setAttribute('width', size);
+    svg.setAttribute('height', size);
+    svg.setAttribute('viewBox', '0 0 20 20');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.innerHTML = status === 'not built'
+      ? '<circle class="ring" cx="10" cy="10" r="8.75"/>'
+      : `<circle class="solid" cx="10" cy="10" r="10"/><path d="${MARK[status]}" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`;
+    return svg;
+  }
+
+  // The level's distinct runs in history, newest last (a level that did not
+  // run again keeps its last result, so one run can sit in several summaries).
+  function runsOf(history, id) {
+    const runs = [];
+    for (const s of history) {
+      const l = s.levels?.find((x) => x.id === id);
+      if (l?.run?.url && runs.at(-1)?.run.url !== l.run.url) runs.push(l);
+    }
+    return runs.slice(-TREND);
+  }
+
+  function trend(history, id) {
+    const runs = runsOf(history, id);
+    const pass = runs.filter((l) => l.status === 'pass').length;
+    const slots = Array.from({ length: TREND - runs.length }, () => el('span'));
+    for (const l of runs) slots.push(el('span', { class: cls(l.status), title: `${l.status} · ${l.run.sha.slice(0, 7)} · ${new Date(l.run.at).toLocaleString()}` }));
+    return el('span', { class: 'trend', role: 'img', 'aria-label': runs.length ? `Last ${runs.length} runs: ${pass} passed` : 'No runs yet' }, ...slots);
+  }
+
+  function spark(points) {
+    const w = 280, h = 36, pad = 5;
+    const ys = points.map((p) => p.v);
+    const lo = Math.min(...ys) - 1, hi = Math.max(...ys) + 1;
+    const x = (i) => pad + (i * (w - 2 * pad)) / (points.length - 1);
+    const y = (v) => h - pad - ((v - lo) * (h - 2 * pad)) / (hi - lo);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'spark');
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `Coverage over the last ${points.length} runs: ${ys[0]}% to ${ys.at(-1)}%`);
+    svg.innerHTML = `<polyline points="${points.map((p, i) => `${x(i)},${y(p.v)}`).join(' ')}"/>` +
+      points.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.v)}" r="${i === points.length - 1 ? 4 : 7}" class="${i === points.length - 1 ? 'now' : ''}"><title>${p.v}% · ${p.sha}</title></circle>`).join('');
+    return svg;
+  }
+
+  function coverageCard(summary, history, key, label, tool, note) {
+    const points = [];
+    for (const s of history) {
+      const v = s.coverage?.[key];
+      const url = s.levels?.find((x) => x.id === 'L1')?.run?.url;
+      if (v != null && points.at(-1)?.url !== url) points.push({ v, url, sha: s.levels.find((x) => x.id === 'L1').run.sha.slice(0, 7) });
+    }
+    const pct = summary.coverage?.[key];
+    const lines = summary.coverage_lines?.[key];
+    const at = summary.levels?.find((x) => x.id === 'L1')?.run;
+    return el('div', { class: 'card cov' },
+      el('div', { class: 'cov-head' }, el('strong', {}, label),
+        el('span', { class: 'muted' }, 'line coverage', at && ' on ', at && el('a', { href: at.url }, at.sha.slice(0, 7)))),
+      el('div', { class: 'cov-value' },
+        el('span', { class: 'big' }, pct != null ? `${pct}%` : '–'),
+        lines && el('span', { class: 'small' }, `${num(lines.covered)} of ${num(lines.total)} lines`)),
+      el('div', { class: 'meter', role: 'img', 'aria-label': pct != null ? `${pct}% of lines run by tests` : 'Not measured yet' },
+        el('span', { style: `width: ${pct ?? 0}%` })),
+      points.length > 1 ? spark(points.slice(-TREND)) : null,
+      el('p', { class: 'small' }, `Share of ${tool}. Measured on each push to staging${points.length > 1 ? '' : '; the trend shows after the next runs'}.`),
+      note ? el('p', { class: 'small' }, note) : null);
+  }
+
+  const countText = (t) =>
+    [t.failed ? `${num(t.failed)} failed` : null, `${num(t.passed)} passed`, t.skipped ? `${num(t.skipped)} skipped` : null].filter(Boolean).join(' · ');
+
+  // Every test of one type, grouped by suite (Rust module or test file).
+  // Suites with a failed test come first and are open.
+  function testList(tests) {
+    const suites = new Map();
+    for (const t of tests) suites.set(t.suite, [...(suites.get(t.suite) ?? []), t]);
+    const rows = [...suites].map(([suite, list]) => {
+      const n = (s) => list.filter((t) => t.status === s).length;
+      return { suite, list, counts: { passed: n('passed'), failed: n('failed'), skipped: n('skipped') } };
+    });
+    rows.sort((a, b) => (b.counts.failed > 0) - (a.counts.failed > 0));
+    const status = { passed: 'pass', failed: 'fail', skipped: 'not run' };
+    return el('div', { class: 'tests' },
+      el('h4', {}, `All ${num(tests.length)} tests of the last run`),
+      ...rows.map(({ suite, list, counts }) =>
+        el('details', counts.failed ? { class: 'suite', open: '' } : { class: 'suite' },
+          el('summary', {},
+            icon(counts.failed ? 'fail' : counts.passed ? 'pass' : 'not run', 14),
+            el('span', { class: 'mono' }, suite), ' ', el('span', { class: 'muted' }, countText(counts))),
+          el('ul', {}, ...list.map((t) =>
+            el('li', {}, icon(status[t.status], 14), el('span', {}, t.name), el('span', { class: 'sr-only' }, `: ${t.status}`)))))));
+  }
+
+  function facts(level) {
+    const t = level.tests;
+    const out = [];
+    if (t) out.push(countText(t));
+    if (dur(level.seconds)) out.push(dur(level.seconds));
+    const c = level.coverage;
+    if (c) out.push(`coverage ${[c.rust != null && `Rust ${c.rust}%`, c.frontend != null && `frontend ${c.frontend}%`].filter(Boolean).join(' · ')}`);
+    return out;
+  }
+
+  function card(level, history, tests) {
+    const a = ABOUT[level.id] ?? { when: '', what: '', about: [] };
+    const run = level.run;
+    return el('article', { class: `card level ${cls(level.status)}` },
+      el('div', { class: 'level-head' },
+        el('span', { class: `pill ${cls(level.status)}` }, icon(level.status), level.status),
+        el('h3', {}, el('span', { class: 'mono' }, level.id), level.name),
+        trend(history, level.id)),
+      el('p', { class: 'what' }, a.what),
+      el('div', { class: 'facts' },
+        el('span', { class: 'when' }, a.when),
+        ...facts(level).map((f) => el('span', {}, f)),
+        run && el('span', {}, el('a', { href: run.url }, run.sha.slice(0, 7)), ` · ${ago(run.at)}`)),
+      level.note && el('p', { class: 'small' }, ...linkify(level.note)),
+      level.checks.length ? el('ul', { class: 'chips', 'aria-label': 'Checks' }, ...level.checks.map((c) =>
+        el('li', { class: `chip ${cls(c.status)}` }, icon(c.status, 14), c.name, c.seconds != null ? el('span', { class: 'muted' }, dur(c.seconds)) : null,
+          el('span', { class: 'sr-only' }, `: ${c.status}`)))) : null,
+      tests.length ? testList(tests)
+        : level.tests ? el('p', { class: 'small' }, 'The list of single tests is not there for this run.') : null,
+      a.about.length ? el('details', {},
+        el('summary', {}, 'What this type tests'),
+        el('dl', {}, ...a.about.map(([name, text]) => el('div', {}, el('dt', {}, name), el('dd', {}, ...linkify(text)))))) : null);
+  }
+
+  function cell(level) {
+    const a = ABOUT[level.id] ?? {};
+    return el('a', { class: `cell ${cls(level.status)}`, href: `#${level.id}`, 'aria-label': `${level.id} ${level.name}: ${level.status}` },
+      el('span', { class: 'top' }, el('span', { class: 'mono muted' }, level.id), icon(level.status)),
+      el('span', { class: 'name' }, a.short ?? level.name),
+      el('span', { class: 'count' }, level.tests ? countText(level.tests)
+        : level.checks.length ? `${level.checks.length} ${level.checks.length === 1 ? 'check' : 'checks'}` : level.status),
+      el('span', { class: 'where' }, [a.where, dur(level.seconds)].filter(Boolean).join(' · ')));
+  }
+
+  async function load(name) {
+    const res = await fetch(name, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`${name}: ${res.status}`);
+    return res.json();
+  }
+
+  document.getElementById('legend').append(...STATUSES.map((s) => el('li', { class: cls(s) }, icon(s, 16), s)));
+
+  // tests.json is missing on a site built before it existed: then no lists.
+  Promise.all([load('summary.json'), load('history.json'), load('tests.json').catch(() => ({}))])
+    .then(([summary, history, tests]) => {
+      const levels = summary.levels;
+      const count = (s) => levels.filter((l) => l.status === s);
+      const ids = (s) => count(s).map((l) => l.id).join(', ');
+      document.getElementById('headline').textContent = `${count('pass').length} of ${levels.length} test types pass`;
+      document.getElementById('tally').textContent = [
+        `${count('fail').length} fail${count('fail').length ? ` (${ids('fail')})` : ''}`,
+        count('not run').length && `${count('not run').length} not run (${ids('not run')})`,
+        count('not built').length && `${count('not built').length} not built (${ids('not built')})`,
+      ].filter(Boolean).join(' · ');
+      const sub = document.getElementById('sub');
+      sub.textContent = `Updated ${ago(summary.generated_at)}.`;
+      // Tests come from the newest finished check run; cancelled runs make it older than the publishing run.
+      const testRun = levels.find((l) => l.id === 'L1')?.run;
+      if (testRun) sub.append(' Tests and coverage from ', el('a', { href: testRun.url }, testRun.sha.slice(0, 7)), '.');
+      if (summary.run) sub.append(` Published by the ${summary.run.event} run on `, el('a', { href: summary.run.url }, summary.run.sha.slice(0, 7)), '.');
+      document.getElementById('cells').append(...levels.map(cell));
+      document.getElementById('coverage').append(
+        coverageCard(summary, history, 'rust', 'Rust backend', 'backend lines that cargo test runs (L1 and L3), with cargo llvm-cov',
+          'The number still includes the inline #[cfg(test)] test code.'),
+        coverageCard(summary, history, 'frontend', 'Frontend', 'frontend lines that vitest runs (L1 and L2), with vitest istanbul coverage'));
+      // The chosen type is in the URL hash (#L1), so a link opens its tests.
+      const detail = document.getElementById('detail');
+      const show = (scroll) => {
+        const level = levels.find((l) => `#${l.id}` === location.hash);
+        for (const c of document.querySelectorAll('.cell')) {
+          if (c.getAttribute('href') === location.hash) c.setAttribute('aria-current', 'true');
+          else c.removeAttribute('aria-current');
+        }
+        detail.replaceChildren(...(level ? [card(level, history, tests[level.id] ?? [])] : []));
+        if (level && scroll) detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      addEventListener('hashchange', () => show(true));
+      show(false);
+    })
+    .catch((err) => {
+      const sub = document.getElementById('sub');
+      sub.className = 'small error';
+      sub.textContent = `Could not load the results: ${err.message}`;
+    });
+</script>
+</body>
+</html>

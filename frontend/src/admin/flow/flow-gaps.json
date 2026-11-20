@@ -66,33 +66,24 @@
       ]
     },
     {
+      "screen": "dashboard",
+      "release": "UNHEARD",
+      "items": ["nav: Pool"]
+    },
+    {
       "screen": "schedule",
       "release": "UNHEARD",
-      "items": [
-        "nav: Pool"
-      ]
+      "items": ["nav: Pool"]
     },
     {
       "screen": "my-shows",
       "release": "UNHEARD",
-      "items": [
-        "row: UNHEARD | Monthly · 4 artists",
-        "nav: Pool"
-      ]
-    },
-    {
-      "screen": "episode",
-      "release": "R4",
-      "items": [
-        "field: Announcements"
-      ]
+      "items": ["row: UNHEARD | Monthly · 4 artists", "nav: Pool"]
     },
     {
       "screen": "episode",
       "release": "R5",
-      "items": [
-        "button: Create guest link"
-      ]
+      "items": ["button: Create guest link"]
     },
     {
       "screen": "wrapup",
@@ -117,19 +108,50 @@
     {
       "screen": "done",
       "release": "R2",
-      "items": [
-        "pill: SoundCloud · private track uploaded"
-      ]
-    },
-    {
-      "screen": "done",
-      "release": "R4",
-      "items": [
-        "pill: Instagram · 3 posts queued"
-      ]
+      "items": ["pill: SoundCloud · private track uploaded"]
     },
     {
       "screen": "studio-onair",
+      "release": "R4",
+      "items": [
+        "h2: Moments",
+        "button: Mark moment",
+        "row: 00:12:30 | Opening track",
+        "row: 00:31:05 | Guest talk"
+      ]
+    },
+    {
+      "screen": "studio-onair-reconnecting",
+      "release": "R4",
+      "items": [
+        "h2: Moments",
+        "button: Mark moment",
+        "row: 00:12:30 | Opening track",
+        "row: 00:31:05 | Guest talk"
+      ]
+    },
+    {
+      "screen": "studio-onair-lost",
+      "release": "R4",
+      "items": [
+        "h2: Moments",
+        "button: Mark moment",
+        "row: 00:12:30 | Opening track",
+        "row: 00:31:05 | Guest talk"
+      ]
+    },
+    {
+      "screen": "studio-onair-noinput",
+      "release": "R4",
+      "items": [
+        "h2: Moments",
+        "button: Mark moment",
+        "row: 00:12:30 | Opening track",
+        "row: 00:31:05 | Guest talk"
+      ]
+    },
+    {
+      "screen": "studio-onair-end",
       "release": "R4",
       "items": [
         "h2: Moments",
@@ -141,32 +163,61 @@
   ],
   "allowed": [
     {
+      "screen": "dashboard",
+      "items": ["button: Toggle menu", "button: Close menu"],
+      "why": "The flow note says the nav folds into a menu on phones."
+    },
+    {
       "screen": "schedule",
-      "items": [
-        "button: Toggle menu",
-        "button: Close menu"
-      ],
+      "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
       "screen": "my-shows",
-      "items": [
-        "button: Toggle menu",
-        "button: Close menu"
-      ],
+      "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
+    },
+    {
+      "screen": "schedule",
+      "items": ["link: On air now | On air · Brunchtime · until 14:00"],
+      "why": "The flow note says the strip opens On Air when the show on air is yours."
     }
   ],
   "drift": [
     {
       "screen": "studio-onair",
-      "state": "reconnecting",
       "items": [
-        "row: Connection | stable",
-        "row: Connection | reconnecting…",
-        "notice: The connection was down for more than 10 minutes. The recording misses some audio."
+        "row: Listeners now | 37"
       ],
-      "why": "The flow has no state for a dropped connection. The code shows 'reconnecting…' or 'lost' and, after 10 minutes, this warning (tickets 877, 878). Add the state to the flow first."
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-reconnecting",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-lost",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-noinput",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-onair-end",
+      "items": [
+        "row: Listeners now | 37"
+      ],
+      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

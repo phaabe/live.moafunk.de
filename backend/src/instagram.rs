@@ -9,10 +9,19 @@
 
 use crate::{storage, AppError, AppState, Result};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use std::sync::Arc;
 
 const GRAPH_API_VERSION: &str = "v24.0";
-const GRAPH_API_BASE: &str = "https://graph.instagram.com";
+
+/// Graph API host. Tests point it at a local fake.
+fn api_base() -> String {
+    #[cfg(not(test))]
+    let base = "https://graph.instagram.com".to_string();
+    #[cfg(test)]
+    let base = crate::fake_instagram::API_BASE.with(|base| base.borrow().clone());
+    base
+}
 
 /// Instagram API error response
 #[derive(Debug, Deserialize)]
@@ -63,6 +72,13 @@ pub struct InstagramPostResult {
     pub media_id: Option<String>,
     pub permalink: Option<String>,
     pub error: Option<String>,
+}
+
+/// A published story or feed post.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedMedia {
+    pub media_id: String,
+    pub permalink: Option<String>,
 }
 
 /// Instagram client wrapping reqwest
@@ -133,7 +149,9 @@ impl InstagramClient {
     async fn create_container(&self, image_url: &str, caption: &str) -> Result<String> {
         let url = format!(
             "{}/{}/{}/media",
-            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
         );
 
         let params = [
@@ -185,7 +203,7 @@ impl InstagramClient {
     /// Check the status of a media container
     /// Returns the status code: EXPIRED, ERROR, FINISHED, IN_PROGRESS, PUBLISHED
     async fn check_container_status(&self, container_id: &str) -> Result<String> {
-        let url = format!("{}/{}/{}", GRAPH_API_BASE, GRAPH_API_VERSION, container_id);
+        let url = format!("{}/{}/{}", api_base(), GRAPH_API_VERSION, container_id);
 
         let params = [
             ("fields", "status_code"),
@@ -198,13 +216,20 @@ impl InstagramClient {
             .query(&params)
             .send()
             .await
-            .map_err(|e| AppError::External(format!("Failed to check container status: {}", e)))?;
+            .map_err(|e| {
+                AppError::External(format!(
+                    "Failed to check container status: {}",
+                    e.without_url()
+                ))
+            })?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AppError::External(format!("Failed to read status response: {}", e)))?;
+        let body = response.text().await.map_err(|e| {
+            AppError::External(format!(
+                "Failed to read status response: {}",
+                e.without_url()
+            ))
+        })?;
 
         if !status.is_success() {
             return Err(AppError::External(format!(
@@ -227,22 +252,23 @@ impl InstagramClient {
     /// After publishing, the `media_id` returned by the API can be used
     /// to look up the direct post URL via `GET /{media_id}?fields=permalink`.
     async fn fetch_permalink(&self, media_id: &str) -> Option<String> {
-        let url = format!(
-            "{}/{}/{}?fields=permalink&access_token={}",
-            GRAPH_API_BASE, GRAPH_API_VERSION, media_id, self.access_token
-        );
+        let url = format!("{}/{}/{}", api_base(), GRAPH_API_VERSION, media_id);
+        let params = [
+            ("fields", "permalink"),
+            ("access_token", &self.access_token),
+        ];
 
         #[derive(Deserialize)]
         struct PermalinkResponse {
             permalink: Option<String>,
         }
 
-        match self.http.get(&url).send().await {
+        match self.http.get(&url).query(&params).send().await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<PermalinkResponse>().await {
                     Ok(pr) => pr.permalink,
                     Err(e) => {
-                        tracing::warn!("Failed to parse permalink response: {e}");
+                        tracing::warn!("Failed to parse permalink response: {}", e.without_url());
                         None
                     }
                 }
@@ -252,7 +278,7 @@ impl InstagramClient {
                 None
             }
             Err(e) => {
-                tracing::warn!("Failed to fetch permalink: {e}");
+                tracing::warn!("Failed to fetch permalink: {}", e.without_url());
                 None
             }
         }
@@ -262,7 +288,9 @@ impl InstagramClient {
     async fn publish_container(&self, container_id: &str) -> Result<String> {
         let url = format!(
             "{}/{}/{}/media_publish",
-            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
         );
 
         let params = [
@@ -307,6 +335,36 @@ impl InstagramClient {
         Ok(publish_resp.id)
     }
 
+    /// Publish a ready container. Instagram sometimes reports FINISHED before
+    /// the media reaches the publish endpoint ("Media ID is not available",
+    /// code 9007), so that error is retried.
+    async fn publish_with_retry(&self, container_id: &str) -> Result<String> {
+        const MAX_PUBLISH_RETRIES: u32 = 3;
+        const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let mut attempt = 1;
+        loop {
+            tracing::info!(
+                "Container {} ready, publishing (attempt {}/{})...",
+                container_id,
+                attempt,
+                MAX_PUBLISH_RETRIES
+            );
+            match self.publish_container(container_id).await {
+                Err(e) if attempt < MAX_PUBLISH_RETRIES && e.to_string().contains("9007") => {
+                    tracing::warn!(
+                        "Publish attempt {} failed with 9007, retrying in {}s...",
+                        attempt,
+                        PUBLISH_RETRY_DELAY.as_secs()
+                    );
+                    tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // Carousel API methods
     // ────────────────────────────────────────────────────────────────────────
@@ -318,7 +376,9 @@ impl InstagramClient {
     async fn create_carousel_image_item(&self, image_url: &str) -> Result<String> {
         let url = format!(
             "{}/{}/{}/media",
-            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
         );
 
         let params = [
@@ -373,7 +433,9 @@ impl InstagramClient {
     async fn create_carousel_video_item(&self, video_url: &str) -> Result<String> {
         let url = format!(
             "{}/{}/{}/media",
-            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
         );
 
         let params = [
@@ -433,7 +495,9 @@ impl InstagramClient {
     ) -> Result<String> {
         let url = format!(
             "{}/{}/{}/media",
-            GRAPH_API_BASE, GRAPH_API_VERSION, self.business_account_id
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
         );
 
         let children_csv = children_ids.join(",");
@@ -657,42 +721,17 @@ impl InstagramClient {
         }
 
         // Step 6: Publish (with retry for transient 9007 errors)
-        const MAX_CAROUSEL_PUBLISH_RETRIES: u32 = 3;
-        const CAROUSEL_PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-        let mut media_id = String::new();
-        for publish_attempt in 1..=MAX_CAROUSEL_PUBLISH_RETRIES {
-            tracing::info!(
-                "Carousel {} ready, publishing (attempt {}/{})...",
-                carousel_id,
-                publish_attempt,
-                MAX_CAROUSEL_PUBLISH_RETRIES
-            );
-            match self.publish_container(&carousel_id).await {
-                Ok(id) => {
-                    media_id = id;
-                    break;
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    if publish_attempt < MAX_CAROUSEL_PUBLISH_RETRIES && err_str.contains("9007") {
-                        tracing::warn!(
-                            "Carousel publish attempt {} failed with 9007, retrying in {}s...",
-                            publish_attempt,
-                            CAROUSEL_PUBLISH_RETRY_DELAY.as_secs()
-                        );
-                        tokio::time::sleep(CAROUSEL_PUBLISH_RETRY_DELAY).await;
-                    } else {
-                        return Ok(InstagramPostResult {
-                            success: false,
-                            media_id: None,
-                            permalink: None,
-                            error: Some(format!("Failed to publish carousel: {}", err_str)),
-                        });
-                    }
-                }
+        let media_id = match self.publish_with_retry(&carousel_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    permalink: None,
+                    error: Some(format!("Failed to publish carousel: {}", e)),
+                });
             }
-        }
+        };
 
         tracing::info!("Successfully published carousel to Instagram: {}", media_id);
 
@@ -769,7 +808,8 @@ impl InstagramClient {
                         )),
                     });
                 }
-                "IN_PROGRESS" | _ => {
+                // "IN_PROGRESS" or any other status: keep polling
+                _ => {
                     if attempt == MAX_POLL_ATTEMPTS {
                         return Ok(InstagramPostResult {
                             success: false,
@@ -786,45 +826,18 @@ impl InstagramClient {
         }
 
         // Step 3: Publish container (with retry for transient 9007 errors)
-        // Instagram sometimes reports FINISHED but the media isn't propagated
-        // to the publish endpoint yet, causing "Media ID is not available" (9007).
-        const MAX_PUBLISH_RETRIES: u32 = 3;
-        const PUBLISH_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-        let mut media_id = String::new();
-        for publish_attempt in 1..=MAX_PUBLISH_RETRIES {
-            tracing::info!(
-                "Container {} ready, publishing (attempt {}/{})...",
-                container_id,
-                publish_attempt,
-                MAX_PUBLISH_RETRIES
-            );
-            match self.publish_container(&container_id).await {
-                Ok(id) => {
-                    media_id = id;
-                    break;
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    if publish_attempt < MAX_PUBLISH_RETRIES && err_str.contains("9007") {
-                        tracing::warn!(
-                            "Publish attempt {} failed with 9007, retrying in {}s...",
-                            publish_attempt,
-                            PUBLISH_RETRY_DELAY.as_secs()
-                        );
-                        tokio::time::sleep(PUBLISH_RETRY_DELAY).await;
-                    } else {
-                        tracing::error!("Failed to publish Instagram container: {}", e);
-                        return Ok(InstagramPostResult {
-                            success: false,
-                            media_id: None,
-                            permalink: None,
-                            error: Some(err_str),
-                        });
-                    }
-                }
+        let media_id = match self.publish_with_retry(&container_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("Failed to publish Instagram container: {}", e);
+                return Ok(InstagramPostResult {
+                    success: false,
+                    media_id: None,
+                    permalink: None,
+                    error: Some(e.to_string()),
+                });
             }
-        }
+        };
 
         tracing::info!("Successfully published to Instagram: {}", media_id);
 
@@ -841,57 +854,329 @@ impl InstagramClient {
             error: None,
         })
     }
-}
 
-/// Refresh a long-lived access token
-///
-/// Long-lived tokens are valid for 60 days. This function exchanges
-/// an existing token for a new one, extending validity.
-///
-/// Should be called when token is about to expire (e.g., within 7 days).
-#[allow(dead_code)]
-pub async fn refresh_access_token(
-    current_token: &str,
-    _app_id: &str,
-    _app_secret: &str,
-) -> Result<TokenRefreshResponse> {
-    let client = reqwest::Client::new();
+    // ────────────────────────────────────────────────────────────────────────
+    // Announcements: stories and feed images on the environment's account
+    // ────────────────────────────────────────────────────────────────────────
 
-    let url = format!(
-        "{}/{}/oauth/access_token",
-        GRAPH_API_BASE, GRAPH_API_VERSION
-    );
-
-    let params = [
-        ("grant_type", "ig_refresh_token"),
-        ("access_token", current_token),
-    ];
-
-    let response = client
-        .get(&url)
-        .query(&params)
-        .send()
-        .await
-        .map_err(|e| AppError::External(format!("Failed to refresh token: {}", e)))?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| AppError::External(format!("Failed to read refresh response: {}", e)))?;
-
-    if !status.is_success() {
-        return Err(AppError::External(format!(
-            "Token refresh error: {} - {}",
-            status, body
-        )));
+    /// Client for `account` (`prod`, else `dev`) for the admin post buttons.
+    /// Uses the stored refreshed token of that account when there is one.
+    pub async fn for_account(
+        config: &crate::Config,
+        db: &SqlitePool,
+        account: &str,
+    ) -> Result<Self> {
+        let account = if account == "prod" { "prod" } else { "dev" };
+        match account_credentials(config, db, account).await? {
+            Some((access_token, business_account_id)) => Ok(Self {
+                http: reqwest::Client::new(),
+                access_token,
+                business_account_id,
+            }),
+            // Names the missing env value.
+            None => Self::from_config(config, account),
+        }
     }
 
-    let token_resp: TokenRefreshResponse = serde_json::from_str(&body).map_err(|e| {
-        AppError::External(format!("Failed to parse token response: {} - {}", e, body))
-    })?;
+    /// Client for the account pinned by `INSTAGRAM_ACCOUNT`. Errors (and posts
+    /// nothing) when that account has no env token and account id.
+    pub async fn for_environment(config: &crate::Config, db: &SqlitePool) -> Result<Self> {
+        let account = config.instagram_account.as_str();
+        let Some((access_token, business_account_id)) =
+            account_credentials(config, db, account).await?
+        else {
+            let msg = format!(
+                "Instagram account '{account}' (INSTAGRAM_ACCOUNT) has no token and account id configured"
+            );
+            tracing::error!("{msg}");
+            return Err(AppError::Config(msg));
+        };
+        Ok(Self {
+            http: reqwest::Client::new(),
+            access_token,
+            business_account_id,
+        })
+    }
 
-    Ok(token_resp)
+    /// Posts used and allowed in the current 24 h window.
+    pub async fn content_publishing_quota(&self) -> Result<(u32, u32)> {
+        let url = format!(
+            "{}/{}/{}/content_publishing_limit",
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
+        );
+        let req = self.http.get(&url).query(&[
+            ("fields", "quota_usage,config"),
+            ("access_token", &self.access_token),
+        ]);
+        let body = graph_send(req, "Instagram publishing limit").await?;
+        let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!("Failed to parse publishing limit response: {e}"))
+        })?;
+        let entry = &value["data"][0];
+        match (
+            entry["quota_usage"].as_u64(),
+            entry["config"]["quota_total"].as_u64(),
+        ) {
+            (Some(used), Some(total)) => Ok((used as u32, total as u32)),
+            _ => Err(AppError::External(format!(
+                "Unexpected publishing limit response: {body}"
+            ))),
+        }
+    }
+
+    async fn ensure_quota_available(&self) -> Result<()> {
+        let (used, total) = self.content_publishing_quota().await?;
+        if used >= total {
+            return Err(AppError::External(format!(
+                "{QUOTA_USED_UP} ({used}/{total} in 24 h)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Create a media container from form `params` (the token is added here).
+    async fn create_media(&self, params: &[(&str, &str)]) -> Result<String> {
+        let url = format!(
+            "{}/{}/{}/media",
+            api_base(),
+            GRAPH_API_VERSION,
+            self.business_account_id
+        );
+        let mut form = params.to_vec();
+        form.push(("access_token", &self.access_token));
+        let body = graph_send(self.http.post(&url).form(&form), "Instagram container").await?;
+        let container: CreateContainerResponse = serde_json::from_str(&body).map_err(|e| {
+            AppError::External(format!("Failed to parse Instagram response: {e} - {body}"))
+        })?;
+        Ok(container.id)
+    }
+
+    /// Quota check, container, wait until ready, publish, permalink.
+    async fn publish_media(&self, params: &[(&str, &str)], label: &str) -> Result<PublishedMedia> {
+        self.ensure_quota_available().await?;
+        let container_id = self.create_media(params).await?;
+        self.poll_container_until_ready(
+            &container_id,
+            label,
+            30,
+            std::time::Duration::from_secs(2),
+        )
+        .await?;
+        let media_id = self.publish_with_retry(&container_id).await?;
+        tracing::info!("Published Instagram {label}: {media_id}");
+        let permalink = self.fetch_permalink(&media_id).await;
+        Ok(PublishedMedia {
+            media_id,
+            permalink,
+        })
+    }
+
+    /// Publish a story image (JPEG URL), optionally tagging one account.
+    pub async fn publish_story_image(
+        &self,
+        image_url: &str,
+        mention: Option<&str>,
+    ) -> Result<PublishedMedia> {
+        let user_tags = mention
+            .map(|m| m.trim_start_matches('@'))
+            .filter(|m| !m.is_empty())
+            .map(|m| serde_json::json!([{ "username": m }]).to_string());
+        let mut params = vec![("media_type", "STORIES"), ("image_url", image_url)];
+        if let Some(tags) = &user_tags {
+            params.push(("user_tags", tags));
+        }
+        self.publish_media(&params, "Story").await
+    }
+
+    /// Publish a feed image with caption, alt text and collaborator accounts.
+    pub async fn publish_feed_image(
+        &self,
+        image_url: &str,
+        caption: &str,
+        alt_text: Option<&str>,
+        collaborators: &[String],
+    ) -> Result<PublishedMedia> {
+        let collaborators: Vec<&str> = collaborators
+            .iter()
+            .map(|c| c.trim_start_matches('@'))
+            .filter(|c| !c.is_empty())
+            .collect();
+        let collaborators =
+            (!collaborators.is_empty()).then(|| serde_json::json!(collaborators).to_string());
+        let mut params = vec![("image_url", image_url), ("caption", caption)];
+        if let Some(alt) = alt_text {
+            params.push(("alt_text", alt));
+        }
+        if let Some(c) = &collaborators {
+            params.push(("collaborators", c));
+        }
+        self.publish_media(&params, "Feed image").await
+    }
+}
+
+/// Start of the error when the 24 h publishing quota is used up.
+const QUOTA_USED_UP: &str = "Instagram publishing quota used up";
+
+/// The send failed only because the publishing quota is used up.
+pub fn is_quota_used_up(e: &AppError) -> bool {
+    e.to_string().contains(QUOTA_USED_UP)
+}
+
+/// Instagram refuses to refresh a token younger than 24 h (a token just put
+/// into the env). That is not a problem: the next weekly run refreshes it.
+/// shortcut: matches the error text, as Meta documents no error code for it;
+/// if a boot alert still names "24 hours" in other words, extend the match.
+fn is_token_too_young(e: &AppError) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("24 hours") || msg.contains("24h")
+}
+
+/// Send a Graph API request and return the body. Errors carry Instagram's
+/// message but never the request URL, which can hold the access token.
+async fn graph_send(req: reqwest::RequestBuilder, what: &str) -> Result<String> {
+    let response = req
+        .send()
+        .await
+        .map_err(|e| AppError::External(format!("{what} request failed: {}", e.without_url())))?;
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        AppError::External(format!(
+            "{what}: failed to read response: {}",
+            e.without_url()
+        ))
+    })?;
+    if !status.is_success() {
+        if let Ok(err) = serde_json::from_str::<InstagramErrorResponse>(&body) {
+            return Err(AppError::External(format!(
+                "{what} error: {} (code: {:?})",
+                err.error.message, err.error.code
+            )));
+        }
+        return Err(AppError::External(format!(
+            "{what} error: {status} - {body}"
+        )));
+    }
+    Ok(body)
+}
+
+/// Token and account id of `account` (`dev` / `prod`). A refreshed token in
+/// the DB replaces the env token. `None` when the env lacks the token or the
+/// id, so a stored token alone (a prod DB copied to staging) never posts.
+async fn account_credentials(
+    config: &crate::Config,
+    db: &SqlitePool,
+    account: &str,
+) -> Result<Option<(String, String)>> {
+    let (token, id) = match account {
+        "dev" => (
+            &config.instagram_access_token_dev,
+            &config.instagram_business_account_id_dev,
+        ),
+        "prod" => (
+            &config.instagram_access_token_prod,
+            &config.instagram_business_account_id_prod,
+        ),
+        _ => return Ok(None),
+    };
+    let set = |v: &Option<String>| v.clone().filter(|v| !v.is_empty());
+    let (Some(token), Some(id)) = (set(token), set(id)) else {
+        return Ok(None);
+    };
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT access_token FROM instagram_tokens WHERE account = ?")
+            .bind(account)
+            .fetch_optional(db)
+            .await?;
+    Ok(Some((stored.unwrap_or(token), id)))
+}
+
+/// Refresh a long-lived token (valid 60 days, must be at least 24 h old).
+pub async fn refresh_access_token(current_token: &str) -> Result<TokenRefreshResponse> {
+    let req = reqwest::Client::new()
+        .get(format!("{}/refresh_access_token", api_base()))
+        .query(&[
+            ("grant_type", "ig_refresh_token"),
+            ("access_token", current_token),
+        ]);
+    let body = graph_send(req, "Instagram token refresh").await?;
+    // The body holds the new token, so it stays out of the error.
+    serde_json::from_str(&body)
+        .map_err(|e| AppError::External(format!("Failed to parse token refresh response: {e}")))
+}
+
+/// Weekly job: refresh the token of each configured account and store it for
+/// that account only. Alerts the admin group on failure or near expiry.
+pub async fn refresh_tokens(state: &Arc<AppState>) {
+    const ALERT_BELOW_SECS: i64 = 14 * 24 * 60 * 60;
+    for account in ["dev", "prod"] {
+        let alert = match refresh_account(state, account).await {
+            Ok(Some(expires_in)) if expires_in < ALERT_BELOW_SECS => Some(format!(
+                "Instagram token for {account} expires in {} days.",
+                expires_in / 86_400
+            )),
+            Ok(_) => None,
+            Err(e) if is_token_too_young(&e) => {
+                tracing::info!(
+                    "Instagram token for {account} is younger than 24 h, refresh skipped"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::error!("Instagram token refresh failed for {account}: {e}");
+                Some(format!("Instagram token refresh failed for {account}: {e}"))
+            }
+        };
+        if let Some(alert) = alert {
+            crate::telegram_notify::notify_unconditional(state, &alert).await;
+        }
+    }
+}
+
+/// New lifetime in seconds, or `None` when the account is not configured or
+/// was refreshed in the last day.
+async fn refresh_account(state: &Arc<AppState>, account: &str) -> Result<Option<i64>> {
+    let Some((token, _)) = account_credentials(&state.config, &state.db, account).await? else {
+        return Ok(None);
+    };
+    let recent: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM instagram_tokens \
+         WHERE account = ? AND refreshed_at > datetime('now', '-1 day'))",
+    )
+    .bind(account)
+    .fetch_one(&state.db)
+    .await?;
+    if recent {
+        return Ok(None);
+    }
+    let fresh = refresh_access_token(&token).await?;
+    sqlx::query(
+        "INSERT INTO instagram_tokens (account, access_token, expires_at, refreshed_at) \
+         VALUES (?, ?, datetime('now', ?), datetime('now')) \
+         ON CONFLICT(account) DO UPDATE SET access_token = excluded.access_token, \
+         expires_at = excluded.expires_at, refreshed_at = excluded.refreshed_at",
+    )
+    .bind(account)
+    .bind(&fresh.access_token)
+    .bind(format!("+{} seconds", fresh.expires_in))
+    .execute(&state.db)
+    .await?;
+    tracing::info!(
+        "Instagram token refreshed for {account}, valid {} days",
+        fresh.expires_in / 86_400
+    );
+    Ok(Some(fresh.expires_in))
+}
+/// Refuse every Instagram post while an admin has turned Instagram off.
+pub async fn ensure_enabled(state: &Arc<AppState>) -> Result<()> {
+    if crate::db::is_service_enabled(&state.db, crate::db::INSTAGRAM_ENABLED).await {
+        Ok(())
+    } else {
+        Err(AppError::ServiceUnavailable(
+            "Instagram is temporarily not available.".to_string(),
+        ))
+    }
 }
 
 /// Post a show's cover image to Instagram
@@ -906,8 +1191,8 @@ pub async fn post_show_to_instagram(
     show: &crate::models::Show,
     account: &str,
 ) -> Result<InstagramPostResult> {
-    // Check if Instagram is configured
-    let client = InstagramClient::from_config(&state.config, account)?;
+    ensure_enabled(state).await?;
+    let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Check if cover exists
     if show.cover_generated_at.is_none() {
@@ -988,7 +1273,8 @@ pub async fn post_artist_to_instagram(
     artist: &crate::models::Artist,
     account: &str,
 ) -> Result<InstagramPostResult> {
-    let client = InstagramClient::from_config(&state.config, account)?;
+    ensure_enabled(state).await?;
+    let client = InstagramClient::for_account(&state.config, &state.db, account).await?;
 
     // Require a stored caption
     let caption = artist.instagram_caption.as_deref().ok_or_else(|| {
@@ -1192,3 +1478,7 @@ async fn cleanup_temp_videos(state: &Arc<AppState>, keys: &[String]) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "instagram_tests.rs"]
+mod tests;

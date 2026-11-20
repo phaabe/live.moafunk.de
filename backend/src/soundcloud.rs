@@ -12,8 +12,23 @@ use crate::{models, storage, AppError, AppState, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-const SOUNDCLOUD_OAUTH_URL: &str = "https://secure.soundcloud.com/oauth/token";
-const SOUNDCLOUD_API_BASE: &str = "https://api.soundcloud.com";
+/// SoundCloud API base. Tests point it at a local fake.
+fn api_base() -> String {
+    #[cfg(not(test))]
+    let base = "https://api.soundcloud.com".to_string();
+    #[cfg(test)]
+    let base = tests::API_BASE.with(|base| base.borrow().clone());
+    base
+}
+
+/// OAuth token endpoint. Tests use the fake API base for it too.
+fn oauth_url() -> String {
+    #[cfg(not(test))]
+    let url = "https://secure.soundcloud.com/oauth/token".to_string();
+    #[cfg(test)]
+    let url = format!("{}/oauth/token", api_base());
+    url
+}
 
 // ============================================================================
 // API Response Types
@@ -22,8 +37,8 @@ const SOUNDCLOUD_API_BASE: &str = "https://api.soundcloud.com";
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
-    #[allow(dead_code)]
-    expires_in: Option<u64>,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
     #[allow(dead_code)]
     token_type: Option<String>,
 }
@@ -46,8 +61,42 @@ pub struct SoundCloudUploadResult {
 // OAuth Token
 // ============================================================================
 
+const ACCESS_KEY: &str = "soundcloud_access_token";
+const REFRESH_KEY: &str = "soundcloud_refresh_token";
+const EXPIRES_KEY: &str = "soundcloud_token_expires_at";
+
+/// Refresh the access token when it expires within this many seconds.
+const REFRESH_MARGIN_SECS: i64 = 300;
+
+/// One refresh at a time: SoundCloud may replace the refresh token on each
+/// refresh, so a parallel refresh with the old one would fail.
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The stored OAuth tokens. `expires_at` is a Unix time; `None` means unknown
+/// (a token stored before the expiry was kept).
+struct StoredToken {
+    access: String,
+    refresh: Option<String>,
+    expires_at: Option<i64>,
+}
+
+impl StoredToken {
+    fn expires_within(&self, secs: i64) -> bool {
+        self.expires_at
+            .is_some_and(|at| at - chrono::Utc::now().timestamp() < secs)
+    }
+}
+
+fn not_authorized() -> AppError {
+    AppError::BadRequest(
+        "SoundCloud not authorized. Visit /api/soundcloud/auth to connect your account."
+            .to_string(),
+    )
+}
+
 /// Get a SoundCloud access token.
-/// Priority: 1) static config token, 2) DB-stored OAuth token, 3) error.
+/// Priority: 1) static config token, 2) DB-stored OAuth token, refreshed when
+/// it expires soon, 3) error.
 /// The client_credentials grant does NOT grant upload permissions —
 /// use the authorization_code flow via /api/soundcloud/auth.
 pub async fn get_access_token(state: &Arc<AppState>) -> Result<String> {
@@ -59,46 +108,132 @@ pub async fn get_access_token(state: &Arc<AppState>) -> Result<String> {
 
     // 2. Check DB-stored OAuth token (from authorization_code flow)
     if let Some(token) = get_stored_token(state).await? {
-        tracing::debug!("Using DB-stored SoundCloud OAuth token");
-        return Ok(token);
+        if !token.expires_within(REFRESH_MARGIN_SECS) {
+            tracing::debug!("Using DB-stored SoundCloud OAuth token");
+            return Ok(token.access);
+        }
+        if token.refresh.is_some() {
+            return refresh_access_token(state).await;
+        }
+        if !token.expires_within(0) {
+            // No refresh token, but still valid for a few minutes.
+            return Ok(token.access);
+        }
+        tracing::warn!("Stored SoundCloud token expired and there is no refresh token");
     }
 
     // 3. No valid token available
-    Err(AppError::BadRequest(
-        "SoundCloud not authorized. Visit /api/soundcloud/auth to connect your account."
-            .to_string(),
-    ))
+    Err(not_authorized())
 }
 
-/// Retrieve the stored SoundCloud access token from the app_settings table.
-async fn get_stored_token(state: &Arc<AppState>) -> Result<Option<String>> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM app_settings WHERE key = 'soundcloud_access_token'")
-            .fetch_optional(&state.db)
+/// Get a new access token with the stored refresh token and store both.
+/// When SoundCloud refuses the refresh token (400/401), the stored tokens are
+/// removed, so the status shows "not connected" and the admin reconnects.
+async fn refresh_access_token(state: &Arc<AppState>) -> Result<String> {
+    let _guard = REFRESH_LOCK.lock().await;
+    // Another task may have refreshed while this one waited.
+    let token = get_stored_token(state).await?.ok_or_else(not_authorized)?;
+    if !token.expires_within(REFRESH_MARGIN_SECS) {
+        return Ok(token.access);
+    }
+    let refresh = token.refresh.ok_or_else(not_authorized)?;
+    let (client_id, client_secret) = client_credentials(state)?;
+
+    let resp = reqwest::Client::new()
+        .post(oauth_url())
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh.as_str()),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+        ])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("SoundCloud token refresh failed: {}", e)))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_else(|_| "no body".to_string());
+        if matches!(status.as_u16(), 400 | 401) {
+            tracing::warn!(%status, "SoundCloud refused the refresh token, removing stored tokens");
+            delete_stored_token(state).await?;
+        }
+        return Err(AppError::Internal(format!(
+            "SoundCloud token refresh failed ({}): {}",
+            status, body
+        )));
+    }
+
+    let new: OAuthTokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud token: {}", e)))?;
+    // Without a new refresh token in the answer, the old one stays valid.
+    let refresh = new.refresh_token.as_deref().unwrap_or(&refresh);
+    store_token(state, &new.access_token, Some(refresh), new.expires_in).await?;
+    tracing::info!("Refreshed SoundCloud access token");
+    Ok(new.access_token)
+}
+
+/// Retrieve the stored SoundCloud tokens from the app_settings table.
+async fn get_stored_token(state: &Arc<AppState>) -> Result<Option<StoredToken>> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT key, value FROM app_settings WHERE key IN (?, ?, ?)")
+            .bind(ACCESS_KEY)
+            .bind(REFRESH_KEY)
+            .bind(EXPIRES_KEY)
+            .fetch_all(&state.db)
             .await?;
-    Ok(row.map(|(v,)| v))
+    let get = |key: &str| rows.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+    Ok(get(ACCESS_KEY).map(|access| StoredToken {
+        access,
+        refresh: get(REFRESH_KEY),
+        expires_at: get(EXPIRES_KEY).and_then(|v| v.parse().ok()),
+    }))
 }
 
-/// Store a SoundCloud access token in the app_settings table.
-pub async fn store_token(state: &Arc<AppState>, token: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO app_settings (key, value, updated_at) VALUES ('soundcloud_access_token', ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-    )
-    .bind(token)
-    .execute(&state.db)
-    .await?;
-    tracing::info!("Stored SoundCloud access token in database");
+/// Store SoundCloud OAuth tokens in the app_settings table. A missing refresh
+/// token or expiry removes the old value, so it never sticks to a new access token.
+pub async fn store_token(
+    state: &Arc<AppState>,
+    access: &str,
+    refresh: Option<&str>,
+    expires_in: Option<i64>,
+) -> Result<()> {
+    let expires_at = expires_in.map(|secs| (chrono::Utc::now().timestamp() + secs).to_string());
+    let mut tx = state.db.begin().await?;
+    for (key, value) in [
+        (ACCESS_KEY, Some(access)),
+        (REFRESH_KEY, refresh),
+        (EXPIRES_KEY, expires_at.as_deref()),
+    ] {
+        match value {
+            Some(value) => sqlx::query(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            )
+            .bind(key)
+            .bind(value),
+            None => sqlx::query("DELETE FROM app_settings WHERE key = ?").bind(key),
+        }
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    tracing::info!("Stored SoundCloud OAuth tokens in database");
     Ok(())
 }
 
-/// Delete the stored SoundCloud access token from the database.
+/// Delete the stored SoundCloud tokens from the database.
 /// This forces re-authorization on the next upload attempt.
 pub async fn delete_stored_token(state: &Arc<AppState>) -> Result<()> {
-    sqlx::query("DELETE FROM app_settings WHERE key = 'soundcloud_access_token'")
+    sqlx::query("DELETE FROM app_settings WHERE key IN (?, ?, ?)")
+        .bind(ACCESS_KEY)
+        .bind(REFRESH_KEY)
+        .bind(EXPIRES_KEY)
         .execute(&state.db)
         .await?;
-    tracing::info!("Deleted stored SoundCloud access token from database");
+    tracing::info!("Deleted stored SoundCloud tokens from database");
     Ok(())
 }
 
@@ -107,13 +242,17 @@ pub fn is_configured(state: &Arc<AppState>) -> bool {
     state.config.soundcloud_access_token.is_some() || state.config.soundcloud_client_id.is_some()
 }
 
-/// Check if SoundCloud has a valid access token (static, or stored in DB).
+/// Check if SoundCloud has a usable access token (static, or stored in DB).
+/// A stored token without a refresh token stops counting once it expired.
 /// This is an async check unlike is_configured().
 pub async fn has_token(state: &Arc<AppState>) -> bool {
     if state.config.soundcloud_access_token.is_some() {
         return true;
     }
-    matches!(get_stored_token(state).await, Ok(Some(_)))
+    matches!(
+        get_stored_token(state).await,
+        Ok(Some(token)) if token.refresh.is_some() || !token.expires_within(0)
+    )
 }
 
 // ============================================================================
@@ -170,8 +309,13 @@ pub async fn build_description(state: &Arc<AppState>, show_id: i64) -> Result<St
 
             if let Some(ref ig) = artist.instagram {
                 if !ig.is_empty() {
-                    let ig_handle = ig.trim_start_matches('@');
-                    socials.push(format!("Instagram: https://instagram.com/{}", ig_handle));
+                    // The form asks for a profile URL; keep it, build one from a handle.
+                    let ig_link = if ig.starts_with("http") {
+                        ig.clone()
+                    } else {
+                        format!("https://instagram.com/{}", ig.trim_start_matches('@'))
+                    };
+                    socials.push(format!("Instagram: {}", ig_link));
                 }
             }
 
@@ -215,6 +359,7 @@ pub async fn build_title(state: &Arc<AppState>, show: &models::Show) -> Result<S
 /// Sets title, description, artwork from the show's cover image.
 /// Stores the resulting track_id and URL in the database.
 pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCloudUploadResult> {
+    ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 
     // Fetch show
@@ -294,6 +439,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         content_type = recording_content_type.as_str(),
         "Downloaded recording from R2"
     );
+    let upload_seconds = upload_seconds_for(recording_bytes.len());
 
     // Determine filename for the upload
     let filename = source_filename.as_str();
@@ -357,8 +503,15 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         }
     }
 
+    // Staging only: make room on the test account first. An account over its
+    // upload time refuses every upload, so cleaning up after an upload would
+    // never run again. Best effort.
+    if let Err(e) = cleanup_old_tracks(state, &access_token, upload_seconds).await {
+        tracing::error!(error = %e, "Failed to delete old tracks before the upload");
+    }
+
     let resp = client
-        .post(format!("{}/tracks", SOUNDCLOUD_API_BASE))
+        .post(format!("{}/tracks", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
         .multipart(form)
         .send()
@@ -437,7 +590,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
 /// treated as success — the track is already gone.
 async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &str) -> Result<()> {
     let resp = client
-        .delete(format!("{}/tracks/{}", SOUNDCLOUD_API_BASE, track_id))
+        .delete(format!("{}/tracks/{}", api_base(), track_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .send()
         .await
@@ -455,10 +608,209 @@ async fn delete_track(client: &reqwest::Client, access_token: &str, track_id: &s
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct Me {
+    permalink: String,
+    quota: Option<Quota>,
+}
+
+/// Upload time of the account. A Free account has 2 hours.
+#[derive(Debug, Deserialize)]
+struct Quota {
+    #[serde(default)]
+    unlimited_upload_quota: bool,
+    upload_seconds_left: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackSummary {
+    id: i64,
+    /// Length in milliseconds.
+    duration: Option<i64>,
+}
+
+/// How many of `tracks` (newest first) stay before an upload; the rest is
+/// deleted. The upload adds one track, so `keep - 1` stay. Then the oldest go
+/// until the account has upload time left: SoundCloud refuses an upload (401)
+/// while `upload_seconds_left` is 0 or less, and takes any length above 0.
+/// So the oldest go until more time is left than the new track (`needed`
+/// seconds) takes: a long track must not leave the account without time for
+/// the next upload. Deleted time seems to come back with a delay (an upload
+/// 0.1 s after a delete still got 401), so it is freed one upload early.
+fn tracks_to_keep(
+    tracks: &[TrackSummary],
+    keep: usize,
+    seconds_left: Option<i64>,
+    needed: i64,
+) -> usize {
+    let seconds = |t: &TrackSummary| t.duration.unwrap_or(0) / 1000;
+    let mut kept = (keep.max(1) - 1).min(tracks.len());
+    if let Some(mut left) = seconds_left {
+        left += tracks[kept..].iter().map(seconds).sum::<i64>();
+        while left <= needed && kept > 0 {
+            kept -= 1;
+            left += seconds(&tracks[kept]);
+        }
+    }
+    kept
+}
+
+/// Upload time (seconds) a file of `bytes` takes on SoundCloud: its length.
+// shortcut: the length at 64 kbit/s, never shorter for an MP3 of 64 kbit/s or
+// more; a lower bitrate can still leave the account over its time.
+fn upload_seconds_for(bytes: usize) -> i64 {
+    (bytes / 8_000) as i64
+}
+
+/// The items of a list answer. SoundCloud wraps a paginated list in
+/// `{"collection": [...]}`; the old plain array is deprecated but still read.
+fn list_items<T: serde::de::DeserializeOwned>(
+    body: &str,
+) -> std::result::Result<Vec<T>, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let Some(collection) = value.get_mut("collection") {
+        value = collection.take();
+    }
+    serde_json::from_value(value)
+}
+
+/// The station's production account. The staging cleanup refuses to run on it.
+const STATION_ACCOUNT: &str = "radio-moafunk";
+
+/// Permalink (the account name in the profile URL) of the token's account.
+async fn me_permalink(access_token: &str) -> Result<String> {
+    Ok(fetch_me(access_token).await?.permalink)
+}
+
+/// The token's account (`GET /me`).
+async fn fetch_me(access_token: &str) -> Result<Me> {
+    let resp = reqwest::Client::new()
+        .get(format!("{}/me", api_base()))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("SoundCloud /me request failed: {}", e)))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "SoundCloud /me failed ({}): {}",
+            status, body
+        )));
+    }
+    resp.json()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud /me: {}", e)))
+}
+
+/// Refuse a token of another account than `SOUNDCLOUD_ACCOUNT` (when set).
+async fn check_account(state: &AppState, access_token: &str) -> Result<()> {
+    let Some(want) = state.config.soundcloud_account.as_deref() else {
+        return Ok(());
+    };
+    let got = me_permalink(access_token).await?;
+    if got.eq_ignore_ascii_case(want) {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "This server uploads to the SoundCloud account '{want}', but you logged in as '{got}'. \
+         Log out of SoundCloud, then connect with '{want}'."
+    )))
+}
+
+/// Staging only, before an upload: make room on the test account. With the
+/// new track, the newest `SOUNDCLOUD_KEEP_TRACKS` tracks stay; more go while
+/// the account has no upload time left (see `tracks_to_keep`), or less than
+/// the new track's `upload_seconds`. Needs
+/// APP_ENV=staging, SOUNDCLOUD_ACCOUNT and a token of that account, so it can
+/// never delete station tracks.
+async fn cleanup_old_tracks(
+    state: &AppState,
+    access_token: &str,
+    upload_seconds: i64,
+) -> Result<()> {
+    let Some(keep) = state.config.soundcloud_keep_tracks else {
+        return Ok(());
+    };
+    if !state.config.app_env.trim().eq_ignore_ascii_case("staging") {
+        return Err(AppError::Internal(
+            "SOUNDCLOUD_KEEP_TRACKS works only with APP_ENV=staging; no track deleted".to_string(),
+        ));
+    }
+    let Some(account) = state.config.soundcloud_account.as_deref() else {
+        return Err(AppError::Internal(
+            "SOUNDCLOUD_KEEP_TRACKS needs SOUNDCLOUD_ACCOUNT; no track deleted".to_string(),
+        ));
+    };
+    // Even a wrong pin never cleans the station account.
+    if account.eq_ignore_ascii_case(STATION_ACCOUNT) {
+        return Err(AppError::Internal(format!(
+            "SOUNDCLOUD_ACCOUNT is the station account '{STATION_ACCOUNT}'; no track deleted"
+        )));
+    }
+    let me = fetch_me(access_token).await?;
+    if !me.permalink.eq_ignore_ascii_case(account) {
+        return Err(AppError::Internal(format!(
+            "The token belongs to '{}', not to '{account}'; no track deleted",
+            me.permalink
+        )));
+    }
+    let seconds_left = me
+        .quota
+        .filter(|q| !q.unlimited_upload_quota)
+        .and_then(|q| q.upload_seconds_left);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{}/me/tracks", api_base()))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .query(&[("limit", "200"), ("linked_partitioning", "true")])
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("List tracks request failed: {}", e)))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Internal(format!(
+            "List tracks failed ({}): {}",
+            status, body
+        )));
+    }
+    // shortcut: one page of 200 tracks; enough while cleanup runs before every upload.
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to read tracks: {}", e)))?;
+    let mut tracks: Vec<TrackSummary> = list_items(&body)
+        .map_err(|e| AppError::Internal(format!("Failed to parse tracks: {}", e)))?;
+    // Newest first: SoundCloud track ids grow over time.
+    tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
+    let kept = tracks_to_keep(&tracks, keep, seconds_left, upload_seconds);
+    for track in &tracks[kept..] {
+        delete_track(&client, access_token, &track.id.to_string()).await?;
+        tracing::info!(
+            track_id = track.id,
+            "Deleted old SoundCloud track (staging cleanup)"
+        );
+    }
+    Ok(())
+}
+
 /// Whether a just-finalized recording should be auto-uploaded to SoundCloud.
 /// Pure decision so the policy is testable: upload only when the feature is
 /// enabled and the integration is configured. Not gated on "already uploaded":
 /// a newer recording deliberately *replaces* the show's existing track audio.
+/// Refuse every SoundCloud write while an admin has turned SoundCloud off.
+pub async fn ensure_enabled(state: &Arc<AppState>) -> Result<()> {
+    if crate::db::is_service_enabled(&state.db, crate::db::SOUNDCLOUD_ENABLED).await {
+        Ok(())
+    } else {
+        Err(AppError::ServiceUnavailable(
+            "SoundCloud is temporarily not available.".to_string(),
+        ))
+    }
+}
+
 pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
     enabled && configured
 }
@@ -477,6 +829,13 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
             enabled = state.config.soundcloud_auto_upload,
             configured = is_configured(state),
             "Skipping SoundCloud auto-upload (disabled or not configured)"
+        );
+        return;
+    }
+    if ensure_enabled(state).await.is_err() {
+        tracing::info!(
+            show_id,
+            "Skipping SoundCloud auto-upload (turned off by an admin)"
         );
         return;
     }
@@ -595,9 +954,9 @@ async fn find_playlist_by_title(
     title: &str,
 ) -> Result<Option<i64>> {
     let resp = client
-        .get(format!("{}/me/playlists", SOUNDCLOUD_API_BASE))
+        .get(format!("{}/me/playlists", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
-        .query(&[("limit", "200"), ("linked_partitioning", "false")])
+        .query(&[("limit", "200"), ("linked_partitioning", "true")])
         .send()
         .await
         .map_err(|e| AppError::Internal(format!("List playlists request failed: {}", e)))?;
@@ -611,9 +970,11 @@ async fn find_playlist_by_title(
         )));
     }
 
-    let playlists: Vec<PlaylistSummary> = resp
-        .json()
+    let body = resp
+        .text()
         .await
+        .map_err(|e| AppError::Internal(format!("Failed to read playlists: {}", e)))?;
+    let playlists: Vec<PlaylistSummary> = list_items(&body)
         .map_err(|e| AppError::Internal(format!("Failed to parse playlists: {}", e)))?;
 
     let wanted = title.trim().to_lowercase();
@@ -635,7 +996,7 @@ async fn get_playlist_track_ids(
     playlist_id: i64,
 ) -> Result<Vec<i64>> {
     let resp = client
-        .get(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .get(format!("{}/playlists/{}", api_base(), playlist_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .send()
         .await
@@ -669,7 +1030,7 @@ async fn set_playlist_tracks(
         .map(|id| serde_json::json!({ "id": id }))
         .collect();
     let resp = client
-        .put(format!("{}/playlists/{}", SOUNDCLOUD_API_BASE, playlist_id))
+        .put(format!("{}/playlists/{}", api_base(), playlist_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .json(&serde_json::json!({ "playlist": { "tracks": tracks } }))
         .send()
@@ -695,7 +1056,7 @@ async fn create_playlist(
     track_id: i64,
 ) -> Result<i64> {
     let resp = client
-        .post(format!("{}/playlists", SOUNDCLOUD_API_BASE))
+        .post(format!("{}/playlists", api_base()))
         .header("Authorization", format!("OAuth {}", access_token))
         .json(&serde_json::json!({
             "playlist": {
@@ -729,11 +1090,73 @@ async fn create_playlist(
 // ============================================================================
 
 /// Set a SoundCloud track's sharing to public or private.
+/// How often the scheduler asks SoundCloud about tracks that posts wait for.
+pub const PUBLIC_CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(15);
+
+/// A track made public on soundcloud.com, not in the app, never set
+/// `soundcloud_public`. For every episode whose post-announcement waits for
+/// SoundCloud and whose track is private here, ask SoundCloud for the
+/// track's sharing and mark the public ones. Returns the shows marked public.
+pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT s.id, s.soundcloud_track_id FROM shows s \
+         JOIN announcements a ON a.show_id = s.id \
+         WHERE a.slot = 'post' AND a.state = 'waiting_soundcloud' \
+           AND s.soundcloud_track_id IS NOT NULL AND COALESCE(s.soundcloud_public, 0) = 0 \
+         ORDER BY s.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() || !is_configured(state) || !has_token(state).await {
+        return Ok(Vec::new());
+    }
+    let access_token = get_access_token(state).await?;
+
+    #[derive(Deserialize)]
+    struct Sharing {
+        sharing: Option<String>,
+    }
+    let client = reqwest::Client::new();
+    let mut marked = Vec::new();
+    for (show_id, track_id) in rows {
+        let resp = client
+            .get(format!("{}/tracks/{}", api_base(), track_id))
+            .header("Authorization", format!("OAuth {}", access_token))
+            .send()
+            .await;
+        let track = match resp {
+            Ok(r) if r.status().is_success() => r.json::<Sharing>().await.ok(),
+            Ok(r) => {
+                tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
+                None
+            }
+            Err(e) => {
+                tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
+                None
+            }
+        };
+        if track.and_then(|t| t.sharing).as_deref() == Some("public") {
+            sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = ?")
+                .bind(show_id)
+                .execute(&state.db)
+                .await?;
+            tracing::info!(
+                show_id,
+                track_id,
+                "SoundCloud track is public on SoundCloud"
+            );
+            marked.push(show_id);
+        }
+    }
+    Ok(marked)
+}
+
 pub async fn set_track_privacy(
     state: &Arc<AppState>,
     show_id: i64,
     public: bool,
 ) -> Result<SoundCloudUploadResult> {
+    ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 
     // Fetch show to get track ID
@@ -758,7 +1181,7 @@ pub async fn set_track_privacy(
 
     let client = reqwest::Client::new();
     let resp = client
-        .put(format!("{}/tracks/{}", SOUNDCLOUD_API_BASE, track_id))
+        .put(format!("{}/tracks/{}", api_base(), track_id))
         .header("Authorization", format!("OAuth {}", access_token))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -801,6 +1224,27 @@ pub async fn set_track_privacy(
         public = public,
         "SoundCloud track privacy updated"
     );
+    // Back to private: a post not sent yet must not link to a private track,
+    // so it waits again; going public sets its time anew.
+    if !public {
+        sqlx::query(
+            "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL, \
+               updated_at = CURRENT_TIMESTAMP \
+             WHERE show_id = ? AND slot = 'post' AND state IN ('scheduled', 'pending_approval') \
+               AND send_claimed_at IS NULL",
+        )
+        .bind(show_id)
+        .execute(&state.db)
+        .await?;
+    }
+    // A public track unlocks the episode's post announcement.
+    if public {
+        if let Err(e) =
+            crate::announcement_send::unlock_waiting_posts(state, chrono::Utc::now()).await
+        {
+            tracing::error!("Announcements: post unlock failed: {e}");
+        }
+    }
 
     Ok(SoundCloudUploadResult {
         success: true,
@@ -816,7 +1260,61 @@ pub async fn set_track_privacy(
 
 const SOUNDCLOUD_AUTHORIZE_URL: &str = "https://secure.soundcloud.com/authorize";
 
+/// A login link works this long and only once.
+const LOGIN_TTL_SECS: i64 = 600;
+/// Most open login links kept; the oldest goes first.
+const MAX_PENDING_LOGINS: usize = 200;
+
+/// An open login: its OAuth `state` and PKCE code verifier.
+struct PendingLogin {
+    state: String,
+    verifier: String,
+    created: i64,
+}
+
+/// Open logins, in memory: after a restart the admin clicks Connect again.
+static PENDING_LOGINS: std::sync::Mutex<Vec<PendingLogin>> = std::sync::Mutex::new(Vec::new());
+
+/// PKCE S256 code challenge of a verifier.
+fn pkce_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    base64_url::encode(&Sha256::digest(verifier.as_bytes()))
+}
+
+/// Open a login and return its OAuth state and PKCE code challenge. The state
+/// starts with the server's APP_ENV (`staging.…`), so production can forward
+/// staging logins (see [`forward_login`]).
+fn start_login(app_env: &str) -> (String, String) {
+    let now = chrono::Utc::now().timestamp();
+    let login = PendingLogin {
+        state: format!(
+            "{}.{}",
+            app_env.trim().to_ascii_lowercase(),
+            crate::auth::generate_session_token()
+        ),
+        verifier: crate::auth::generate_session_token(),
+        created: now,
+    };
+    let opened = (login.state.clone(), pkce_challenge(&login.verifier));
+    let mut pending = PENDING_LOGINS.lock().unwrap_or_else(|e| e.into_inner());
+    pending.retain(|l| now - l.created < LOGIN_TTL_SECS);
+    if pending.len() >= MAX_PENDING_LOGINS {
+        pending.remove(0);
+    }
+    pending.push(login);
+    opened
+}
+
+/// The code verifier of an open login. Each state works once.
+fn take_login(oauth_state: &str) -> Option<String> {
+    let mut pending = PENDING_LOGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let i = pending.iter().position(|l| l.state == oauth_state)?;
+    let login = pending.remove(i);
+    (chrono::Utc::now().timestamp() - login.created < LOGIN_TTL_SECS).then_some(login.verifier)
+}
+
 /// Build the SoundCloud OAuth authorization URL that the admin should visit.
+/// Each call opens a new login (OAuth state + PKCE, which SoundCloud requires).
 pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     let client_id =
         state.config.soundcloud_client_id.as_ref().ok_or_else(|| {
@@ -828,38 +1326,74 @@ pub fn get_auth_url(state: &Arc<AppState>) -> Result<String> {
     // Simple percent-encoding for the redirect URI (only chars that need encoding in our URLs)
     let encoded_redirect = redirect_uri.replace(':', "%3A").replace('/', "%2F");
 
+    // Both are base64url, so they need no encoding.
+    let (oauth_state, challenge) = start_login(&state.config.app_env);
     let url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}",
-        SOUNDCLOUD_AUTHORIZE_URL, client_id, encoded_redirect,
+        "{}?response_type=code&client_id={}&redirect_uri={}\
+         &code_challenge={}&code_challenge_method=S256&state={}",
+        SOUNDCLOUD_AUTHORIZE_URL, client_id, encoded_redirect, challenge, oauth_state,
     );
 
     Ok(url)
 }
 
-/// Exchange an authorization code for an access token and store it in the database.
-pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> {
-    let client_id =
-        state.config.soundcloud_client_id.as_ref().ok_or_else(|| {
-            AppError::BadRequest("SOUNDCLOUD_CLIENT_ID not configured".to_string())
-        })?;
+/// State prefix of logins started on staging.
+const STAGING_STATE_PREFIX: &str = "staging.";
+
+/// Production only: SoundCloud allows one redirect URI per app, so a login
+/// started on staging comes back to production's callback. Returns where to
+/// send it on (`SOUNDCLOUD_FORWARD_URL` with the same code and state), or
+/// `None` to handle the login here. Staging itself never forwards.
+pub fn forward_login(state: &AppState, code: &str, oauth_state: &str) -> Option<String> {
+    let target = state.config.soundcloud_forward_url.as_deref()?;
+    if state.config.app_env.trim().eq_ignore_ascii_case("staging")
+        || !oauth_state.starts_with(STAGING_STATE_PREFIX)
+    {
+        return None;
+    }
+    let query = serde_urlencoded::to_string([("code", code), ("state", oauth_state)]).ok()?;
+    Some(format!("{target}?{query}"))
+}
+
+/// The app's SoundCloud client id and secret.
+fn client_credentials(state: &AppState) -> Result<(&str, &str)> {
+    let client_id = state
+        .config
+        .soundcloud_client_id
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("SOUNDCLOUD_CLIENT_ID not configured".to_string()))?;
     let client_secret = state
         .config
         .soundcloud_client_secret
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| {
             AppError::BadRequest("SOUNDCLOUD_CLIENT_SECRET not configured".to_string())
         })?;
+    Ok((client_id, client_secret))
+}
+
+/// Exchange an authorization code for an access token and store it in the database.
+/// `oauth_state` must be the state of an open login from [`get_auth_url`].
+pub async fn exchange_code(state: &Arc<AppState>, code: &str, oauth_state: &str) -> Result<String> {
+    let (client_id, client_secret) = client_credentials(state)?;
     let redirect_uri = &state.config.soundcloud_redirect_uri;
+    let verifier = take_login(oauth_state).ok_or_else(|| {
+        AppError::BadRequest(
+            "This SoundCloud login is unknown, used or older than 10 minutes. Click Connect again."
+                .to_string(),
+        )
+    })?;
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(SOUNDCLOUD_OAUTH_URL)
+        .post(oauth_url())
         .form(&[
             ("grant_type", "authorization_code"),
             ("code", code),
             ("client_id", client_id),
             ("client_secret", client_secret),
             ("redirect_uri", redirect_uri),
+            ("code_verifier", verifier.as_str()),
         ])
         .send()
         .await
@@ -879,8 +1413,17 @@ pub async fn exchange_code(state: &Arc<AppState>, code: &str) -> Result<String> 
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse SoundCloud token: {}", e)))?;
 
-    // Store the token in DB for persistence across restarts
-    store_token(state, &token_resp.access_token).await?;
+    // Only the account this server is meant for (production vs. test account).
+    check_account(state, &token_resp.access_token).await?;
+
+    // Store the tokens in DB for persistence across restarts
+    store_token(
+        state,
+        &token_resp.access_token,
+        token_resp.refresh_token.as_deref(),
+        token_resp.expires_in,
+    )
+    .await?;
 
     tracing::info!("SoundCloud OAuth authorization successful, token stored");
     Ok(token_resp.access_token)
@@ -892,6 +1435,13 @@ pub struct SoundCloudStatus {
     pub configured: bool,
     pub authorized: bool,
     pub auth_url: Option<String>,
+}
+
+/// The account behind the current token, asked live at SoundCloud (`GET /me`).
+/// Uses the same token as an upload, so a dead or unrefreshable token fails here.
+pub async fn check_connection(state: &Arc<AppState>) -> Result<String> {
+    let token = get_access_token(state).await?;
+    me_permalink(&token).await
 }
 
 pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
@@ -912,18 +1462,5 @@ pub async fn get_status(state: &Arc<AppState>) -> SoundCloudStatus {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::should_auto_upload;
-
-    #[test]
-    fn auto_upload_only_when_enabled_and_configured() {
-        // Happy path: on + configured (fires even if the show already has a
-        // track — a new recording replaces that track's audio).
-        assert!(should_auto_upload(true, true));
-
-        // Either blocker prevents the upload.
-        assert!(!should_auto_upload(false, true)); // kill-switch off
-        assert!(!should_auto_upload(true, false)); // not configured
-        assert!(!should_auto_upload(false, false));
-    }
-}
+#[path = "soundcloud_tests.rs"]
+mod tests;

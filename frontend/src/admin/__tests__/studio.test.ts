@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue';
 
 // Flow screens `studio` (/stream/live) and `studio-onair` (/stream/on-air)
@@ -39,6 +39,7 @@ vi.mock('@admin/api', () => ({
 vi.mock('@admin/composables', () => {
   return {
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
+    DEVICE_ENDED_MESSAGE: 'Audio device is no longer active. Re-select your device.',
     STREAM_AUDIO_BITS_PER_SECOND: 128000,
     streamRecordingMimeType: () => 'audio/webm',
     useHostFlow: () => ({
@@ -122,10 +123,17 @@ beforeEach(() => {
     setOnData: vi.fn(),
     startRecording: vi.fn(() => true),
     stopRecording: vi.fn(),
+    stopRecordingAndFlush: vi.fn(() => Promise.resolve()),
     stopCapture: vi.fn(),
     setStreamBitsPerSecond: vi.fn(),
+    devices: ref([{ deviceId: 'mic-2', label: 'Focusrite USB' }]),
+    listDevices: vi.fn(),
+    captureDevice: vi.fn(() => Promise.resolve(true)),
+    captureScreenAudio: vi.fn(() => Promise.resolve(true)),
   };
 });
+
+const DEVICE_ENDED = 'Audio device is no longer active. Re-select your device.';
 
 afterEach(() => {
   app?.unmount();
@@ -162,7 +170,7 @@ describe('Studio', () => {
     expect(goLiveButton().disabled).toBe(true);
   });
 
-  it('opens Go Live at the start once the test sounds right', async () => {
+  it('opens Go Live at the start once the soundcheck is confirmed', async () => {
     await mountStudio('2026-11-15T11:59:58Z');
     await vi.advanceTimersByTimeAsync(2000);
     expect(goLiveButton().disabled).toBe(true);
@@ -208,6 +216,22 @@ describe('Studio', () => {
     expect(mocks.push).not.toHaveBeenCalled();
     expect(goLiveButton().disabled).toBe(false);
   });
+
+  it('stays on the Studio when the input was unplugged before Go Live', async () => {
+    mocks.passed!.value = true;
+    mocks.capture.startRecording = vi.fn(() => {
+      (mocks.capture.error as { value: string }).value = DEVICE_ENDED;
+      return false;
+    });
+    await mountStudio('2026-11-15T12:00:30Z');
+
+    goLiveButton().click();
+    await vi.advanceTimersByTimeAsync(0);
+    await nextTick();
+    expect(text()).toContain(DEVICE_ENDED);
+    expect(mocks.stopStream).toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
 });
 
 describe('On Air', () => {
@@ -224,13 +248,20 @@ describe('On Air', () => {
       'Studio',
       'On air · 00:00:03 · REC',
       'Live level',
-      'Listeners now37',
       'Connectionstable',
       'End Episode',
     ]) {
       expect(text()).toContain(part);
     }
-    for (const gone of ['Reconnect', 'Stream Ended', 'Ends in', 'chat', 'Moments', 'Stop']) {
+    for (const gone of [
+      'Listeners',
+      'Reconnect',
+      'Stream Ended',
+      'Ends in',
+      'chat',
+      'Moments',
+      'Stop',
+    ]) {
       expect(text()).not.toContain(gone);
     }
     expect(root.querySelectorAll('button')).toHaveLength(1);
@@ -262,52 +293,169 @@ describe('On Air', () => {
     expect(text()).toContain('The recording misses some audio.');
   });
 
-  it('End Episode stops the stream and opens the Wrap-up', async () => {
+  it('is stable again after a short drop, with no notice', async () => {
+    await mountOnAir();
+    mocks.socketState!.value = 'connecting';
+    await nextTick();
+    expect(text()).toContain('Connectionreconnecting…');
+    mocks.socketState!.value = 'live';
+    await nextTick();
+    expect(text()).toContain('Connectionstable');
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('keeps the 10-minute notice after the reconnect', async () => {
+    mocks.socketState!.value = 'connecting';
+    mocks.audioDropped!.value = true;
+    await mountOnAir();
+    mocks.socketState!.value = 'live';
+    await nextTick();
+    expect(text()).toContain('Connectionstable');
+    expect(text()).toContain('The recording misses some audio.');
+  });
+
+  it('shows the server’s reason when the connection is lost', async () => {
+    await mountOnAir();
+    mocks.socketState!.value = 'disconnected';
+    mocks.options.onError!('Another connection took over the stream');
+    await nextTick();
+    expect(text()).toContain('Connectionlost');
+    expect(text()).toContain('Another connection took over the stream');
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  describe('when the audio input is gone', () => {
+    /** What useAudioCapture calls when the device's track ends on air. */
+    const captureError = (message: string) =>
+      (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](message);
+    const inputSelect = () => root.querySelector('select');
+    async function pick(value: string) {
+      const select = inputSelect()!;
+      select.value = value;
+      select.dispatchEvent(new Event('change'));
+      await vi.advanceTimersByTimeAsync(0);
+      await nextTick();
+    }
+
+    it('warns and lets the host pick an input again', async () => {
+      await mountOnAir();
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(inputSelect()).toBeNull();
+
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(text()).toContain('Audio input');
+      expect(mocks.capture.listDevices).toHaveBeenCalled();
+      expect(mocks.push).not.toHaveBeenCalled();
+
+      await pick('mic-2');
+      expect(mocks.capture.captureDevice).toHaveBeenCalledWith('mic-2');
+      expect(mocks.capture.startRecording).toHaveBeenCalledOnce();
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(inputSelect()).toBeNull();
+    });
+
+    it('can share screen audio instead', async () => {
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('screen');
+      expect(mocks.capture.captureScreenAudio).toHaveBeenCalledOnce();
+      expect(mocks.capture.captureDevice).not.toHaveBeenCalled();
+      expect(text()).not.toContain(DEVICE_ENDED);
+    });
+
+    it('keeps the notice and shows why when the picked input fails', async () => {
+      (mocks.capture.captureDevice as Mock).mockResolvedValue(false);
+      (mocks.capture.error as { value: string | null }).value = 'Could not start audio source';
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('mic-2');
+      expect(mocks.capture.startRecording).not.toHaveBeenCalled();
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(text()).toContain('Could not start audio source');
+
+      // The same input again is a new try.
+      expect(inputSelect()!.value).toBe('');
+      (mocks.capture.captureDevice as Mock).mockResolvedValue(true);
+      await pick('mic-2');
+      expect(mocks.capture.captureDevice).toHaveBeenCalledTimes(2);
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(text()).not.toContain('Could not start audio source');
+    });
+
+    it('keeps the notice when the picked input cannot start', async () => {
+      mocks.capture.startRecording = vi.fn(() => {
+        captureError(DEVICE_ENDED);
+        return false;
+      });
+      await mountOnAir();
+      captureError(DEVICE_ENDED);
+      await nextTick();
+      await pick('mic-2');
+      expect(text()).toContain(DEVICE_ENDED);
+      expect(inputSelect()).not.toBeNull();
+    });
+
+    it('shows other audio errors without the input picker', async () => {
+      await mountOnAir();
+      captureError('Recording error');
+      await nextTick();
+      expect(text()).toContain('Recording error');
+      expect(inputSelect()).toBeNull();
+    });
+  });
+
+  const press = async (label: string) => {
+    [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!.click();
+    await vi.advanceTimersByTimeAsync(0);
+  };
+
+  it('End Episode asks once; Keep on air goes back and stops nothing', async () => {
+    await mountOnAir();
+    await press('End Episode');
+    expect(text()).toContain('End the episode?');
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    await press('Keep on air');
+    expect(text()).not.toContain('End the episode?');
+    expect(root.querySelectorAll('button')).toHaveLength(1);
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('End Episode, asked and confirmed, stops the stream and opens the Wrap-up', async () => {
     mocks.socketState!.value = 'error';
     await mountOnAir();
-    [...root.querySelectorAll('button')]
-      .find((b) => b.textContent?.includes('End Episode'))!
-      .click();
-    await vi.advanceTimersByTimeAsync(0);
+    await press('End Episode');
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+    await press('End Episode');
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
     expect(mocks.push).toHaveBeenCalledWith({ path: '/shows/7', state: { episodeEnded: 7 } });
   });
+
+  it('End Episode sends the last recorder chunk before it stops the stream', async () => {
+    let flush!: () => void;
+    (mocks.capture.stopRecordingAndFlush as Mock).mockReturnValue(
+      new Promise<void>((r) => (flush = r))
+    );
+    await mountOnAir();
+    await press('End Episode');
+    await press('End Episode');
+    expect(mocks.capture.stopRecordingAndFlush).toHaveBeenCalledOnce();
+    expect(mocks.stopStream).not.toHaveBeenCalled();
+
+    flush();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.stopStream).toHaveBeenCalledOnce();
+    expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
+  });
 });
 
-// Keep this block last: it swaps in the real LiveSetupTest.
+// The Studio's own flow checks are in studioSoundcheck.test.ts.
 describe('flow', () => {
-  afterEach(() => {
-    // Unmount before the stubbed navigator goes: LiveSetupTest unhooks from it.
-    app?.unmount();
-    app = null;
-    vi.unstubAllGlobals();
-    vi.doMock('@admin/components/LiveSetupTest.vue', () => ({
-      __esModule: true,
-      default: { render: () => h('div', 'Audio input') },
-    }));
-  });
-
-  it('Studio matches the flow', async () => {
-    // The flow names the audio controls, so check the real ones.
-    vi.doUnmock('@admin/components/LiveSetupTest.vue');
-    Object.assign(mocks.capture, {
-      devices: ref([]),
-      selectedDeviceId: ref(''),
-      refreshDevices: vi.fn(),
-      listDevices: vi.fn(),
-    });
-    vi.stubGlobal('navigator', {
-      ...navigator,
-      mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
-    });
-    mocks.passed = ref(true);
-    vi.setSystemTime(new Date('2026-11-15T11:41:18Z'));
-    const { default: FlowLive } = await import('../pages/flow/FlowLive.vue');
-    await mountPage(FlowLive);
-    await expectFlow('studio', root);
-  });
-
   it('Studio · On Air matches the flow', async () => {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
@@ -316,13 +464,41 @@ describe('flow', () => {
     await expectFlow('studio-onair', root);
   });
 
-  it('Studio · On Air during a long drop: the flow has no such state yet', async () => {
-    mocks.socketState = ref('connecting');
-    mocks.audioDropped = ref(true);
+  async function mountOnAirAt4210() {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
     await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
-    await expectFlow('studio-onair', root, 'reconnecting');
+  }
+
+  it('Studio · On Air, reconnecting matches the flow (a drop of more than 10 minutes)', async () => {
+    mocks.socketState = ref('connecting');
+    mocks.audioDropped = ref(true);
+    await mountOnAirAt4210();
+    await expectFlow('studio-onair-reconnecting', root);
+  });
+
+  it('Studio · On Air, connection lost matches the flow', async () => {
+    mocks.socketState = ref('disconnected');
+    await mountOnAirAt4210();
+    mocks.options.onError!('Another connection took over the stream');
+    await nextTick();
+    await expectFlow('studio-onair-lost', root);
+  });
+
+  it('Studio · On Air, ending matches the flow (End Episode asks once)', async () => {
+    await mountOnAirAt4210();
+    [...root.querySelectorAll('button')]
+      .find((b) => b.textContent?.trim() === 'End Episode')!
+      .click();
+    await nextTick();
+    await expectFlow('studio-onair-end', root);
+  });
+
+  it('Studio · On Air, input gone matches the flow', async () => {
+    await mountOnAirAt4210();
+    (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](DEVICE_ENDED);
+    await nextTick();
+    await expectFlow('studio-onair-noinput', root);
   });
 });

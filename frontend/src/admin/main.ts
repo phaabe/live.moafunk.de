@@ -3,8 +3,10 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import router from './router';
 import { staticHostRedirectTarget } from './staticHostRedirect';
+import { reloadOnStaleChunk } from './chunkReload';
 import '@shared/styles/tokens.css';
 import './styles/admin.css';
+import './styles/host.css';
 import 'v-calendar/style.css';
 
 // This bundle is also published to GitHub Pages, where there is no API behind
@@ -13,6 +15,8 @@ const redirect = staticHostRedirectTarget(window.location);
 if (redirect) {
   window.location.replace(redirect);
 } else {
+  window.addEventListener('vite:preloadError', () => reloadOnStaleChunk());
+
   const app = createApp(App);
 
   app.use(createPinia());

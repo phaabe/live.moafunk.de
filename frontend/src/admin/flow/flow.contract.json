@@ -2,16 +2,99 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 6,
+  "rev": 21,
   "screens": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "60a47e42",
+      "notesHash": "4a66ed6e",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Dashboard"
+        },
+        {
+          "k": "h2",
+          "text": "Upcoming shows"
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Live",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
+          "meta": "Upcoming · Live",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Upcoming · Pre-recorded",
+          "to": "episode-pre"
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
+          "text": "Schedule",
+          "to": "schedule"
+        },
+        {
+          "k": "nav",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "nav",
+          "text": "Pool",
+          "to": "unheard-pool"
+        },
+        {
+          "k": "nav",
+          "text": "lena",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Change Password",
+          "to": "set-password"
+        },
+        {
+          "k": "nav",
+          "text": "Recovery Email",
+          "to": "recovery-email"
+        },
+        {
+          "k": "nav",
+          "text": "Logout",
+          "to": "login"
+        }
+      ]
+    },
     {
       "id": "schedule",
       "title": "Schedule",
       "who": "host",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "dc7292f1",
-      "notesHash": "767dbae5",
+      "path": "admin.live.moafunk.de/#/schedule",
+      "hash": "49407601",
+      "notesHash": "67e71cb5",
       "elements": [
         {
           "k": "h1",
@@ -60,6 +143,11 @@
         },
         {
           "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
           "text": "Schedule",
           "to": "schedule"
         },
@@ -101,8 +189,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "19320f7e",
-      "notesHash": "76a6a531",
+      "hash": "868f9bba",
+      "notesHash": "ea6f100c",
       "elements": [
         {
           "k": "h1",
@@ -125,6 +213,11 @@
           "text": "New show",
           "to": "new-show",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -233,8 +326,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "8f0978bf",
-      "notesHash": "152f6c7f",
+      "hash": "25c1eea7",
+      "notesHash": "81e1aa2b",
       "elements": [
         {
           "k": "back",
@@ -243,7 +336,7 @@
         },
         {
           "k": "media",
-          "text": "Show cover",
+          "text": "Show cover · drop an image",
           "to": null
         },
         {
@@ -259,6 +352,46 @@
           "text": "Book Slot",
           "to": "book-slot",
           "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Brunchtime"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "field",
+          "text": "Repeats",
+          "value": "Every week ▾"
+        },
+        {
+          "k": "field",
+          "text": "Day",
+          "value": "Sunday ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Instagram handle",
+          "value": "@brunchtime"
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
         },
         {
           "k": "h2",
@@ -401,8 +534,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "574a351b",
-      "notesHash": "06275bb2",
+      "hash": "e7a8a2aa",
+      "notesHash": "38d6a67d",
       "elements": [
         {
           "k": "back",
@@ -443,8 +576,36 @@
         },
         {
           "k": "field",
-          "text": "Announcements",
-          "value": "Story + Post · before and after"
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 25.10.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
         },
         {
           "k": "button",
@@ -457,6 +618,184 @@
           "text": "Cancel booking",
           "to": null,
           "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Promotion · Instagram"
+        },
+        {
+          "k": "text",
+          "text": "Posted by @moafunk_radio. @brunchtime is invited as collaborator."
+        },
+        {
+          "k": "row",
+          "text": "Pre · feed post 4:5",
+          "meta": "Scheduled · Fr 23.10. · 18:00",
+          "to": "announce"
+        },
+        {
+          "k": "button",
+          "text": "Edit pre-announcement",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Cancel pre-announcement",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "On air · story 9:16",
+          "meta": "Sent when you go live",
+          "on": true
+        },
+        {
+          "k": "row",
+          "text": "Post · feed post 4:5",
+          "meta": "Set up in Wrap-up when the SoundCloud track is public",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Recording"
+        },
+        {
+          "k": "field",
+          "text": "Recording file",
+          "value": "MP3 or WAV"
+        },
+        {
+          "k": "button",
+          "text": "Upload to SoundCloud",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "announce",
+      "title": "Announcement composer",
+      "who": "host",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
+      "hash": "b3ca3db6",
+      "notesHash": "db3d3c75",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Pre-announcement"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Feed post 4:5 · So 25.10. · Brunchtime"
+        },
+        {
+          "k": "h2",
+          "text": "Image"
+        },
+        {
+          "k": "choice",
+          "text": "Episode cover",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Upload a photo",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Guest photo",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "media",
+          "text": "Image · the station frame, font and filter are added",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Headline on the image",
+          "value": "Sunday brunch"
+        },
+        {
+          "k": "field",
+          "text": "Caption",
+          "value": "Brunchtime is back this Sunday. Two hours of brunch sounds with Juno Park."
+        },
+        {
+          "k": "check",
+          "text": "Invite @brunchtime as collaborator",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "h2",
+          "text": "When"
+        },
+        {
+          "k": "choice",
+          "text": "Fr 23.10. · 18:00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 12:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 18:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Post now",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Preview"
+        },
+        {
+          "k": "media",
+          "text": "Preview · 4:5 post by moafunk_radio and brunchtime",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "After it is posted, the caption cannot be changed. Until then you can edit or cancel it here."
+        },
+        {
+          "k": "text",
+          "text": "Uses 1 of 3 announcements for this episode."
+        },
+        {
+          "k": "button",
+          "text": "Schedule post",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "back",
+          "primary": false
         }
       ]
     },
@@ -466,8 +805,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/43",
-      "hash": "56f8c825",
-      "notesHash": "35e32059",
+      "hash": "2867c7b5",
+      "notesHash": "5efe2392",
       "elements": [
         {
           "k": "back",
@@ -507,6 +846,173 @@
           "text": "Open Wrap-up",
           "to": "wrapup",
           "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Title",
+          "value": "Brunchtime #32"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 08.11.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "episode-pre-nofile",
+      "title": "Episode · Pre-recorded, no file",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/43",
+      "hash": "4f432b4a",
+      "notesHash": "7f53b1be",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "h1",
+          "text": "So 08.11. · Brunchtime"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Pre-recorded · no file yet · plays at 12:00"
+        },
+        {
+          "k": "h2",
+          "text": "Next step"
+        },
+        {
+          "k": "text",
+          "text": "Upload your set before air time. Without a file nothing plays."
+        },
+        {
+          "k": "button",
+          "text": "Upload your set",
+          "to": "upload",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "field",
+          "text": "Title",
+          "value": "Brunchtime #32"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Guest mix with Juno Park."
+        },
+        {
+          "k": "field",
+          "text": "Date",
+          "value": "So 08.11.2026 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "episode-view",
+      "title": "Episode (other host)",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/44",
+      "hash": "e507e038",
+      "notesHash": "c4d3be8b",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Dashboard",
+          "to": "dashboard"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Di 27.10. · Night Shift"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Upcoming · Live · 20:00–22:00"
+        },
+        {
+          "k": "text",
+          "text": "Late-night club sounds, every Tuesday from 20:00."
+        },
+        {
+          "k": "h2",
+          "text": "Details"
+        },
+        {
+          "k": "row",
+          "text": "Host",
+          "meta": "jonas",
+          "to": null
         }
       ]
     },
@@ -516,8 +1022,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "9191bf61",
-      "notesHash": "3bdf2dca",
+      "hash": "5e94b0cd",
+      "notesHash": "bc9ceae0",
       "elements": [
         {
           "k": "back",
@@ -544,10 +1050,32 @@
           "value": "Focusrite USB ▾"
         },
         {
-          "k": "check",
-          "text": "Test broadcast sounds right",
-          "meta": "",
-          "on": true
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-checking",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Not checked yet",
+          "to": null
         },
         {
           "k": "button",
@@ -556,8 +1084,21 @@
           "primary": false
         },
         {
-          "k": "media",
-          "text": "Test player · what listeners hear",
+          "k": "button",
+          "text": "Skip",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
           "to": null
         },
         {
@@ -575,13 +1116,331 @@
       ]
     },
     {
+      "id": "studio-checking",
+      "title": "Studio · Soundcheck, music tested",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "8f6dff6c",
+      "notesHash": "54b583db",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start test",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Skip",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Not checked yet",
+          "to": null
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "studio-ready",
+      "title": "Studio · Soundcheck, ready",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "85fbd85f",
+      "notesHash": "d5625cae",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Good · peak −12 dB · average −24 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Sounds good — ready to go live"
+        },
+        {
+          "k": "button",
+          "text": "Not OK",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-problem",
+      "title": "Studio · Soundcheck, problem",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "753f759c",
+      "notesHash": "eacaa2a2",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "warn",
+          "text": "Soundcheck · show starts in 18:42"
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "text",
+          "text": "Music and mic use this one input. You do not need two: test them one after the other below."
+        },
+        {
+          "k": "row",
+          "text": "Music",
+          "meta": "Good · peak −9 dB · average −21 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Mic",
+          "meta": "Too quiet · peak −38 dB · average −48 dB",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Re-run",
+          "to": "studio-ready",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Listen to return feed",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Server",
+          "meta": "Received your audio",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Return feed",
+          "meta": "Your audio comes back",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "The mic is too quiet: peak −38 dB, average −48 dB. Turn up its gain until the average is around −20 dB."
+        },
+        {
+          "k": "button",
+          "text": "Confirm anyway",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "check",
+          "text": "Record this show",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "button",
+          "text": "Go Live",
+          "to": null,
+          "primary": false
+        }
+      ]
+    },
+    {
       "id": "studio-onair",
       "title": "Studio · On Air",
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "b0b2f0e3",
-      "notesHash": "5a47a38f",
+      "hash": "06b0ad1a",
+      "notesHash": "22c11896",
       "elements": [
         {
           "k": "h1",
@@ -634,7 +1493,339 @@
         {
           "k": "button",
           "text": "End Episode",
+          "to": "studio-onair-end",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-reconnecting",
+      "title": "Studio · On Air, reconnecting",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "edbc2161",
+      "notesHash": "d8b0b564",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "reconnecting…",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "The connection was down for more than 10 minutes. The recording misses some audio."
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "studio-onair-end",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-lost",
+      "title": "Studio · On Air, connection lost",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "1caa3e80",
+      "notesHash": "a7a8aafd",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "lost",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "Another connection took over the stream"
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "studio-onair-end",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-noinput",
+      "title": "Studio · On Air, input gone",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "a7aa4b34",
+      "notesHash": "3aed2b12",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "stable",
+          "to": null
+        },
+        {
+          "k": "notice",
+          "text": "Audio device is no longer active. Re-select your device."
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Select audio input ▾"
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "studio-onair-end",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-onair-end",
+      "title": "Studio · On Air, ending",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/on-air",
+      "hash": "029901f4",
+      "notesHash": "1ddc7d23",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10 · REC"
+        },
+        {
+          "k": "media",
+          "text": "Live level meter",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Listeners now",
+          "meta": "37",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Connection",
+          "meta": "stable",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Moments"
+        },
+        {
+          "k": "button",
+          "text": "Mark moment",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "End the episode?"
+        },
+        {
+          "k": "button",
+          "text": "Keep on air",
+          "to": "studio-onair",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
           "to": "wrapup",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "studio-backonair",
+      "title": "Studio · Back on air",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/stream/live",
+      "hash": "3186c3da",
+      "notesHash": "1c0357c7",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Studio"
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Still on air · no audio"
+        },
+        {
+          "k": "notice",
+          "text": "Your show is still on air, but no audio arrives. Listeners hear silence."
+        },
+        {
+          "k": "media",
+          "text": "Input level meter",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Audio input",
+          "value": "Select audio input ▾"
+        },
+        {
+          "k": "button",
+          "text": "Go back on air",
+          "to": "studio-onair",
           "primary": true
         }
       ]
@@ -645,8 +1836,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "0c51c988",
-      "notesHash": "a3418514",
+      "hash": "831e0603",
+      "notesHash": "d4b89a34",
       "elements": [
         {
           "k": "back",
@@ -685,6 +1876,22 @@
         },
         {
           "k": "h2",
+          "text": "Post-announcement"
+        },
+        {
+          "k": "row",
+          "text": "Post · feed post 4:5",
+          "meta": "Mi 28.10. · 18:00 · waits for the public track",
+          "to": "announce"
+        },
+        {
+          "k": "button",
+          "text": "Set up post-announcement",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "h2",
           "text": "3 moments for Instagram"
         },
         {
@@ -719,8 +1926,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "9dfee1cb",
-      "notesHash": "35e32059",
+      "hash": "bed29c37",
+      "notesHash": "d07f892e",
       "elements": [
         {
           "k": "h1",
@@ -734,7 +1941,7 @@
         {
           "k": "pill",
           "tone": "ok",
-          "text": "Instagram · 3 posts queued"
+          "text": "Instagram · post-announcement Mi 28.10. · 18:00"
         },
         {
           "k": "button",
@@ -750,8 +1957,8 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "89872408",
-      "notesHash": "d155d113",
+      "hash": "e0e462bc",
+      "notesHash": "d0328353",
       "elements": [
         {
           "k": "back",
@@ -812,6 +2019,11 @@
           "text": "Copy invite link",
           "to": "submission",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Dashboard",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -1041,7 +2253,7 @@
       "who": "host",
       "lane": "signin",
       "path": "admin.live.moafunk.de/#/login",
-      "hash": "830f2c10",
+      "hash": "7076a9ab",
       "notesHash": "69c2144f",
       "elements": [
         {
@@ -1066,7 +2278,7 @@
         {
           "k": "button",
           "text": "Login",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {
@@ -1160,7 +2372,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/recovery-email",
-      "hash": "04bc981c",
+      "hash": "bacbb3ef",
       "notesHash": "dd46e540",
       "elements": [
         {
@@ -1195,7 +2407,7 @@
         {
           "k": "button",
           "text": "Skip for now",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": false
         }
       ]
@@ -1206,7 +2418,7 @@
       "who": "host",
       "lane": "first",
       "path": "admin.live.moafunk.de/#/verify-email?token=…",
-      "hash": "440e18b0",
+      "hash": "21b819dd",
       "notesHash": "0c9b45ca",
       "elements": [
         {
@@ -1220,7 +2432,7 @@
         {
           "k": "button",
           "text": "Verify Email",
-          "to": "schedule",
+          "to": "dashboard",
           "primary": true
         },
         {
@@ -1368,6 +2580,145 @@
           "k": "button",
           "text": "Back to login",
           "to": "login",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "admin-instagram",
+      "title": "Instagram queue",
+      "who": "admin",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/admin/instagram",
+      "hash": "807be5fd",
+      "notesHash": "8dd7ca5f",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Instagram queue"
+        },
+        {
+          "k": "pill",
+          "tone": "ok",
+          "text": "Posts to @moafunk_radio · token valid to 15.01."
+        },
+        {
+          "k": "button",
+          "text": "Pause all posting",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "This week · 19.–25.10."
+        },
+        {
+          "k": "text",
+          "text": "Feed posts 3 / 5 · stories today 1 / 6"
+        },
+        {
+          "k": "row",
+          "text": "Fr 23.10. · 18:00 · Pre",
+          "meta": "Brunchtime · lena · Needs approval",
+          "to": "episode"
+        },
+        {
+          "k": "button",
+          "text": "Approve",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Reject",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "So 25.10. · at go-live · On air",
+          "meta": "Brunchtime · lena · Armed",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Mi 28.10. · 18:00 · Post",
+          "meta": "Brunchtime · lena · Waiting for SoundCloud",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "Mi 21.10. · 20:14 · On air",
+          "meta": "Night Shift · jonas · Failed · image URL not reachable",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Retry",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Policy"
+        },
+        {
+          "k": "field",
+          "text": "Announcements per episode",
+          "value": "3"
+        },
+        {
+          "k": "field",
+          "text": "Feed posts per day",
+          "value": "1"
+        },
+        {
+          "k": "field",
+          "text": "Feed posts per week",
+          "value": "5"
+        },
+        {
+          "k": "field",
+          "text": "Stories per day",
+          "value": "6"
+        },
+        {
+          "k": "field",
+          "text": "Pre-announcement days before",
+          "value": "2"
+        },
+        {
+          "k": "field",
+          "text": "Post-announcement days after",
+          "value": "3"
+        },
+        {
+          "k": "field",
+          "text": "Slots (Berlin time)",
+          "value": "12:00, 18:00"
+        },
+        {
+          "k": "choice",
+          "text": "Approve the first 2 posts of a new host",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Approve always",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Never approve",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Save policy",
+          "to": null,
           "primary": true
         }
       ]

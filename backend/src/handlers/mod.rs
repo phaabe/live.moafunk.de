@@ -1,3 +1,4 @@
+pub mod announcements;
 pub mod api;
 pub mod backup_trigger;
 pub mod booking;
@@ -7,9 +8,7 @@ pub mod recording;
 pub mod recovery;
 pub mod series;
 pub mod settings;
-pub mod stream_test_ws;
 pub mod stream_ws;
-pub mod submit;
 pub mod submit_chunked;
 pub mod upload_recording_chunked;
 

@@ -1464,74 +1464,6 @@ pub async fn api_show_image_proxy(
     ))
 }
 
-/// Save an overlay image for a show to R2.
-/// POST /api/shows/:id/overlays
-pub async fn api_save_show_overlay(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    headers: HeaderMap,
-    mut multipart: axum::extract::Multipart,
-) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Verify show exists
-    let _show: models::Show = sqlx::query_as::<_, models::Show>("SELECT * FROM shows WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
-
-    let mut image_data: Option<Vec<u8>> = None;
-    let mut content_type = "image/jpeg".to_string();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart field: {}", e)))?
-    {
-        let field_name = field.name().unwrap_or("").to_string();
-        if field_name == "image" {
-            content_type = field.content_type().unwrap_or("image/jpeg").to_string();
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("Failed to read image data: {}", e)))?;
-            if !data.is_empty() {
-                image_data = Some(data.to_vec());
-            }
-        }
-    }
-
-    let data = image_data.ok_or_else(|| AppError::BadRequest("No image provided".to_string()))?;
-
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
-    let ext = if content_type.contains("png") {
-        "png"
-    } else {
-        "jpg"
-    };
-    let key = format!("shows/{}/overlay/{}-{}.{}", id, timestamp, uuid_short, ext);
-
-    state
-        .s3_client
-        .put_object()
-        .bucket(&state.config.r2_bucket_name)
-        .key(&key)
-        .body(aws_sdk_s3::primitives::ByteStream::from(data))
-        .content_type(&content_type)
-        .send()
-        .await
-        .map_err(|e| AppError::Storage(format!("Failed to upload show overlay: {}", e)))?;
-
-    let url = storage::get_presigned_url(&state, &key, 3600).await?;
-
-    Ok(Json(serde_json::json!({
-        "key": key,
-        "url": url,
-    })))
-}
-
 /// List all overlay images saved for a show in R2.
 /// GET /api/shows/:id/overlays
 pub async fn api_list_show_overlays(
@@ -2095,8 +2027,13 @@ pub struct ShowDetailResponse {
     /// The Show (series) this episode belongs to, if linked.
     series_slug: Option<String>,
     series_name: Option<String>,
+    /// The Show's description and cover, for hosts who view another host's episode.
+    series_description: Option<String>,
+    series_cover_url: Option<String>,
     /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
     episode_status: crate::series::EpisodeStatus,
+    /// "Upcoming" | "Finished · wrap-up open" | "Finished"
+    episode_status_label: &'static str,
     /// True while this episode is on air: its recording session is open (live
     /// or in the reconnect grace), or it streams with "Record this show" off.
     on_air: bool,
@@ -2920,6 +2857,7 @@ pub async fn api_show_detail(
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
+                t.description AS series_description, t.cover_key AS series_cover_key, \
                 s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
                 s.live_recorded \
          FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
@@ -2943,6 +2881,10 @@ pub async fn api_show_detail(
         on_air,
         chrono::Utc::now(),
     );
+    let series_cover_url = match &view.series_cover_key {
+        Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
+        None => None,
+    };
 
     Ok(Json(ShowDetailResponse {
         id: show.id,
@@ -2985,7 +2927,10 @@ pub async fn api_show_detail(
         latest_recording,
         series_slug: view.series_slug,
         series_name: view.series_name,
+        series_description: view.series_description,
+        series_cover_url,
         episode_status,
+        episode_status_label: episode_status.label(),
         on_air,
         prerecorded_duration_secs: view.prerecorded_duration_secs,
         live_ended_at: view.live_ended_at,
@@ -2998,6 +2943,8 @@ pub async fn api_show_detail(
 struct EpisodeViewRow {
     series_slug: Option<String>,
     series_name: Option<String>,
+    series_description: Option<String>,
+    series_cover_key: Option<String>,
     rhythm_end: Option<String>,
     wrapup_published_at: Option<String>,
     prerecorded_duration_secs: Option<i64>,
@@ -3376,27 +3323,6 @@ pub async fn api_upload_template_cover(
     })))
 }
 
-/// DELETE /api/show-templates/:id — delete a template owned by the current user.
-pub async fn api_delete_show_template(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<i64>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
-    let user = require_show_creator(&state, &headers).await?;
-
-    let result = sqlx::query("DELETE FROM show_templates WHERE id = ? AND owner_user_id = ?")
-        .bind(id)
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound("Template not found".to_string()));
-    }
-
-    Ok(Json(serde_json::json!({ "success": true })))
-}
-
 #[derive(Debug, Deserialize)]
 pub struct UpdateShowRequest {
     title: Option<String>,
@@ -3423,6 +3349,23 @@ pub async fn api_update_show(
         return Err(AppError::Forbidden(
             "Only admins can change show type or AI bio".to_string(),
         ));
+    }
+
+    // A host moves or switches an episode only before it starts.
+    let moves = req.date.is_some()
+        || req.start_time.is_some()
+        || req.end_time.is_some()
+        || req.stream_mode.is_some();
+    if moves && !user.role_enum().can_access_admin() {
+        let start = existing
+            .start_time
+            .as_deref()
+            .and_then(|t| crate::scheduler::show_start_utc(&existing.date, t));
+        if start.is_some_and(|start| chrono::Utc::now() >= start) {
+            return Err(AppError::BadRequest(
+                "Date, time and mode can only change before the episode starts".to_string(),
+            ));
+        }
     }
 
     // Build dynamic update query
@@ -3472,6 +3415,18 @@ pub async fn api_update_show(
         }
         updates.push("stream_mode = ?");
         binds.push(stream_mode.clone());
+        // "Confirmed" means "plays the file at air time". Live keeps the file
+        // unconfirmed; switching back to Pre-recorded confirms a kept file.
+        let was = existing.stream_mode.as_deref();
+        if stream_mode == "live" && was == Some("prerecorded") {
+            updates.push("prerecorded_confirmed_at = NULL");
+        } else if stream_mode == "prerecorded"
+            && was != Some("prerecorded")
+            && existing.prerecorded_key.is_some()
+        {
+            updates.push("prerecorded_confirmed_at = ?");
+            binds.push(chrono::Utc::now().to_rfc3339());
+        }
     }
 
     if updates.is_empty() {
@@ -3910,6 +3865,34 @@ pub async fn api_create_user(
         ));
     }
 
+    // Check the name and the artist before writing, so a refused request
+    // leaves no user behind.
+    let existing: Option<(i64,)> = sqlx::query_as("SELECT id FROM users WHERE username = ?")
+        .bind(&req.username)
+        .fetch_optional(&state.db)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::BadRequest(
+            "A user with this username already exists".to_string(),
+        ));
+    }
+    if let Some(artist_id) = req.artist_id {
+        let linked: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                .bind(artist_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match linked {
+            None => return Err(AppError::NotFound("Artist not found".to_string())),
+            Some((Some(_),)) => {
+                return Err(AppError::BadRequest(
+                    "Artist is already linked to another user".to_string(),
+                ));
+            }
+            Some((None,)) => {}
+        }
+    }
+
     // Generate random password
     let password = auth::generate_session_token()[..16].to_string();
     let password_hash = auth::hash_password(&password)?;
@@ -3927,32 +3910,13 @@ pub async fn api_create_user(
 
     let user_id = result.last_insert_rowid();
 
-    // Link to artist profile if requested
+    // Link to artist profile if requested (checked above)
     if let Some(artist_id) = req.artist_id {
-        // Validate artist exists and is not already linked
-        let existing: Option<(Option<i64>,)> =
-            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
-                .bind(artist_id)
-                .fetch_optional(&state.db)
-                .await?;
-
-        match existing {
-            None => {
-                return Err(AppError::NotFound("Artist not found".to_string()));
-            }
-            Some((Some(_),)) => {
-                return Err(AppError::BadRequest(
-                    "Artist is already linked to another user".to_string(),
-                ));
-            }
-            Some((None,)) => {
-                sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
-                    .bind(user_id)
-                    .bind(artist_id)
-                    .execute(&state.db)
-                    .await?;
-            }
-        }
+        sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+            .bind(user_id)
+            .bind(artist_id)
+            .execute(&state.db)
+            .await?;
     }
 
     // Fetch the created user
@@ -4095,7 +4059,16 @@ pub async fn api_delete_user(
 pub struct UpdateUserRequest {
     role: Option<String>,
     expires_at: Option<String>,
+    /// Missing: keep the link. `null`: unlink. A number: link that artist.
+    #[serde(default, deserialize_with = "sent_value")]
     artist_id: Option<serde_json::Value>,
+}
+
+/// Keeps a JSON `null` as `Some(Value::Null)`. Plain serde reads it as `None`.
+fn sent_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 pub async fn api_update_user(
@@ -4151,6 +4124,25 @@ pub async fn api_update_user(
         }
     }
 
+    // Check a new artist link before writing, so a refused request changes nothing.
+    let new_artist_id = req.artist_id.as_ref().and_then(|v| v.as_i64());
+    if let Some(artist_id) = new_artist_id {
+        let linked: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
+                .bind(artist_id)
+                .fetch_optional(&state.db)
+                .await?;
+        match linked {
+            None => return Err(AppError::NotFound("Artist not found".to_string())),
+            Some((Some(linked_uid),)) if linked_uid != id => {
+                return Err(AppError::BadRequest(
+                    "Artist is already linked to another user".to_string(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
     // Update user
     if let Some(role) = &req.role {
         sqlx::query("UPDATE users SET role = ? WHERE id = ?")
@@ -4168,39 +4160,20 @@ pub async fn api_update_user(
             .await?;
     }
 
-    // Handle artist linking: null to unlink, number to link
-    if let Some(ref artist_id_val) = req.artist_id {
+    // Handle artist linking: null to unlink, number to link (checked above)
+    if req.artist_id.is_some() {
         // First, unlink any currently linked artist
         sqlx::query("UPDATE artists SET user_id = NULL WHERE user_id = ?")
             .bind(id)
             .execute(&state.db)
             .await?;
 
-        // If a new artist_id is provided (not null), link it
-        if let Some(artist_id) = artist_id_val.as_i64() {
-            let existing: Option<(Option<i64>,)> =
-                sqlx::query_as("SELECT user_id FROM artists WHERE id = ?")
-                    .bind(artist_id)
-                    .fetch_optional(&state.db)
-                    .await?;
-
-            match existing {
-                None => {
-                    return Err(AppError::NotFound("Artist not found".to_string()));
-                }
-                Some((Some(existing_uid),)) if existing_uid != id => {
-                    return Err(AppError::BadRequest(
-                        "Artist is already linked to another user".to_string(),
-                    ));
-                }
-                _ => {
-                    sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
-                        .bind(id)
-                        .bind(artist_id)
-                        .execute(&state.db)
-                        .await?;
-                }
-            }
+        if let Some(artist_id) = new_artist_id {
+            sqlx::query("UPDATE artists SET user_id = ? WHERE id = ?")
+                .bind(id)
+                .bind(artist_id)
+                .execute(&state.db)
+                .await?;
         }
     }
 
@@ -4273,14 +4246,8 @@ pub async fn api_upload_show_recording(
     headers: HeaderMap,
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
-    require_admin(&state, &headers).await?;
-
-    // Fetch show to get date and title
-    let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    // The show's host (or its creator, or an admin) may upload its recording.
+    let (user, show) = require_show_editor(&state, &headers, id).await?;
 
     // Process uploaded file
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
@@ -4362,8 +4329,10 @@ pub async fn api_upload_show_recording(
         .execute(&state.db)
         .await?;
 
-    // Auto-upload to SoundCloud in background (fire-and-forget)
-    if crate::soundcloud::has_token(&state).await {
+    // Auto-upload to SoundCloud in background (fire-and-forget). Only for an
+    // admin upload: the host page has its own Upload to SoundCloud button, and
+    // upload_track makes a new track on every call.
+    if user.role_enum().can_access_admin() && crate::soundcloud::has_token(&state).await {
         let sc_state = state.clone();
         let sc_show_id = id;
         tokio::spawn(async move {
@@ -4763,6 +4732,18 @@ pub async fn api_soundcloud_status(
     Ok(Json(status))
 }
 
+/// GET /api/soundcloud/check
+/// Asks SoundCloud which account the stored token belongs to (refreshing it
+/// first when it expires soon). The nightly e2e test checks staging with it.
+pub async fn api_soundcloud_check(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let account = crate::soundcloud::check_connection(&state).await?;
+    Ok(Json(serde_json::json!({ "account": account })))
+}
+
 /// GET /api/soundcloud/auth
 /// Redirects the admin to SoundCloud's OAuth authorization page.
 pub async fn api_soundcloud_auth(
@@ -4775,18 +4756,25 @@ pub async fn api_soundcloud_auth(
     Ok(axum::response::Redirect::temporary(&url))
 }
 
-/// GET /api/soundcloud/callback?code=xxx
+/// GET /api/soundcloud/callback?code=xxx&state=yyy
 /// OAuth callback — exchanges the code for an access token and stores it.
 #[derive(Debug, Deserialize)]
 pub struct SoundCloudCallbackQuery {
     code: String,
+    /// Missing state gives the "click Connect again" page, not a bare 400.
+    #[serde(default)]
+    state: String,
 }
 
 pub async fn api_soundcloud_callback(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SoundCloudCallbackQuery>,
-) -> impl IntoResponse {
-    match crate::soundcloud::exchange_code(&state, &query.code).await {
+) -> axum::response::Response {
+    // A login started on staging: staging exchanges the code with its verifier.
+    if let Some(url) = crate::soundcloud::forward_login(&state, &query.code, &query.state) {
+        return axum::response::Redirect::to(&url).into_response();
+    }
+    match crate::soundcloud::exchange_code(&state, &query.code, &query.state).await {
         Ok(_) => axum::response::Html(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>✅ SoundCloud Connected</h2>
@@ -4794,14 +4782,16 @@ pub async fn api_soundcloud_callback(
             <script>setTimeout(()=>window.close(),3000)</script>
             </body></html>"#
                 .to_string(),
-        ),
+        )
+        .into_response(),
         Err(e) => axum::response::Html(format!(
             r#"<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px">
             <h2>❌ SoundCloud Authorization Failed</h2>
             <p>{}</p>
             </body></html>"#,
             e
-        )),
+        ))
+        .into_response(),
     }
 }
 
@@ -4832,7 +4822,7 @@ pub async fn api_upload_to_soundcloud(
                     .bind(id)
                     .fetch_one(&state.db)
                     .await
-                    .map_err(|e| AppError::Database(e))?,
+                    .map_err(AppError::Database)?,
             )
             .await
             .unwrap_or_else(|_| format!("Show #{id}"));
@@ -4973,58 +4963,6 @@ async fn resolve_user_shows(
     user: &models::User,
 ) -> Result<Vec<models::Show>> {
     auth::broadcast_shows(&state.db, user).await
-}
-
-#[derive(Debug, Serialize)]
-pub struct MyShowsListResponse {
-    shows: Vec<ShowListItem>,
-}
-
-/// GET /api/my-shows — list all shows assigned to the authenticated user
-pub async fn api_my_shows_list(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
-    let token = auth::get_session_from_headers(&headers);
-    let user = auth::get_current_user(&state, token.as_deref())
-        .await
-        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
-
-    let shows = resolve_user_shows(&state, &user).await?;
-
-    let mut show_items = Vec::new();
-    for show in shows {
-        let artists: Vec<ArtistBrief> = sqlx::query_as(
-            "SELECT a.id, a.name FROM artists a \
-             INNER JOIN artist_show_assignments asa ON a.id = asa.artist_id \
-             WHERE asa.show_id = ? \
-             ORDER BY asa.sort_order, a.name",
-        )
-        .bind(show.id)
-        .fetch_all(&state.db)
-        .await?;
-
-        let (host_username, host_has_logged_in) =
-            show_host_info(&state.db, show.host_user_id).await?;
-
-        show_items.push(ShowListItem {
-            id: show.id,
-            title: show.title,
-            date: show.date,
-            start_time: show.start_time,
-            end_time: show.end_time,
-            description: show.description,
-            status: show.status,
-            show_type: show.show_type,
-            host_username,
-            host_has_logged_in,
-            artists,
-            // Host/artist "my shows" view doesn't badge recordings (yet).
-            recording_status: None,
-        });
-    }
-
-    Ok(Json(MyShowsListResponse { shows: show_items }))
 }
 
 pub async fn api_my_show(
@@ -5227,7 +5165,8 @@ pub async fn api_my_show_upload_init(
     .bind(&req.filename)
     .bind(req.total_size as i64)
     .bind(req.total_chunks as i32)
-    .bind(expires_at.to_rfc3339())
+    // SQLite's own format, so `expires_at > datetime('now')` compares right.
+    .bind(expires_at.format("%Y-%m-%d %H:%M:%S").to_string())
     .execute(&state.db)
     .await?;
 
@@ -5673,6 +5612,12 @@ pub async fn start_prerecorded_show_stream(
             .ok();
         return Err(e);
     }
+
+    // The episode's on-air story, if its host left it on.
+    let (state, show_id) = (state.clone(), show.id);
+    tokio::spawn(async move {
+        crate::announcement_send::announce_on_air(&state, show_id, chrono::Utc::now()).await
+    });
 
     Ok(true)
 }

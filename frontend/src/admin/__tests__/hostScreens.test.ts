@@ -8,9 +8,10 @@ import { hostPage } from '../hostPage';
 import { getBerlinNowISO } from '../showTime';
 import NavBar from '@shared/components/NavBar.vue';
 import LoginPage from '../pages/LoginPage.vue';
+import HostDashboardPage from '../pages/HostDashboardPage.vue';
 import HostSchedulePage from '../pages/HostSchedulePage.vue';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
-import type { Series, SeriesDetail, User } from '../api';
+import type { Series, SeriesDetail, UpcomingEpisode, User } from '../api';
 import { expectFlow } from '../flow/expectFlow';
 // Load the composables barrel now, while FontFace is stubbed: the guest
 // landing route imports it later, after afterEach unstubs the globals.
@@ -80,6 +81,23 @@ const DETAIL: SeriesDetail = {
   ],
 };
 
+/** The flow's Dashboard rows: lena's own episodes and two of other hosts. */
+const UPCOMING: UpcomingEpisode[] = [
+  ['2026-10-25', '12:00', '14:00', 'Brunchtime', 'lena', 'Live', 42],
+  ['2026-10-27', '20:00', '22:00', 'Night Shift', 'jonas', 'Live', 44],
+  ['2026-10-30', '18:00', '20:00', 'Dub Kitchen', 'mira', 'Pre-recorded', 45],
+  ['2026-11-08', '12:00', '14:00', 'Brunchtime', 'lena', 'Pre-recorded', 43],
+].map(([date, start_time, end_time, show_name, host_username, mode_label, id]) => ({
+  id: id as number,
+  date: date as string,
+  start_time: start_time as string,
+  end_time: end_time as string,
+  show_name: show_name as string,
+  host_username: host_username as string,
+  mode: mode_label === 'Live' ? 'live' : 'prerecorded',
+  mode_label: mode_label as string,
+}));
+
 let app: App | undefined;
 let root: HTMLDivElement;
 let streamActive: boolean;
@@ -87,18 +105,26 @@ let mySeries: Series[];
 let loginRole: User['role'];
 /** Air time of the show in /api/shows-overview. */
 let onAir: { start: string; end: string };
+/** API paths that answer 500 in this test. */
+let failing: string[];
 
 beforeEach(() => {
   streamActive = false;
   mySeries = [BRUNCHTIME, NIGHT];
   loginRole = 'host';
   onAir = { start: '00:00', end: '23:59' };
+  failing = [];
   root = document.createElement('div');
   document.body.appendChild(root);
+  // Pin the clock to 12:30 or 13:30 in Berlin today. With the real clock the
+  // 00:00–23:59 show has ended in the last minute before midnight.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(`${getBerlinNowISO().slice(0, 10)}T11:30:00Z`));
   const today = getBerlinNowISO().slice(0, 10);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
+      if (failing.includes(url)) return Response.json({ error: 'boom' }, { status: 500 });
       switch (url) {
         case '/api/stream/status':
           return Response.json({ active: streamActive, recording: false });
@@ -120,6 +146,8 @@ beforeEach(() => {
           });
         case '/api/series':
           return Response.json({ series: mySeries });
+        case '/api/upcoming-episodes':
+          return Response.json({ episodes: UPCOMING });
         case '/api/series/brunchtime':
           return Response.json(DETAIL);
         case '/api/series/night':
@@ -143,6 +171,7 @@ afterEach(() => {
   app = undefined;
   root.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function mount(component: Component, role: User['role'], path = '/'): Promise<Router> {
@@ -152,12 +181,14 @@ async function mount(component: Component, role: User['role'], path = '/'): Prom
     routes: [
       { path: '/', component },
       { path: '/login', component },
-      { path: '/dashboard', component: stub('Schedule screen') },
+      { path: '/dashboard', component: stub('Dashboard screen') },
+      { path: '/schedule', component: stub('Schedule screen') },
       { path: '/calendar', component: stub('Calendar') },
       { path: '/shows', component: stub('Shows') },
       { path: '/shows/new', component: stub('New Show screen') },
       { path: '/shows/:slug', component: stub('Show page') },
       { path: '/shows/:id(\\d+)', component: stub('Episode screen') },
+      { path: '/stream/on-air', component: stub('On Air screen') },
     ],
   });
   const pinia = createPinia();
@@ -174,6 +205,13 @@ async function mount(component: Component, role: User['role'], path = '/'): Prom
   return router;
 }
 
+/** A row's parts as the flow check reads them: "So 25.10. · Brunchtime | Upcoming · Live". */
+const rowParts = (row: Element | null) =>
+  [...(row?.children ?? [])]
+    .map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' | ');
+
 const links = (selector: string) =>
   [...root.querySelectorAll(`${selector} a`)].map((a) => [
     a.textContent?.trim(),
@@ -181,10 +219,11 @@ const links = (selector: string) =>
   ]);
 
 describe('nav', () => {
-  it('gives hosts exactly Schedule and My Shows, on desktop and mobile', async () => {
+  it('gives hosts exactly Dashboard, Schedule and My Shows, on desktop and mobile', async () => {
     await mount(NavBar, 'host');
     const expected = [
-      ['Schedule', '/dashboard'],
+      ['Dashboard', '/dashboard'],
+      ['Schedule', '/schedule'],
       ['My Shows', '/shows'],
     ];
     expect(links('.nav-links')).toEqual(expected);
@@ -203,6 +242,7 @@ describe('nav', () => {
       'Recording',
       'Users',
       'Config',
+      'Instagram',
     ]);
     expect(root.querySelector('.mobile-menu-links')?.textContent).toContain('Radio');
   });
@@ -269,7 +309,7 @@ describe('router guard', () => {
     await appRouter.replace('/login');
   });
 
-  it('sends a host from the calendar to Schedule', async () => {
+  it('sends a host from the calendar to Dashboard', async () => {
     useAuthStore().user = { id: 1, username: 'lena', role: 'host' };
     await appRouter.push('/calendar');
     expect(appRouter.currentRoute.value.fullPath).toBe('/dashboard');
@@ -288,6 +328,66 @@ describe('router guard', () => {
   });
 });
 
+describe('Dashboard', () => {
+  it("lists all hosts' upcoming shows, each opening its episode", async () => {
+    await mount(HostDashboardPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
+    expect(root.querySelector('h1')?.textContent).toBe('Dashboard');
+    const rows = [...root.querySelectorAll('.episodes li')].map((li) => ({
+      text: rowParts(li.querySelector('.board-row')),
+      href: li.querySelector('a')?.getAttribute('href') ?? null,
+    }));
+    expect(rows).toEqual([
+      { text: 'So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live', href: '/shows/42' },
+      {
+        text: 'Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live',
+        href: '/shows/44',
+      },
+      {
+        text: 'Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded',
+        href: '/shows/45',
+      },
+      {
+        text: 'So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded',
+        href: '/shows/43',
+      },
+    ]);
+  });
+});
+
+describe('Dashboard states', () => {
+  it('says so when there are no upcoming shows', async () => {
+    const upcoming = UPCOMING.splice(0);
+    try {
+      await mount(HostDashboardPage, 'host');
+      await vi.waitFor(() => expect(root.textContent).toContain('No upcoming shows.'));
+      expect(root.querySelectorAll('.episodes li')).toHaveLength(0);
+    } finally {
+      UPCOMING.push(...upcoming);
+    }
+  });
+
+  it('says so when the list cannot load', async () => {
+    failing = ['/api/upcoming-episodes'];
+    await mount(HostDashboardPage, 'host');
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not load the upcoming shows.'
+      )
+    );
+    expect(root.textContent).not.toContain('No upcoming shows.');
+  });
+
+  it('marks the host’s own rows and shows other hosts’ rows as read-only', async () => {
+    await mount(HostDashboardPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
+    const mine = [...root.querySelectorAll('.episodes .date-chip')].map((c) =>
+      c.classList.contains('mine')
+    );
+    expect(mine).toEqual([true, false, false, true]);
+  });
+});
+
 describe('Schedule', () => {
   it("lists the host's next episodes, soonest first", async () => {
     await mount(HostSchedulePage, 'host');
@@ -300,7 +400,7 @@ describe('Schedule', () => {
       expect(text).not.toContain(absent);
     }
     const rows = [...root.querySelectorAll('.episodes a')].map((a) => ({
-      text: [...a.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      text: rowParts(a),
       href: a.getAttribute('href'),
     }));
     expect(rows).toEqual([
@@ -314,6 +414,36 @@ describe('Schedule', () => {
     await mount(HostSchedulePage, 'host');
     await vi.waitFor(() => expect(root.textContent).toContain('On air · Brunchtime · until 23:59'));
     expect(root.textContent).toContain('On air now');
+  });
+});
+
+describe('Schedule states', () => {
+  it('opens On Air from the strip when the show on air is the host’s own', async () => {
+    streamActive = true;
+    const router = await mount(HostSchedulePage, 'host');
+    await vi.waitFor(() => expect(root.querySelector('a.on-air-strip')).not.toBeNull());
+    (root.querySelector('a.on-air-strip') as HTMLAnchorElement).click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/stream/on-air?show=42')
+    );
+  });
+
+  it('shows another host’s show on air without a link', async () => {
+    streamActive = true;
+    mySeries = [NIGHT];
+    await mount(HostSchedulePage, 'host');
+    await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
+    expect(root.querySelector('.on-air-strip')?.tagName).toBe('SECTION');
+  });
+
+  it('says so when the episodes cannot load', async () => {
+    failing = ['/api/series'];
+    await mount(HostSchedulePage, 'host');
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe(
+        'Could not load your episodes.'
+      )
+    );
   });
 });
 
@@ -347,22 +477,42 @@ describe('My Shows', () => {
   });
 });
 
-describe('flow', () => {
-  afterEach(() => {
-    vi.useRealTimers();
+describe('My Shows states', () => {
+  it('shows each Show’s cover in its row', async () => {
+    mySeries = [{ ...BRUNCHTIME, cover_url: '/covers/brunchtime.jpg' }, NIGHT];
+    await mount(HostMyShowsPage, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.shows li')).toHaveLength(2));
+    const covers = [...root.querySelectorAll('.shows li')].map(
+      (li) => li.querySelector('.thumb img')?.getAttribute('src') ?? null
+    );
+    expect(covers).toEqual(['/covers/brunchtime.jpg', null]);
   });
 
+  it('says so when the list cannot load', async () => {
+    failing = ['/api/series'];
+    await mount(HostMyShowsPage, 'host');
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe('Could not load your shows.')
+    );
+  });
+});
+
+describe('flow', () => {
   it('Schedule matches the flow', async () => {
     streamActive = true;
+    // The clock is pinned to 12:30 or 13:30 in Berlin, so this show is on air.
     onAir = { start: '12:00', end: '14:00' };
-    vi.useFakeTimers({ toFake: ['Date'] });
-    // 12:30 or 13:30 in Berlin, so the 12:00–14:00 show is on air.
-    vi.setSystemTime(new Date(`${getBerlinNowISO().slice(0, 10)}T11:30:00Z`));
     mySeries = [BRUNCHTIME];
     await mount({ render: () => [h(NavBar), h(HostSchedulePage)] }, 'host');
     await vi.waitFor(() => expect(root.textContent).toContain('On air now'));
     await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(2));
     await expectFlow('schedule', root);
+  });
+
+  it('Dashboard matches the flow', async () => {
+    await mount({ render: () => [h(NavBar), h(HostDashboardPage)] }, 'host');
+    await vi.waitFor(() => expect(root.querySelectorAll('.episodes li')).toHaveLength(4));
+    await expectFlow('dashboard', root);
   });
 
   it('My Shows matches the flow', async () => {

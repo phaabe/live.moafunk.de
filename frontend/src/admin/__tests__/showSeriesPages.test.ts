@@ -54,9 +54,11 @@ function episode(
 let app: App | undefined;
 let root: HTMLDivElement;
 let posted: FormData | undefined;
+let put: FormData | undefined;
 
 beforeEach(() => {
   posted = undefined;
+  put = undefined;
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.stubGlobal(
@@ -65,6 +67,10 @@ beforeEach(() => {
       if (url === '/api/series' && options?.method === 'POST') {
         posted = options.body as FormData;
         return Response.json({ ...BRUNCHTIME, episodes: undefined }, { status: 201 });
+      }
+      if (url === '/api/series/brunchtime' && options?.method === 'PUT') {
+        put = options.body as FormData;
+        return Response.json({ ...BRUNCHTIME, episodes: undefined });
       }
       if (url === '/api/series/brunchtime') return Response.json(BRUNCHTIME);
       if (url === '/api/series/someone-else')
@@ -221,6 +227,13 @@ describe('New Show', () => {
   });
 });
 
+/** A row's parts as the flow check reads them: "So 25.10. · Brunchtime | Upcoming · Live". */
+const rowParts = (row: Element | null) =>
+  [...(row?.children ?? [])]
+    .map((c) => (c.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' | ');
+
 describe('Show page', () => {
   it('shows the series and its episodes as the flow lists them', async () => {
     const router = await mount('host', '/shows/brunchtime');
@@ -236,7 +249,7 @@ describe('Show page', () => {
     }
 
     const rows = [...root.querySelectorAll('.episodes li')].map((li) => ({
-      text: [...li.querySelectorAll('span')].map((s) => s.textContent).join(' | '),
+      text: rowParts(li.querySelector('.board-row')),
       href: li.querySelector('a')?.getAttribute('href') ?? null,
     }));
     expect(rows).toEqual([
@@ -249,6 +262,42 @@ describe('Show page', () => {
     await vi.waitFor(() =>
       expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book')
     );
+  });
+
+  it('saves the edited Details of the show', async () => {
+    await mount('host', '/shows/brunchtime');
+    await vi.waitFor(() => expect(root.textContent).toContain('Details'));
+    const name = root.querySelector('.form-input input') as HTMLInputElement;
+    expect(name.value).toBe('Brunchtime');
+    input('.form-input input', 'Brunch Club');
+    input('select', 'none', 'change');
+    await nextTick();
+    expect(root.querySelector('input[aria-label="Start time"]')).toBeNull();
+    button('Save').click();
+    await vi.waitFor(() => expect(put).toBeDefined());
+    expect(Object.fromEntries(put!.entries())).toEqual({
+      name: 'Brunch Club',
+      description: 'Sunday brunch sounds, every week from 12:00.',
+      repeat_rule: 'none',
+      instagram_handle: '',
+    });
+  });
+
+  it('saves the Instagram handle without "@" and refuses a wrong one', async () => {
+    await mount('host', '/shows/brunchtime');
+    await vi.waitFor(() => expect(root.textContent).toContain('Instagram handle'));
+    const handle = 'input[placeholder="@brunchtime"]';
+    input(handle, 'bad handle!');
+    await nextTick();
+    expect(root.textContent).toContain('Use up to 30 letters, numbers, dots or underscores.');
+    expect(button('Save').disabled).toBe(true);
+
+    input(handle, '@brunch.club');
+    await nextTick();
+    expect(button('Save').disabled).toBe(false);
+    button('Save').click();
+    await vi.waitFor(() => expect(put).toBeDefined());
+    expect(put!.get('instagram_handle')).toBe('brunch.club');
   });
 
   it("sends a host away from another host's show", async () => {

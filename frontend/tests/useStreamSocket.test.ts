@@ -457,4 +457,35 @@ describe('useStreamSocket auto-reconnect', () => {
     sockets[1].drop();
     expect(stream.state.value).toBe('connecting');
   });
+
+  /** Fires the page's beforeunload; true when the browser would ask "Leave site?". */
+  function leaveAsks(): boolean {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  it('asks before leaving while on air, and Stay keeps the stream', async () => {
+    await startLive(false, 42);
+    expect(leaveAsks()).toBe(true);
+    expect(sockets[0].closedWith).toBeNull();
+    expect(stream.state.value).toBe('live');
+
+    // Reconnecting is still on air.
+    sockets[0].drop();
+    expect(leaveAsks()).toBe(true);
+  });
+
+  it('does not ask for a soundcheck or when nothing is live', async () => {
+    expect(leaveAsks()).toBe(false);
+    await startLive(false, 42, true);
+    expect(leaveAsks()).toBe(false);
+  });
+
+  it('closes without stop once the page goes', async () => {
+    await startLive(false, 42);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(sockets[0].closedWith).toEqual({ code: 1000, reason: 'Page unload' });
+    expect(sockets[0].sent).not.toContain('stop');
+  });
 });

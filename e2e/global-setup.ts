@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { RUN, SET_MP3, TONE_WAV, staging } from './lib/staging';
 
-function tone(frequency: number, seconds: number, out: string, codec: string[]): void {
+export function tone(frequency: number, seconds: number, out: string, codec: string[]): void {
   execFileSync('ffmpeg', [
     ...['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi'],
     ...['-i', `sine=frequency=${frequency}:sample_rate=48000:duration=${seconds}`],

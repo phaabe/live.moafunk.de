@@ -547,8 +547,8 @@ mod tests {
     #[test]
     fn test_constants_are_consistent() {
         // Waveform fits below the artist image
-        assert!(WAVEFORM_Y_OFFSET + WAVEFORM_HEIGHT <= VIDEO_HEIGHT);
-        assert!(WAVEFORM_WIDTH == VIDEO_WIDTH);
+        const { assert!(WAVEFORM_Y_OFFSET + WAVEFORM_HEIGHT <= VIDEO_HEIGHT) };
+        const { assert!(WAVEFORM_WIDTH == VIDEO_WIDTH) };
     }
 
     #[test]

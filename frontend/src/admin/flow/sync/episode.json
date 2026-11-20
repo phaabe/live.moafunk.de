@@ -1,12 +1,8 @@
 {
   "screen": "episode",
-  "hash": "574a351b",
+  "hash": "e7a8a2aa",
   "status": "ok",
   "leftOut": [
-    {
-      "item": "field: Announcements",
-      "release": "R4"
-    },
     {
       "item": "button: Create guest link",
       "release": "R5"

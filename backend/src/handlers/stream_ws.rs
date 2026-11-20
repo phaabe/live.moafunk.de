@@ -70,12 +70,10 @@ pub async fn stream_ws_handler(
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
-                let cookie = cookie.trim();
-                if cookie.starts_with("session=") {
-                    Some(cookie[8..].to_string())
-                } else {
-                    None
-                }
+                cookie
+                    .trim()
+                    .strip_prefix("session=")
+                    .map(|token| token.to_string())
             })
         });
 
@@ -91,6 +89,13 @@ pub async fn stream_ws_handler(
     let username = user.username.clone();
 
     crate::auth::authorize_broadcast(&state.db, &user, query.show_id, query.test).await?;
+
+    // A soundcheck has its own slot, so it never stops a show on air.
+    let stream_state = if query.test {
+        state.soundcheck_state.clone()
+    } else {
+        stream_state
+    };
 
     // Check if someone else is streaming
     {
@@ -110,9 +115,19 @@ pub async fn stream_ws_handler(
         }
     }
 
+    // Which browser a host streams with: logged at the start, to see which
+    // versions are in use and to explain a stream that does not work.
+    let browser = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .chars()
+        .take(200)
+        .collect::<String>();
+
     // Upgrade to WebSocket
     Ok(ws.on_upgrade(move |socket| {
-        handle_stream_socket(socket, state, stream_state, username, query)
+        handle_stream_socket(socket, state, stream_state, username, query, browser)
     }))
 }
 
@@ -175,6 +190,7 @@ async fn handle_stream_socket(
     stream_state: SharedStreamState,
     username: String,
     query: StreamQuery,
+    browser: String,
 ) {
     // A test broadcast never records, so it ignores show_id entirely.
     let test = query.test;
@@ -203,6 +219,18 @@ async fn handle_stream_socket(
         state.config.producer_target()
     };
 
+    // The host who is on air gets no soundcheck (a second tab). Once their
+    // live socket sends no audio (a drop), the soundcheck before going live
+    // again works.
+    if test && state.stream_state.lock().await.is_on_air_by(&username) {
+        tracing::info!("Refused soundcheck of '{}': on air", username);
+        let _ = sender
+            .send(Message::Text(format!("error: {}", StreamError::OnAir)))
+            .await;
+        let _ = sender.close().await;
+        return;
+    }
+
     // Start the stream. `generation` identifies this connection's stream, so a
     // later reconnect or takeover can replace it without this connection
     // stopping its successor on the way out.
@@ -218,9 +246,7 @@ async fn handle_stream_socket(
             }
             Err(e) => {
                 tracing::error!("Failed to start stream: {}", e);
-                let _ = sender
-                    .send(Message::Text(format!("error: {}", e).into()))
-                    .await;
+                let _ = sender.send(Message::Text(format!("error: {}", e))).await;
                 let _ = sender.close().await;
                 return;
             }
@@ -244,6 +270,13 @@ async fn handle_stream_socket(
             .go_live(LiveFinalize::new(&state), recorded_show)
             .await;
     }
+    // The episode's on-air story, if its host left it on.
+    if let Some(sid) = show_id {
+        let state = state.clone();
+        tokio::spawn(async move {
+            crate::announcement_send::announce_on_air(&state, sid, chrono::Utc::now()).await
+        });
+    }
     if let Some(sid) = recorded_show {
         if let Err(e) = crate::handlers::recording::ensure_recording_started(&state, sid).await {
             tracing::error!("Failed to auto-start recording for show {}: {}", sid, e);
@@ -262,16 +295,17 @@ async fn handle_stream_socket(
     // Send confirmation
     if let Err(e) = sender.send(Message::Text("connected".into())).await {
         tracing::error!("Failed to send connected message: {}", e);
-        if !stop_own_stream(&stream_state, generation).await {
+        if !stop_own_stream(&stream_state, generation).await && !test {
             defer_finalize(&state).await;
         }
         return;
     }
 
     tracing::info!(
-        "Stream started for user '{}'{}",
+        "Stream started for user '{}'{}, browser {:?}",
         username,
-        if test { " (test)" } else { "" }
+        if test { " (test)" } else { "" },
+        browser
     );
 
     // Notify admin via Telegram (fire-and-forget). A test broadcast stays silent
@@ -405,7 +439,7 @@ async fn handle_stream_socket(
                             "offset": offset,
                         });
                         if sender
-                            .send(Message::Text(format!("pong:{}", payload).into()))
+                            .send(Message::Text(format!("pong:{}", payload)))
                             .await
                             .is_err()
                         {
@@ -440,7 +474,8 @@ async fn handle_stream_socket(
     // - replaced       → leave it to the connection that replaced this one.
     // - explicit stop  → finalize + upload now.
     // - network drop    → defer finalize so a reconnect can resume the archive.
-    // - rehearsal       → like a drop: a live show's recording waits on.
+    // - soundcheck     → nothing: it runs in its own slot, apart from any
+    //   live show and its recording.
     if superseded {
         tracing::info!(
             "Stream connection of '{}' was replaced; the current stream keeps running",
@@ -464,7 +499,7 @@ async fn handle_stream_socket(
             Ok(None) => {}
             Err(e) => tracing::error!("Finalize on explicit stop failed: {}", e),
         }
-    } else {
+    } else if !test {
         if let Some(sid) = show_id {
             stream_state.lock().await.note_dropped_show(sid);
         }
@@ -506,12 +541,10 @@ pub async fn stream_stop(
         .and_then(|v| v.to_str().ok())
         .and_then(|cookies| {
             cookies.split(';').find_map(|cookie| {
-                let cookie = cookie.trim();
-                if cookie.starts_with("session=") {
-                    Some(cookie[8..].to_string())
-                } else {
-                    None
-                }
+                cookie
+                    .trim()
+                    .strip_prefix("session=")
+                    .map(|token| token.to_string())
             })
         });
 

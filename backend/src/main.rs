@@ -1,4 +1,7 @@
 mod ai;
+mod announcement_image;
+mod announcement_send;
+mod announcements;
 mod audio;
 mod auth;
 mod chat_bridge;
@@ -26,15 +29,31 @@ mod telegram_notify;
 mod video;
 
 #[cfg(test)]
+mod announcements_tests;
+#[cfg(test)]
+mod api_tests;
+#[cfg(test)]
 mod booking_tests;
 #[cfg(test)]
 mod broadcast_tests;
 #[cfg(test)]
+mod fake_instagram;
+#[cfg(test)]
+mod fake_r2;
+#[cfg(test)]
+mod fake_telegram;
+#[cfg(test)]
+mod recording_tests;
+#[cfg(test)]
 mod recovery_tests;
+#[cfg(test)]
+mod scheduler_tests;
 #[cfg(test)]
 mod series_tests;
 #[cfg(test)]
 mod stream_system_tests;
+#[cfg(test)]
+mod submit_download_tests;
 
 use axum::{
     extract::{DefaultBodyLimit, Query, State, WebSocketUpgrade},
@@ -75,6 +94,9 @@ pub struct AppState {
     pub config: Config,
     pub s3_client: aws_sdk_s3::Client,
     pub stream_state: SharedStreamState,
+    /// Soundchecks (`/ws/stream?test=true`) run here, apart from the on-air
+    /// stream, so a soundcheck never stops a show.
+    pub soundcheck_state: SharedStreamState,
     /// Cached Icecast listener/quality telemetry, refreshed by the metrics
     /// poller (`stream_metrics`) and served at `GET /api/stream/metrics`.
     pub stream_metrics: stream_metrics::SharedStreamMetrics,
@@ -251,6 +273,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Load config
     let config = Config::from_env()?;
+    tracing::info!(
+        "Instagram account for announcements: {}",
+        config.instagram_account
+    );
 
     // Initialize database
     let db = SqlitePoolOptions::new()
@@ -325,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         s3_client,
         stream_state,
+        soundcheck_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager,
         recording_finalizer: Arc::default(),
@@ -398,8 +425,6 @@ async fn main() -> anyhow::Result<()> {
         .nest_service("/assets/brand", ServeDir::new("assets/brand"))
         // Health check
         .route("/health", get(handlers::health_check))
-        // Public API (single-request upload, kept for backwards compatibility)
-        .route("/api/submit", post(handlers::submit::submit_form))
         // Chunked upload API (multi-request, stays under Cloudflare 100MB limit)
         .route(
             "/api/submit/init",
@@ -441,7 +466,6 @@ async fn main() -> anyhow::Result<()> {
         .merge(handlers::recovery::routes())
         // Artist flow — my show
         .route("/api/my-show", get(handlers::api::api_my_show))
-        .route("/api/my-shows", get(handlers::api::api_my_shows_list))
         .route(
             "/api/my-show/upload",
             post(handlers::api::api_my_show_upload),
@@ -567,10 +591,6 @@ async fn main() -> anyhow::Result<()> {
                 .post(handlers::api::api_create_show_template),
         )
         .route(
-            "/api/show-templates/:id",
-            axum::routing::delete(handlers::api::api_delete_show_template),
-        )
-        .route(
             "/api/show-templates/:id/cover",
             post(handlers::api::api_upload_template_cover),
         )
@@ -579,7 +599,15 @@ async fn main() -> anyhow::Result<()> {
             "/api/series",
             get(handlers::series::api_list_series).post(handlers::series::api_create_series),
         )
-        .route("/api/series/:slug", get(handlers::series::api_get_series))
+        .route(
+            "/api/series/:slug",
+            get(handlers::series::api_get_series).put(handlers::series::api_update_series),
+        )
+        // Host Dashboard: all hosts' upcoming episodes
+        .route(
+            "/api/upcoming-episodes",
+            get(handlers::series::api_upcoming_episodes),
+        )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",
@@ -621,16 +649,37 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/shows/:id", get(handlers::api::api_show_detail))
         .route(
+            "/api/shows/:id/announcements",
+            get(handlers::announcements::api_list_announcements),
+        )
+        .route(
+            "/api/shows/:id/announcements/slots",
+            get(handlers::announcements::api_announcement_slots),
+        )
+        .route(
+            "/api/shows/:id/announcements/meta",
+            get(handlers::announcements::api_announcement_meta),
+        )
+        .route(
+            "/api/shows/:id/announcements/uploads",
+            post(handlers::announcements::api_upload_announcement_image),
+        )
+        .route(
+            "/api/shows/:id/announcements/:slot",
+            axum::routing::put(handlers::announcements::api_put_announcement)
+                .delete(handlers::announcements::api_cancel_announcement),
+        )
+        .route(
             "/api/shows/:id/image-proxy",
             get(handlers::api::api_show_image_proxy),
         )
         .route(
-            "/api/shows/:id/overlays",
-            get(handlers::api::api_list_show_overlays),
+            "/api/shows/:id/announcements/:slot/preview.jpg",
+            get(announcement_image::api_announcement_preview),
         )
         .route(
             "/api/shows/:id/overlays",
-            post(handlers::api::api_save_show_overlay),
+            get(handlers::api::api_list_show_overlays),
         )
         .route(
             "/api/shows/:id/with-artists",
@@ -714,6 +763,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::api::api_soundcloud_status),
         )
         .route(
+            "/api/soundcloud/check",
+            get(handlers::api::api_soundcloud_check),
+        )
+        .route(
             "/api/soundcloud/auth",
             get(handlers::api::api_soundcloud_auth),
         )
@@ -742,8 +795,37 @@ async fn main() -> anyhow::Result<()> {
             post(handlers::api::api_reset_password),
         ) // Settings API (notification toggle)
         .route(
+            "/api/admin/announcements",
+            get(handlers::announcements::api_admin_list_announcements),
+        )
+        .route(
+            "/api/admin/announcements/:id/approve",
+            post(handlers::announcements::api_admin_approve_announcement),
+        )
+        .route(
+            "/api/admin/announcements/:id/reject",
+            post(handlers::announcements::api_admin_reject_announcement),
+        )
+        .route(
+            "/api/admin/announcements/:id/retry",
+            post(handlers::announcements::api_admin_retry_announcement),
+        )
+        .route(
+            "/api/admin/instagram/status",
+            get(handlers::announcements::api_admin_instagram_status),
+        )
+        .route(
+            "/api/settings/announcements",
+            get(handlers::announcements::api_get_announcement_settings)
+                .put(handlers::announcements::api_put_announcement_settings),
+        )
+        .route(
             "/api/settings/notifications",
             get(handlers::settings::get_notifications).put(handlers::settings::set_notifications),
+        )
+        .route(
+            "/api/settings/services",
+            get(handlers::settings::get_services).put(handlers::settings::set_services),
         ) // Download routes (needed by SPA)
         .route(
             "/artists/:id/download",
@@ -762,20 +844,12 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::download::download_artist_pdf),
         )
         .route(
-            "/shows/:id/download",
-            get(handlers::download::download_show),
-        )
-        .route(
             "/shows/:id/download/:package",
             get(handlers::download::download_show_package),
         )
         // Stream WebSocket and API
         .route("/ws/stream", get(stream_ws_handler))
         .route("/ws/chat", get(handlers::chat_ws::chat_ws_handler))
-        .route(
-            "/ws/stream-test",
-            get(handlers::stream_test_ws::stream_test_ws_handler),
-        )
         .route("/api/stream/status", get(stream_status_handler))
         .route("/api/stream/metrics", get(stream_metrics_handler))
         .route("/metrics", get(metrics_handler))
@@ -829,6 +903,20 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Refresh the long-lived Instagram tokens weekly (first tick at boot; an
+    // account refreshed in the last day is skipped).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(7 * 24 * 60 * 60));
+            loop {
+                interval.tick().await;
+                instagram::refresh_tokens(&state).await;
+            }
+        });
+    }
+
     // Recover recordings that a restart or failed finalize left on disk: join
     // and upload `*.segs/` segment dirs, and upload `recording_*.webm` files,
     // when they have no `recording_versions` row (the daily cleanup never
@@ -873,7 +961,7 @@ async fn main() -> anyhow::Result<()> {
                 if state.telegram_bot.is_none() {
                     continue;
                 }
-                scheduler::check_missing_recordings(state.clone()).await;
+                scheduler::check_missing_recordings(state.clone(), chrono::Utc::now()).await;
             }
         });
     }
@@ -888,7 +976,36 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                scheduler::check_prerecorded_show_start(state.clone()).await;
+                scheduler::check_prerecorded_show_start(state.clone(), chrono::Utc::now()).await;
+            }
+        });
+    }
+
+    // Send due Instagram announcements (feed posts, missed on-air stories)
+    // and set post times once a SoundCloud track is public.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                announcement_send::check_due_announcements(&state, chrono::Utc::now()).await;
+            }
+        });
+    }
+
+    // Notice tracks made public on soundcloud.com: the next announcement
+    // tick then sets their post times.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let every = soundcloud::PUBLIC_CHECK_EVERY.to_std().expect("positive");
+            let mut interval = tokio::time::interval(every);
+            loop {
+                interval.tick().await;
+                if let Err(e) = soundcloud::sync_public_tracks(&state).await {
+                    tracing::error!("SoundCloud public track check failed: {e}");
+                }
             }
         });
     }
@@ -945,7 +1062,7 @@ async fn main() -> anyhow::Result<()> {
                      AND (telegram_preview_sent_at IS NULL OR telegram_preview_sent_at < ?)",
                 )
                 .bind(&today)
-                .bind(&format!("{today}T00:00:00"))
+                .bind(format!("{today}T00:00:00"))
                 .fetch_all(&state.db)
                 .await
                 {

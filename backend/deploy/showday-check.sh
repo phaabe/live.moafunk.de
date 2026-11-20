@@ -16,6 +16,7 @@ APP_DIR="${APP_DIR:-/opt/unheard-backend}"
 STATE_DIR="${STATE_DIR:-/var/lib/showday-check}"
 PUBLIC="${PUBLIC:-https://admin.live.moafunk.de}"
 ICECAST="${ICECAST:-http://127.0.0.1:8010}"
+HARBOR="${HARBOR:-http://127.0.0.1:8005}"
 LIQUIDSOAP="${LIQUIDSOAP:-moafunk-liquidsoap}"
 BACKUPS="${BACKUPS:-r2-backup:unheard-backups/db/}"
 MIN_FREE_GB=5
@@ -97,6 +98,19 @@ checks() {
     ok "Liquidsoap runs"
   else
     bad "Liquidsoap ($LIQUIDSOAP) is not running"
+  fi
+  # Liquidsoap can run without one of its two harbor mounts, and Icecast still
+  # lists both of its own. An upload without a password gets 401 from a mount
+  # that is there and 404 from a missing one; it never reaches the audio.
+  local mount code gone=""
+  for mount in test live; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X PUT "$HARBOR/$mount" 2>/dev/null || true)"
+    [[ "$code" == 401 ]] || gone+=" /$mount (HTTP ${code:-none})"
+  done
+  if [[ -z "$gone" ]]; then
+    ok "Liquidsoap takes audio on /test and /live"
+  else
+    bad "Liquidsoap takes no audio on$gone: run systemctl restart liquidsoap, then check again"
   fi
   local free_gb
   free_gb="$(df -Pk "$APP_DIR" | awk 'NR == 2 { print int($4 / 1048576) }')"

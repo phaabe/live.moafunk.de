@@ -357,3 +357,154 @@ async fn an_episode_on_air_is_not_over_at_its_end_time() {
     assert_eq!(status(on_air), "upcoming");
     assert_eq!(status(over), "wrapup_open");
 }
+
+/// The host Dashboard lists every host's upcoming episodes, soonest first.
+#[tokio::test]
+async fn dashboard_lists_all_hosts_upcoming_episodes() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let brunch = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let night = create(
+        &state,
+        jonas,
+        &[("name", "Night Shift"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let later = episode(&state, brunch, "2099-01-04", "prerecorded").await;
+    let sooner = episode(&state, brunch, "2099-01-01", "live").await;
+    let night_episode = episode(&state, night, "2099-01-02", "live").await;
+    // Over: an old date, and yesterday's episode (it ended at 14:00).
+    episode(&state, brunch, "2020-01-05", "live").await;
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    episode(&state, brunch, &yesterday, "live").await;
+    // A date outside any series is not a host episode.
+    sqlx::query(
+        "INSERT INTO shows (title, date, show_type) VALUES ('UNHEARD', '2099-01-03', 'unheard')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let response =
+        handlers::series::api_upcoming_episodes(State(state.clone()), headers(&state, lena).await)
+            .await
+            .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["episodes"],
+        json!([
+            {
+                "date": "2099-01-01", "start_time": "12:00", "end_time": "14:00",
+                "show_name": "Brunchtime", "host_username": "lena",
+                "mode": "live", "mode_label": "Live", "id": sooner
+            },
+            {
+                "date": "2099-01-02", "start_time": "12:00", "end_time": null,
+                "show_name": "Night Shift", "host_username": "jonas",
+                "mode": "live", "mode_label": "Live", "id": night_episode
+            },
+            {
+                "date": "2099-01-04", "start_time": "12:00", "end_time": "14:00",
+                "show_name": "Brunchtime", "host_username": "lena",
+                "mode": "prerecorded", "mode_label": "Pre-recorded", "id": later
+            },
+        ])
+    );
+}
+
+/// Another host may view an episode: it carries the Show's name and
+/// description, the status label and the host.
+#[tokio::test]
+async fn another_host_sees_an_episode_with_its_show() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let series = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let id = episode(&state, series, "2099-01-04", "live").await;
+    sqlx::query("UPDATE shows SET host_user_id = ? WHERE id = ?")
+        .bind(lena)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let response = handlers::api::api_show_detail(
+        State(state.clone()),
+        Path(id),
+        headers(&state, jonas).await,
+    )
+    .await
+    .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["series_name"], "Brunchtime");
+    assert_eq!(body["series_description"], "Sunday brunch sounds.");
+    assert_eq!(body["series_cover_url"], Value::Null);
+    assert_eq!(body["episode_status_label"], "Upcoming");
+    assert_eq!(body["host_username"], "lena");
+}
+
+/// The owner edits a series in place: the slug stays, the rhythm can go.
+/// Another host cannot.
+#[tokio::test]
+async fn the_owner_edits_a_series_and_keeps_its_slug() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    create(&state, host, BRUNCHTIME).await.unwrap();
+    let edit = |user: i64, fields: &'static [(&'static str, &'static str)]| {
+        let state = state.clone();
+        async move {
+            handlers::series::api_update_series(
+                State(state.clone()),
+                Path("brunchtime".to_string()),
+                headers(&state, user).await,
+                form(fields).await,
+            )
+            .await
+            .map(|r| r.into_response())
+        }
+    };
+
+    let fields: &[(&str, &str)] = &[
+        ("name", "Brunch Club"),
+        ("description", "Now every other Saturday."),
+        ("repeat_rule", "biweekly"),
+        ("weekday", "6"),
+        ("start_time", "11:00"),
+        ("end_time", "13:00"),
+    ];
+    let (status, body) = json_of(edit(host, fields).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["slug"], "brunchtime");
+    assert_eq!(body["name"], "Brunch Club");
+    assert_eq!(body["description"], "Now every other Saturday.");
+    assert_eq!(body["rhythm_line"], "Every other Saturday · 11:00–13:00");
+
+    let none: &[(&str, &str)] = &[("name", "Brunch Club"), ("repeat_rule", "none")];
+    let (_, body) = json_of(edit(host, none).await.unwrap()).await;
+    assert_eq!(body["rhythm"], Value::Null);
+    assert_eq!(body["description"], Value::Null);
+
+    assert!(matches!(
+        edit(other, none).await,
+        Err(AppError::NotFound(_))
+    ));
+    let empty: &[(&str, &str)] = &[("name", " "), ("repeat_rule", "none")];
+    assert!(matches!(
+        edit(host, empty).await,
+        Err(AppError::BadRequest(_))
+    ));
+}

@@ -1,4 +1,4 @@
-name: Staging safety checks
+name: CHECK - Staging scripts
 
 # staging.sh must refuse every staging setting that could reach production or
 # real accounts, and scrub the production DB copy. deploy-production.sh must

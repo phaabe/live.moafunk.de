@@ -42,6 +42,7 @@ pub(crate) async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::Te
         s3_client: storage::build_s3_client(&config),
         config,
         stream_state: stream_bridge::new_shared_state(),
+        soundcheck_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
         recording_finalizer: Arc::default(),
@@ -367,7 +368,7 @@ async fn reconnect_survives_the_late_close_of_the_replaced_socket() {
     let mut current = connect_producer(&state, addr, host, "test=true").await;
     close(replaced).await;
 
-    assert!(state.stream_state.lock().await.is_active());
+    assert!(state.soundcheck_state.lock().await.is_active());
     current
         .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
         .await
@@ -401,7 +402,7 @@ async fn forced_takeover_survives_the_replaced_host() {
     close(replaced).await;
 
     {
-        let stream = state.stream_state.lock().await;
+        let stream = state.soundcheck_state.lock().await;
         assert!(stream.is_active());
         assert_eq!(stream.current_user.as_deref(), Some("admin"));
     }
@@ -410,6 +411,153 @@ async fn forced_takeover_survives_the_replaced_host() {
         .await
         .unwrap();
     assert!(next_text(&mut current).await.starts_with("pong:"));
+}
+
+/// Staging soak, 2026-11-18: a soundcheck from the host's second tab ended
+/// the live show. It must be refused and leave the show on air. A reload of
+/// the live page still takes over.
+#[tokio::test]
+async fn soundcheck_from_the_hosts_second_tab_is_refused() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+    let mut live = connect_producer(&state, addr, host, "show_id=1").await;
+    live.send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    live.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut live).await.starts_with("pong:"));
+
+    let mut request = format!("ws://{addr}/ws?test=true")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().extend(headers(&state, host).await);
+    let (mut soundcheck, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(
+        next_text(&mut soundcheck).await,
+        "error: Soundcheck not started: you are on air right now"
+    );
+    close(soundcheck).await;
+    assert!(!state.soundcheck_state.lock().await.is_active());
+
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.get_status().active, "the live show must stay on air");
+        assert_eq!(stream.current_user.as_deref(), Some("host"));
+        assert!(stream.is_recording());
+    }
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+    live.send(WsMessage::Text("ping:2".into())).await.unwrap();
+    assert!(next_text(&mut live).await.starts_with("pong:"));
+
+    // A reload of the live page takes over, as before.
+    let _reloaded = connect_producer(&state, addr, host, "show_id=1").await;
+    live.send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_text(&mut live).await,
+        "error: Another connection took over the stream"
+    );
+}
+
+/// The next host soundchecks while another show is on air. The soundcheck
+/// runs apart from the show: it neither stops the show nor its recording.
+#[tokio::test]
+async fn another_user_can_soundcheck_while_a_show_is_on_air() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let next = add_user(&state, "next", "host").await;
+    hosted_show(&state, host).await;
+    let mut live = connect_producer(&state, addr, host, "show_id=1").await;
+    live.send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+
+    let mut soundcheck = connect_producer(&state, addr, next, "test=true").await;
+    soundcheck
+        .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    soundcheck
+        .send(WsMessage::Text("ping:1".into()))
+        .await
+        .unwrap();
+    assert!(next_text(&mut soundcheck).await.starts_with("pong:"));
+    assert_eq!(
+        state.soundcheck_state.lock().await.current_user.as_deref(),
+        Some("next")
+    );
+    soundcheck
+        .send(WsMessage::Text("stop".into()))
+        .await
+        .unwrap();
+    close(soundcheck).await;
+
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.get_status().active, "the show must stay on air");
+        assert_eq!(stream.current_user.as_deref(), Some("host"));
+        assert!(stream.is_recording());
+    }
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+    live.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut live).await.starts_with("pong:"));
+}
+
+/// The host's connection breaks without a close, so the server still holds
+/// the dead live socket, but no audio feeds `/live` any more. The host's
+/// soundcheck before going live again must work, and Go Live resumes the
+/// show. (A drop the server sees is covered by
+/// `a_rehearsal_during_the_reconnect_grace_keeps_the_live_recording`.)
+#[tokio::test]
+async fn host_soundchecks_after_a_silent_drop_and_goes_live_again() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+    let mut dead = connect_producer(&state, addr, host, "show_id=1").await;
+    dead.send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    dead.send(WsMessage::Text("ping:1".into())).await.unwrap();
+    assert!(next_text(&mut dead).await.starts_with("pong:"));
+    state.stream_state.lock().await.age_audio_for_test();
+
+    let mut soundcheck = connect_producer(&state, addr, host, "test=true").await;
+    soundcheck
+        .send(WsMessage::Text("stop".into()))
+        .await
+        .unwrap();
+    close(soundcheck).await;
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1),
+        "the soundcheck leaves the show's recording alone"
+    );
+
+    let _back = connect_producer(&state, addr, host, "show_id=1").await;
+    {
+        let stream = state.stream_state.lock().await;
+        assert!(stream.get_status().active);
+        assert!(stream.is_recording());
+    }
+    assert_eq!(
+        state.recording_manager.lock().await.current_show_id(),
+        Some(1)
+    );
+    dead.send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_text(&mut dead).await,
+        "error: Another connection took over the stream"
+    );
 }
 
 /// An admin takes over a host's recorded show. A stop from the host's old tab
@@ -1098,7 +1246,7 @@ async fn connection_without_audio_is_ended() {
         handlers::stream_ws::NO_AUDIO_ERROR
     );
     close(socket).await;
-    assert!(!state.stream_state.lock().await.is_active());
+    assert!(!state.soundcheck_state.lock().await.is_active());
 }
 
 #[tokio::test]
@@ -1118,7 +1266,36 @@ async fn first_audio_chunk_lifts_the_no_audio_deadline() {
     socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
     // An error frame for the deadline would arrive before the pong.
     assert!(next_text(&mut socket).await.starts_with("pong:"));
-    assert!(state.stream_state.lock().await.is_active());
+    assert!(state.soundcheck_state.lock().await.is_active());
+}
+
+/// The Studio soundcheck's "Server" check reads `chunks` from the pong: it
+/// must be 0 while no audio arrived and count each chunk after.
+#[tokio::test]
+async fn test_broadcast_pong_counts_the_audio_the_server_got() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    let mut socket = connect_producer(&state, addr, host, "test=true").await;
+
+    async fn counters(socket: &mut Producer) -> (Option<u64>, Option<u64>) {
+        socket.send(WsMessage::Text("ping:1".into())).await.unwrap();
+        let pong: Value =
+            serde_json::from_str(next_text(socket).await.strip_prefix("pong:").unwrap()).unwrap();
+        (pong["chunks"].as_u64(), pong["bytes"].as_u64())
+    }
+
+    assert_eq!(counters(&mut socket).await, (Some(0), Some(0)));
+    for _ in 0..4 {
+        socket
+            .send(WsMessage::Binary(WEBM_MAGIC.to_vec()))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        counters(&mut socket).await,
+        (Some(4), Some(4 * WEBM_MAGIC.len() as u64))
+    );
+    close(socket).await;
 }
 
 /// A tone as WebM/Opus, laid out like the browser's MediaRecorder stream.

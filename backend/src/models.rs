@@ -138,13 +138,6 @@ pub struct ShowTemplate {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct SubmitResponse {
-    pub success: bool,
-    pub message: String,
-    pub artist_id: Option<i64>,
-}
-
 // User roles for the admin dashboard
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

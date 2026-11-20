@@ -11,7 +11,8 @@ use std::sync::Arc;
 fn require_admin(user: Option<&models::User>) -> Result<()> {
     match user {
         Some(u) if u.role_enum().can_access_admin() => Ok(()),
-        _ => Err(AppError::Unauthorized("Unauthorized".to_string())),
+        Some(_) => Err(AppError::Forbidden("Admin access required".to_string())),
+        None => Err(AppError::Unauthorized("Unauthorized".to_string())),
     }
 }
 
@@ -42,14 +43,21 @@ impl ShowPackage {
 }
 
 fn sanitize_filename(name: &str) -> String {
-    name.chars()
+    let name = name
+        .chars()
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
             _ => c,
         })
         .collect::<String>()
         .trim()
-        .to_string()
+        .to_string();
+    // Artist names come from the public form. "..", "." or an empty name
+    // would make ZIP paths like "../info.txt" or "/info.txt".
+    match name.as_str() {
+        "" | "." | ".." => "_".to_string(),
+        _ => name,
+    }
 }
 
 async fn fetch_show_and_artists(
@@ -97,11 +105,11 @@ fn zip_filename(show: &models::Show, package: ShowPackage) -> String {
 
 fn audio_filename(artist_name: &str, tag: &str, title: &str, ext: &str) -> String {
     let artist = sanitize_filename(artist_name);
-    let title = sanitize_filename(title);
     let tag = sanitize_filename(tag);
     if title.trim().is_empty() {
         format!("{} - {}.{}", artist, tag, ext)
     } else {
+        let title = sanitize_filename(title);
         format!("{} - {} - {}.{}", artist, tag, title, ext)
     }
 }
@@ -975,15 +983,6 @@ Things to Mention:
         .into_response())
 }
 
-pub async fn download_show(
-    State(state): State<Arc<AppState>>,
-    Path(show_id): Path<i64>,
-    request: Request<axum::body::Body>,
-) -> Result<Response> {
-    let token = auth::get_session_from_cookies(&request);
-    let user = auth::get_current_user(&state, token.as_deref()).await;
-    require_admin(user.as_ref())?;
-
-    // Legacy endpoint: default to all-data.
-    download_show_impl(state, show_id, ShowPackage::AllData).await
-}
+#[cfg(test)]
+#[path = "download_tests.rs"]
+mod tests;

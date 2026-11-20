@@ -1,13 +1,10 @@
-name: FRONTEND - Build and Deploy
+name: DEPLOY - Build and publish public site
 
+# Not on PRs: frontend-ci (epic-ci.yml) runs the lint, the tests and the
+# build there, without the SoundCloud secrets.
 on:
   push:
     branches: [main]
-    paths:
-      - frontend/**
-      - .github/workflows/frontend.yml
-  pull_request:
-    branches: [main, staging]
     paths:
       - frontend/**
       - .github/workflows/frontend.yml
@@ -81,7 +78,7 @@ jobs:
       - name: Use fallback re-listen.html
         if: steps.generate-tracks.outcome == 'failure'
         run: |
-          echo "⚠️ SoundCloud API failed, using fallback re-listen.html"
+          echo "::warning title=SoundCloud tracks not updated::SoundCloud API failed, using fallback re-listen.html"
           echo "The static fallback page is already in src/pages/re-listen.html"
 
       - name: Run linter

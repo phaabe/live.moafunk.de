@@ -31,6 +31,11 @@ const currentStepIndex = computed(() => {
 // show-select / not-assigned landing pages (currentStep is derived from show
 // state, so it can read "upload" even while we're still on /stream/select).
 const STEP_ROUTES = ['/stream/upload', '/stream/confirm', '/stream/live', '/stream/on-air'];
+/** The live Studio and On Air have no progress bar and use the wide host layout. */
+const wide = computed(
+  () => !showProgressBar.value && ['/stream/live', '/stream/on-air'].includes(route.path)
+);
+
 const showProgressBar = computed(
   () =>
     flow.assigned.value &&
@@ -92,7 +97,7 @@ function navigateToStep(step: FlowStep) {
     <div v-if="flow.loading.value && !flow.loaded.value" class="flow-loading">Loading...</div>
 
     <!-- Main content -->
-    <main v-else class="flow-content">
+    <main v-else :class="['flow-content', { wide }]">
       <router-view />
     </main>
   </div>
@@ -217,5 +222,10 @@ function navigateToStep(step: FlowStep) {
   margin: 0 auto;
   padding: var(--spacing-xl) var(--spacing-lg);
   padding-top: calc(80px + var(--spacing-xl));
+}
+
+.flow-content.wide {
+  max-width: 1168px;
+  padding-top: var(--spacing-xl);
 }
 </style>

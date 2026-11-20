@@ -115,12 +115,16 @@ export async function toneBack(withinS: number): Promise<number> {
   return took;
 }
 
-/** Log in on the admin as the staging host. */
+/** Log in on the admin as the e2e host (people use staging-host, so they never take over this stream). */
 export async function login(page: Page): Promise<void> {
-  const password = process.env.STAGING_HOST_PASSWORD;
-  if (!password) throw new Error('set STAGING_HOST_PASSWORD (Bitwarden: Moafunk STAGING_HOST_PASSWORD)');
+  // shortcut: until nightly.yml is on main, the nightly run takes its workflow
+  // from main, which sends only STAGING_HOST_PASSWORD. Drop the fallback once
+  // a nightly run started by nightly.yml (from staging) is green.
+  const e2e = process.env.STAGING_E2E_HOST_PASSWORD;
+  const [username, password] = e2e ? ['e2e-host', e2e] : ['staging-host', process.env.STAGING_HOST_PASSWORD];
+  if (!password) throw new Error('set STAGING_E2E_HOST_PASSWORD (Bitwarden Secrets Manager)');
   await page.goto('/#/login');
-  await page.locator('input[autocomplete="username"]').fill('staging-host');
+  await page.locator('input[autocomplete="username"]').fill(username);
   await page.locator('input[autocomplete="current-password"]').fill(password);
   await page.getByRole('button', { name: 'Login' }).click();
   await page.waitForURL(/#\/dashboard/);
@@ -146,6 +150,8 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   const to = berlinSlot(end);
   // shortcut: a slot that runs past midnight is cut at 23:59; runs start long before.
   const endTime = to.date === from.date ? to.time : '23:59';
+  // Staging has copies of production shows and people's own test shows: move the ones in this slot away.
+  console.log(staging(`e2e-free-slot ${from.date} ${from.time} ${endTime}`));
   await page.getByLabel('Date').fill(from.date);
   await page.getByLabel('Start time').fill(from.time);
   await page.getByLabel('End time').fill(endTime);
@@ -157,13 +163,23 @@ export async function bookSlot(page: Page, start: Date, end: Date): Promise<numb
   const res = await booked;
   if (!res.ok()) throw new Error(`booking refused (${res.status()}): ${await res.text()}`);
   await page.waitForURL(/#\/shows\/\d+$/);
-  return Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
+  const id = Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
+  // Booking arms the on-air story; without this every live test posts to the Instagram test account.
+  const story = await page.request.delete(`/api/shows/${id}/announcements/onair`);
+  if (!story.ok()) throw new Error(`cancel on-air story: ${story.status()} ${await story.text()}`);
+  return id;
 }
 
-/** Delete the test's episodes and Show (the host's own). */
-export async function deleteShow(page: Page, showId: number, episodes: number[]): Promise<void> {
-  for (const id of episodes) await page.request.delete(`/api/shows/${id}`);
-  await page.request.delete(`/api/show-templates/${showId}`);
+/**
+ * Delete the test's episodes, then every e2e Show of the host that has no
+ * episodes left. No API route deletes a Show, so the box does it.
+ */
+export async function deleteShow(page: Page, episodes: number[]): Promise<void> {
+  for (const id of episodes) {
+    const res = await page.request.delete(`/api/shows/${id}`);
+    if (!res.ok()) throw new Error(`DELETE /api/shows/${id}: ${res.status()} ${await res.text()}`);
+  }
+  console.log(staging('e2e-cleanup'));
 }
 
 /**
@@ -174,12 +190,14 @@ export async function deleteShow(page: Page, showId: number, episodes: number[])
 export async function deleteLeftovers(page: Page): Promise<void> {
   const res = await page.request.get('/api/series');
   if (!res.ok()) throw new Error(`GET /api/series: ${res.status()}`);
-  const { series } = (await res.json()) as { series: { id: number; slug: string; name: string }[] };
+  const { series } = (await res.json()) as { series: { slug: string; name: string }[] };
+  const episodes: number[] = [];
   for (const s of series.filter((x) => x.name.startsWith('e2e-'))) {
     const detail = await page.request.get(`/api/series/${encodeURIComponent(s.slug)}`);
     if (!detail.ok()) throw new Error(`GET /api/series/${s.slug}: ${detail.status()}`);
-    const { episodes } = (await detail.json()) as { episodes: { id: number }[] };
-    console.log(`deleting the leftover Show ${s.name} and ${episodes.length} episode(s)`);
-    await deleteShow(page, s.id, episodes.map((e) => e.id));
+    const found = ((await detail.json()) as { episodes: { id: number }[] }).episodes;
+    console.log(`deleting the leftover Show ${s.name} and ${found.length} episode(s)`);
+    episodes.push(...found.map((e) => e.id));
   }
+  await deleteShow(page, episodes);
 }

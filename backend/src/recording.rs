@@ -59,6 +59,8 @@ impl RecordingSession {
     /// # Arguments
     /// * `show_id` - The ID of the show being recorded
     /// * `temp_dir` - Directory for temporary recording files
+    // Signature kept as is; `&Path` would be the cleaner parameter type.
+    #[allow(clippy::ptr_arg)]
     pub async fn new(show_id: i64, temp_dir: &PathBuf) -> Result<Self, RecordingError> {
         let now = chrono::Utc::now();
         let version_timestamp = now.format("%Y-%m-%dT%H-%M-%S").to_string();

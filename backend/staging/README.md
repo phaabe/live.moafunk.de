@@ -8,9 +8,11 @@ Staging runs images from the `staging` branch at https://staging.live.moafunk.de
   - own SQLite DB (empty, or a scrubbed copy of production, see `seed-db`)
   - own R2 buckets (`unheard-artists-staging`, `moafunk-staging`) with a token that can only reach them. `check-r2` proves it: the token must list the staging buckets and get 403 from `unheard-artists-prod`, `unheard-artists-dev` and `moafunk-prod`.
   - own Liquidsoap and Icecast on this box (harbor 8005, Icecast 8010, as in production) with own passwords
-  - `SOUNDCLOUD_AUTO_UPLOAD=false`, `TELEGRAM_ENABLED=false`
-  - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), and no other `SOUNDCLOUD_*`, `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
-- Secrets live in Bitwarden (`Moafunk STAGING_*` items). `push-secrets.sh` moves them to the box; nobody types or pastes them.
+  - own SoundCloud test account (`SOUNDCLOUD_ACCOUNT`, never the station account `radio-moafunk`) on the station's SoundCloud app. The app has one redirect URI, production's (`SOUNDCLOUD_REDIRECT_URI`). Production sends staging logins (state `staging.…`) on to staging (`SOUNDCLOUD_FORWARD_URL=https://staging.live.moafunk.de/api/soundcloud/callback` in production's `.env`). The backend refuses a login of another account. Recordings upload by themselves (`SOUNDCLOUD_AUTO_UPLOAD=true`). Before each upload old tracks are deleted: with the new one only the newest 10 stay (`SOUNDCLOUD_KEEP_TRACKS=10`), and more go while the account has no upload time left (a Free account has 2 hours, and SoundCloud refuses every upload when they are used up).
+  - `TELEGRAM_ENABLED=false`
+  - Instagram announcements post only to the test account: `INSTAGRAM_ACCOUNT=dev` with `INSTAGRAM_ACCESS_TOKEN_DEV` and `INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV` from Secrets Manager. No `*_PROD` value.
+  - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), no `SOUNDCLOUD_ACCESS_TOKEN` or other `SOUNDCLOUD_*` setting, and no other `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
+- Secrets live in Bitwarden (`Moafunk STAGING_*` items, and the station's SoundCloud app in Secrets Manager). `push-secrets.sh` moves them to the box; nobody types or pastes them.
 - The production box has no key for the staging box, and the staging box has no key for production.
 - Start and stop staging only with `staging.sh`, never with `docker` by hand.
 
@@ -66,6 +68,8 @@ For release checks, stop the automatic deploys so the release candidate stays on
 /opt/unheard-staging/staging.sh unhold                     # after the production deploy
 ```
 
+During a hold, `up` and `down` by hand refuse: a hand deploy in the middle of a release soak broke the r2 soak. `hold` and `unhold` refuse while a chaos test run holds staging (it removes its own hold). If you really must, prefix the command with `STAGING_IGNORE_HOLD=1`. Plain `docker compose` on the box bypasses all of this, so don't use it while staging is on hold.
+
 By hand, on the box:
 
 ```bash
@@ -78,14 +82,16 @@ The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGI
 
 Staging keeps running (also after a reboot) until `down`.
 
-`up` and `seed-db` create or reset the two logins `staging-admin` (superadmin) and `staging-host` (host) to the Bitwarden passwords. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+`up` and `seed-db` create or reset three logins to the Bitwarden passwords: `staging-admin` (superadmin) and `staging-host` (host) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
 
 ## Chaos test show
 
-`e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `staging-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
+`e2e/` is a Playwright test that runs one live show and one pre-recorded set on staging, as `e2e-host` with a fake microphone (a 440 Hz tone). The live show must survive a 20 s network cut, a Liquidsoap restart and a page reload by itself: `/live.mp3` carries the tone again within 15 s each time, and the show ends in exactly one recording as long as its time on air, with its mp3 in the archive.
 
-- It runs after every staging deploy (`backend.yml` calls `e2e-staging.yml`), every night, and on pull requests that change `e2e/`. Before a release, run it by hand as a 90-minute soak: **Actions → E2E - Chaos test show on staging → Run workflow**, `duration` 90 (nightly and by hand work once the workflow is on `main`).
-- A deploy waits while a test runs (both use the concurrency group `staging-box`). The test also holds staging, and removes only its own hold, so a release hold stays.
+- It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → TEST - Chaos show on staging → Run workflow**, with `duration` for a soak. The nightly run comes from `nightly.yml`, which starts this workflow on the `staging` branch. GitHub starts a workflow (schedule or by hand) only when its file is on `main`, then uses the file from the branch it names. So `nightly.yml` works once it is on `main`: with the next release, or a hotfix PR.
+- It does not run on PRs into `staging` or after a staging deploy, so a merge never waits for it. PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
+- A deploy waits while a test runs. The test holds staging from its start and removes only its own hold, so a release hold stays. The deploy retries every minute while a test holds staging (at most 160 minutes, then it fails). On a release hold it skips the image with a notice.
+- Test runs share the concurrency group `staging-box`, so they never overlap. Deploys use their own group `staging-deploy`: GitHub keeps only one waiting job per group and cancels the older one, so a shared group used to drop deploys and test runs.
 - The test deletes its episodes and Show. Their files stay in the staging buckets (no API removes them).
 - A failed run keeps the Playwright trace and screenshots as a workflow artifact for 14 days.
 
@@ -98,12 +104,14 @@ For the test, the CI key may also run, on the box:
 | `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
+| `e2e-cleanup` | deletes the `e2e-…` Shows of `e2e-host` (and of `staging-host`, from older runs) that have no episodes left (no API route deletes a Show) |
+| `e2e-free-slot <date> <HH:MM> <HH:MM>` | moves every show that overlaps this slot to the day before, so the test can always book it. This also moves copies of production shows and your own test shows. Only from yesterday to two days ahead |
 
 Run it from your Mac (needs the CI key in `~/.config/moafunk-staging/ci_deploy_ed25519`, ffmpeg and Node):
 
 ```bash
 cd e2e && npm ci && npx playwright install chromium
-STAGING_HOST_PASSWORD="$(bwpw 'Moafunk STAGING_HOST_PASSWORD')" npx playwright test
+STAGING_E2E_HOST_PASSWORD="$(bws secret list --output json | jq -er 'map(select(.key=="STAGING_E2E_HOST_PASSWORD")) | .[0].value')" npx playwright test
 ```
 
 After a change to `staging.sh`, copy it to the box (CI deploys only the image).

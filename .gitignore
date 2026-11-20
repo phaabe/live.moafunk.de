@@ -55,3 +55,7 @@ backend/.env
 
 # Claude Code — commit shared config, ignore per-developer local overrides
 .claude/settings.local.json
+
+# Test dashboard results and coverage (test-dashboard/)
+/results/
+frontend/coverage/

@@ -272,6 +272,8 @@ pub async fn api_book_episode(
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
+    // The on-air story is on by default.
+    crate::announcements::arm_onair(&mut tx, id, &slot.date, &slot.start_time, user.id).await?;
     if let Some(upload) = &upload {
         // One file plays in one episode.
         sqlx::query("DELETE FROM series_uploads WHERE session_id = ?")
@@ -643,8 +645,8 @@ pub struct ReplaceFileRequest {
 }
 
 /// PUT /api/shows/:id/prerecorded — swap the set of a booked pre-recorded
-/// episode for a finished upload. The booking (date, time, mode, confirmed)
-/// stays as it is.
+/// episode for a finished upload, or give one that was switched to
+/// Pre-recorded its first file. The date, time and mode stay as they are.
 pub async fn api_replace_prerecorded(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -668,11 +670,14 @@ pub async fn api_replace_prerecorded(
     let upload = finished_upload(&mut tx, series_id, Some(&req.upload_id)).await?;
     sqlx::query(
         "UPDATE shows SET prerecorded_key = ?, prerecorded_filename = ?, \
-         prerecorded_duration_secs = ? WHERE id = ?",
+         prerecorded_duration_secs = ?, \
+         prerecorded_confirmed_at = COALESCE(prerecorded_confirmed_at, ?) WHERE id = ?",
     )
     .bind(&upload.file_key)
     .bind(&upload.filename)
     .bind(upload.duration_secs)
+    // The first file confirms the set, so the scheduler plays it at air time.
+    .bind(Utc::now().to_rfc3339())
     .bind(id)
     .execute(&mut *tx)
     .await?;

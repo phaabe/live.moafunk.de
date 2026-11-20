@@ -28,10 +28,11 @@ pub(super) struct SeriesRow {
     weekday: Option<i64>,
     start_time: Option<String>,
     end_time: Option<String>,
+    instagram_handle: Option<String>,
 }
 
 const SERIES_COLUMNS: &str = "id, slug, name, description, cover_key, owner_user_id, \
-                              repeat_rule, weekday, start_time, end_time";
+                              repeat_rule, weekday, start_time, end_time, instagram_handle";
 
 /// A series by slug for its owner or an admin (booking endpoints). Another
 /// host gets 403; an unknown slug is 404.
@@ -76,6 +77,8 @@ pub struct SeriesItem {
     rhythm: Option<Rhythm>,
     /// e.g. "Sundays · 12:00–14:00"; null while the series has no rhythm.
     rhythm_line: Option<String>,
+    /// The host's own Instagram account, without '@'.
+    instagram_handle: Option<String>,
 }
 
 async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
@@ -91,6 +94,7 @@ async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
         slug: row.slug,
         name: row.name,
         description: row.description,
+        instagram_handle: row.instagram_handle,
         cover_url,
     }
 }
@@ -124,6 +128,7 @@ struct CreateSeriesForm {
     weekday: Option<String>,
     start_time: Option<String>,
     end_time: Option<String>,
+    instagram_handle: Option<String>,
     cover: Option<Vec<u8>>,
 }
 
@@ -153,6 +158,7 @@ impl CreateSeriesForm {
                 "weekday" => &mut form.weekday,
                 "start_time" => &mut form.start_time,
                 "end_time" => &mut form.end_time,
+                "instagram_handle" => &mut form.instagram_handle,
                 _ => continue,
             };
             let text = field
@@ -162,6 +168,29 @@ impl CreateSeriesForm {
             *slot = Some(text);
         }
         Ok(form)
+    }
+
+    /// The Instagram handle: `None` when the field was not sent, `Some(None)`
+    /// when it was sent empty (clears it). A leading '@' is dropped.
+    fn instagram_handle(&self) -> Result<Option<Option<String>>> {
+        let Some(raw) = self.instagram_handle.as_deref() else {
+            return Ok(None);
+        };
+        let handle = raw.trim();
+        let handle = handle.strip_prefix('@').unwrap_or(handle);
+        if handle.is_empty() {
+            return Ok(Some(None));
+        }
+        let valid = handle.len() <= 30
+            && handle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+        if !valid {
+            return Err(AppError::BadRequest(
+                "Instagram handle may only use letters, digits, '.' and '_' (max 30)".to_string(),
+            ));
+        }
+        Ok(Some(Some(handle.to_string())))
     }
 
     /// The rhythm, or `None` for "No fixed rhythm" (`repeat_rule=none`).
@@ -231,9 +260,17 @@ pub async fn api_create_series(
         .map(str::trim)
         .filter(|d| !d.is_empty());
     let rhythm = form.rhythm()?;
+    let instagram_handle = form.instagram_handle()?.flatten();
 
     let (id, slug) =
         series::insert_series(&state.db, user.id, name, description, rhythm.as_ref()).await?;
+    if instagram_handle.is_some() {
+        sqlx::query("UPDATE show_templates SET instagram_handle = ? WHERE id = ?")
+            .bind(&instagram_handle)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+    }
 
     if let Some(cover) = form.cover {
         // Same storage as template covers. No series without its cover:
@@ -258,6 +295,57 @@ pub async fn api_create_series(
 
     let row = load_own_series(&state, user.id, &slug).await?;
     Ok((StatusCode::CREATED, Json(series_item(&state, row).await)))
+}
+
+/// PUT /api/series/:slug — the owner edits a series. Same multipart fields as
+/// POST /api/series; `cover` is optional and kept when left out. The slug
+/// stays, so links keep working. Booked episodes keep their date and time.
+pub async fn api_update_series(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    multipart: Multipart,
+) -> Result<impl IntoResponse> {
+    let user = require_show_creator(&state, &headers).await?;
+    let row = load_own_series(&state, user.id, &slug).await?;
+    let form = CreateSeriesForm::read(multipart).await?;
+
+    let name = form.name.as_deref().map(str::trim).unwrap_or("");
+    if name.is_empty() {
+        return Err(AppError::BadRequest("Name is required".to_string()));
+    }
+    let description = form
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let rhythm = form.rhythm()?;
+    let instagram_handle = form
+        .instagram_handle()?
+        .unwrap_or_else(|| row.instagram_handle.clone());
+    let cover_key = match form.cover {
+        Some(cover) => Some(storage::upload_template_cover(&state, row.id, cover).await?),
+        None => row.cover_key.clone(),
+    };
+
+    sqlx::query(
+        "UPDATE show_templates SET name = ?, description = ?, cover_key = ?, repeat_rule = ?, \
+         weekday = ?, start_time = ?, end_time = ?, instagram_handle = ? WHERE id = ?",
+    )
+    .bind(name)
+    .bind(description)
+    .bind(cover_key)
+    .bind(rhythm.as_ref().map(|r| r.repeat_rule.as_str()))
+    .bind(rhythm.as_ref().map(|r| r.weekday))
+    .bind(rhythm.as_ref().map(|r| r.start_time.as_str()))
+    .bind(rhythm.as_ref().map(|r| r.end_time.as_str()))
+    .bind(instagram_handle)
+    .bind(row.id)
+    .execute(&state.db)
+    .await?;
+
+    let row = load_own_series(&state, user.id, &slug).await?;
+    Ok(Json(series_item(&state, row).await))
 }
 
 async fn load_own_series(state: &Arc<AppState>, owner_id: i64, slug: &str) -> Result<SeriesRow> {
@@ -377,4 +465,93 @@ pub async fn api_get_series(
         series: series_item(&state, row).await,
         episodes,
     }))
+}
+
+#[derive(sqlx::FromRow)]
+struct UpcomingRow {
+    id: i64,
+    date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    stream_mode: Option<String>,
+    wrapup_published_at: Option<String>,
+    live_ended_at: Option<String>,
+    show_name: String,
+    host_username: String,
+}
+
+/// One row of the host Dashboard.
+#[derive(Debug, Serialize)]
+pub struct UpcomingEpisode {
+    id: i64,
+    date: String,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    show_name: String,
+    host_username: String,
+    /// "live" | "prerecorded"
+    mode: &'static str,
+    /// "Live" | "Pre-recorded"
+    mode_label: &'static str,
+}
+
+/// GET /api/upcoming-episodes — the upcoming episodes of all hosts' series,
+/// by date and start time.
+pub async fn api_upcoming_episodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    // An episode ends at most a day after its date, so older dates are over.
+    let rows: Vec<UpcomingRow> = sqlx::query_as(
+        "SELECT s.id, s.date, COALESCE(s.start_time, t.start_time) AS start_time, \
+                COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
+                s.wrapup_published_at, s.live_ended_at, t.name AS show_name, \
+                u.username AS host_username \
+         FROM shows s \
+         JOIN show_templates t ON t.id = s.template_id \
+         JOIN users u ON u.id = t.owner_user_id \
+         WHERE t.slug IS NOT NULL AND s.date >= date('now', '-2 days') \
+         ORDER BY s.date, start_time, s.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let on_air = on_air_show_id(&state).await;
+    let now = Utc::now();
+    let episodes: Vec<UpcomingEpisode> = rows
+        .into_iter()
+        .filter(|e| {
+            let end = series::ended_by_host(
+                series::episode_end_utc(
+                    &e.date,
+                    e.start_time.as_deref(),
+                    e.end_time.as_deref(),
+                    None,
+                ),
+                e.live_ended_at.as_deref(),
+            );
+            series::episode_status(
+                end,
+                e.wrapup_published_at.is_some(),
+                on_air == Some(e.id),
+                now,
+            ) == EpisodeStatus::Upcoming
+        })
+        .map(|e| {
+            let (mode, mode_label) = series::mode_of(e.stream_mode.as_deref());
+            UpcomingEpisode {
+                id: e.id,
+                date: e.date,
+                start_time: e.start_time,
+                end_time: e.end_time,
+                show_name: e.show_name,
+                host_username: e.host_username,
+                mode,
+                mode_label,
+            }
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "episodes": episodes })))
 }

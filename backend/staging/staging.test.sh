@@ -16,6 +16,8 @@ TEST_PW=testtesttesttesttestTEST1
 ADMIN_PW=AdminTypedByHand2026xyz
 HOST_PW='Host pw! with #symbols 2026'
 HOST_HASH='$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aG9zdA'
+E2E_PW=e2ee2ee2ee2ee2ee2ee2ee2eE2E1
+E2E_HASH='$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$ZTJl'
 
 mkdir -p "$TMP/bin" "$BOX"
 cp "$HERE/staging.env.example" "$HERE/stream.env.example" "$BOX/"
@@ -51,6 +53,8 @@ SUPERADMIN_USERNAME=staging-admin
 SUPERADMIN_PASSWORD_HASH='\$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA'
 STAGING_HOST_USERNAME=staging-host
 STAGING_HOST_PASSWORD_HASH='$HOST_HASH'
+STAGING_E2E_HOST_USERNAME=e2e-host
+STAGING_E2E_HOST_PASSWORD_HASH='$E2E_HASH'
 R2_ACCOUNT_ID=account
 R2_ACCESS_KEY_ID=key
 R2_SECRET_ACCESS_KEY=secret
@@ -60,8 +64,16 @@ STREAM_OUTPUT=icecast
 ICECAST_URL=icecast://source:$LIVE_PW@host.docker.internal:8005/live
 ICECAST_TEST_URL=icecast://source:$TEST_PW@host.docker.internal:8005/test
 ICECAST_STATUS_URL=http://host.docker.internal:8010/status-json.xsl
-SOUNDCLOUD_AUTO_UPLOAD=false
+SOUNDCLOUD_CLIENT_ID=stagingclientid
+SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+SOUNDCLOUD_ACCOUNT=moafunk-test
+SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
+SOUNDCLOUD_AUTO_UPLOAD=true
+SOUNDCLOUD_KEEP_TRACKS=10
 TELEGRAM_ENABLED=false
+INSTAGRAM_ACCOUNT=dev
+INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
+INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
   cat >"$BOX/stream.env" <<EOF
 HARBOR_PORT=8005
@@ -134,7 +146,14 @@ expect_ok "safe staging settings pass" check
 case_env "missing shows bucket falls back to production" "R2_SHOWS_BUCKET_NAME must be 'moafunk-staging'" R2_SHOWS_BUCKET_NAME -
 case_env "production recordings bucket" "R2_BUCKET_NAME must be 'unheard-artists-staging'" R2_BUCKET_NAME unheard-artists-prod
 case_env "production shows bucket" "R2_SHOWS_BUCKET_NAME must be" R2_SHOWS_BUCKET_NAME moafunk-prod
-case_env "SoundCloud auto-upload not off" "SOUNDCLOUD_AUTO_UPLOAD must be 'false'" SOUNDCLOUD_AUTO_UPLOAD -
+case_env "SoundCloud auto-upload unset" "SOUNDCLOUD_AUTO_UPLOAD must be 'true'" SOUNDCLOUD_AUTO_UPLOAD -
+case_env "SoundCloud login skips the app's redirect URI" "SOUNDCLOUD_REDIRECT_URI must be 'https://admin.live.moafunk.de/api/soundcloud/callback'" \
+  SOUNDCLOUD_REDIRECT_URI https://staging.live.moafunk.de/api/soundcloud/callback
+case_env "SoundCloud login returns to the localhost default" "SOUNDCLOUD_REDIRECT_URI must be" SOUNDCLOUD_REDIRECT_URI -
+case_env "SoundCloud cleanup unset" "SOUNDCLOUD_KEEP_TRACKS must be '10'" SOUNDCLOUD_KEEP_TRACKS -
+case_env "SoundCloud station account" "SOUNDCLOUD_ACCOUNT must not be the station account radio-moafunk" SOUNDCLOUD_ACCOUNT radio-moafunk
+case_env "SoundCloud test account unset" "SOUNDCLOUD_ACCOUNT must be set" SOUNDCLOUD_ACCOUNT -
+case_env "SoundCloud app secret unset" "SOUNDCLOUD_CLIENT_SECRET must be set" SOUNDCLOUD_CLIENT_SECRET -
 case_env "Telegram switched on" "TELEGRAM_ENABLED must be 'false'" TELEGRAM_ENABLED true
 case_env "production admin URL" "ADMIN_BASE_URL must be" ADMIN_BASE_URL https://admin.live.moafunk.de
 case_env "production app env" "APP_ENV must be 'staging'" APP_ENV production
@@ -144,14 +163,21 @@ case_env "status from the production Icecast" "ICECAST_STATUS_URL must be" ICECA
 case_env "GitHub dispatch token set" "GITHUB_DISPATCH_TOKEN must not be set" GITHUB_DISPATCH_TOKEN ghp_x
 case_env "Telegram bot token set" "TELEGRAM_BOT_TOKEN must not be set" TELEGRAM_BOT_TOKEN 123:abc
 case_env "Telegram setting added later" "TELEGRAM_NEW_SETTING must not be set" TELEGRAM_NEW_SETTING x
-case_env "SoundCloud secret set" "SOUNDCLOUD_CLIENT_SECRET must not be set" SOUNDCLOUD_CLIENT_SECRET x
+case_env "SoundCloud static token set" "SOUNDCLOUD_ACCESS_TOKEN must not be set" SOUNDCLOUD_ACCESS_TOKEN x
+case_env "SoundCloud setting added later" "SOUNDCLOUD_NEW_SETTING must not be set" SOUNDCLOUD_NEW_SETTING x
 case_env "Instagram token set" "INSTAGRAM_ACCESS_TOKEN_PROD must not be set" INSTAGRAM_ACCESS_TOKEN_PROD x
+case_env "Instagram prod account id set" "INSTAGRAM_BUSINESS_ACCOUNT_ID_PROD must not be set" INSTAGRAM_BUSINESS_ACCOUNT_ID_PROD 1
+case_env "Instagram station account" "INSTAGRAM_ACCOUNT must be 'dev'" INSTAGRAM_ACCOUNT prod
+case_env "Instagram account unset" "INSTAGRAM_ACCOUNT must be 'dev'" INSTAGRAM_ACCOUNT -
 case_env "Facebook secret set" "FACEBOOK_APP_SECRET must not be set" FACEBOOK_APP_SECRET x
 case_env "OpenAI key set" "OPENAI_API_KEY must not be set" OPENAI_API_KEY sk-x
 case_env "empty recovery mail key" "RECOVERY_MAIL_FROM must not be set" RECOVERY_MAIL_FROM ""
 case_env "placeholder left in .env" "SECRET_KEY still has a <placeholder>" SECRET_KEY "<STAGING_SECRET_KEY>"
 case_env "host login has no hash" "STAGING_HOST_PASSWORD_HASH must be an argon2 hash" STAGING_HOST_PASSWORD_HASH -
 case_env "host login has no name" "STAGING_HOST_USERNAME must be set" STAGING_HOST_USERNAME -
+case_env "e2e login has no hash" "STAGING_E2E_HOST_PASSWORD_HASH must be an argon2 hash" STAGING_E2E_HOST_PASSWORD_HASH -
+case_env "e2e login is the people's host login" "STAGING_E2E_HOST_USERNAME must be 'e2e-host' (is 'staging-host')" \
+  STAGING_E2E_HOST_USERNAME staging-host
 case_env "unquoted value with a space" "has an unquoted value with a space" SUPERADMIN_USERNAME "Staging Admin"
 case_env "harbor password differs from stream.env" "ICECAST_URL must use HARBOR_LIVE_PASSWORD" ICECAST_URL \
   "icecast://source:otherotherotherotherother1@host.docker.internal:8005/live"
@@ -180,6 +206,7 @@ secrets() {
 STAGING_SECRET_KEY=secretsecretsecretsecretsecret
 STAGING_SUPERADMIN_PASSWORD=$ADMIN_PW
 STAGING_HOST_PASSWORD=$HOST_PW
+STAGING_E2E_HOST_PASSWORD=$E2E_PW
 STAGING_R2_ACCESS_KEY_ID=0123456789abcdef0123456789abcdef
 STAGING_R2_SECRET_ACCESS_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 STAGING_HARBOR_TEST_PASSWORD=$TEST_PW
@@ -187,6 +214,10 @@ STAGING_HARBOR_LIVE_PASSWORD=$LIVE_PW
 STAGING_ICECAST_SOURCE_PASSWORD=sourcesourcesourcesource1
 STAGING_ICECAST_ADMIN_PASSWORD=adminadminadminadminadmin1
 STAGING_ICECAST_RELAY_PASSWORD=relayrelayrelayrelayrelay1
+STAGING_SOUNDCLOUD_CLIENT_ID=stagingclientid
+STAGING_SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+STAGING_INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
+STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
 }
 
@@ -198,7 +229,7 @@ rm -f "$BOX/.env" "$BOX/stream.env"
 expect_ok "install-env writes env files from the secrets" install_env < <(secrets)
 expect_ok "installed env files pass check-env" check
 if grep -q "^SUPERADMIN_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "superadmin hash is single-quoted"; else fail "superadmin hash is single-quoted"; fi
-if grep -rqF -e "$ADMIN_PW" -e "$HOST_PW" "$BOX"; then fail "plaintext login passwords were written"; else pass "plaintext login passwords are not stored"; fi
+if grep -rqF -e "$ADMIN_PW" -e "$HOST_PW" -e "$E2E_PW" "$BOX"; then fail "plaintext login passwords were written"; else pass "plaintext login passwords are not stored"; fi
 if grep -q "^STAGING_HOST_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env"; then pass "host login hash (password with spaces and symbols)"; else fail "host login hash (password with spaces and symbols)"; fi
 if [[ "$(ls -l "$BOX/.env" "$BOX/stream.env" | cut -c1-10 | sort -u)" == "-rw-------" ]]; then
   pass "env files are mode 600"
@@ -316,6 +347,7 @@ expect_ok "seed-db installs a copy from stdin" seed_from_stdin "$TMP/copy.db"
 expect_fact "seed-db adds the staging superadmin" "$BOX/data/unheard.db" \
   "user staging-admin superadmin \$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA"
 expect_fact "seed-db adds the staging host" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "seed-db adds the e2e host" "$BOX/data/unheard.db" "user e2e-host host $E2E_HASH"
 expect_fact "seed-db keeps production users unusable" "$BOX/data/unheard.db" "user boss superadmin !"
 
 make_prod_db "$TMP/raw.db"
@@ -327,7 +359,10 @@ python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDA
 expect_ok "users resets the staging logins in the running DB" staging users
 expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
 set_key "$BOX/.env" STAGING_HOST_PASSWORD_HASH -
-expect_refused "users refuses .env without the host hash" "the host login needs a username and an argon2 hash" staging users
+expect_refused "users refuses .env without the host hash" "a host login needs a username and an argon2 hash" staging users
+write_good
+set_key "$BOX/.env" STAGING_E2E_HOST_PASSWORD_HASH -
+expect_refused "users refuses .env without the e2e host hash" "a host login needs a username and an argon2 hash" staging users
 write_good
 
 printf 'not a database' >"$TMP/broken.db"
@@ -361,6 +396,13 @@ else
   fail "a CI deploy during a hold changes nothing and exits 3: exit $code, $out"
 fi
 if [[ "$(ci status)" == *"hold: "*"R1 release checks"* ]]; then pass "status shows the hold"; else fail "status shows the hold: $(ci status 2>&1)"; fi
+: >"$CALLS"
+expect_refused "up by hand refuses during a hold" "R1 release checks): up refused" staging up sha-abc1234
+expect_refused "down by hand refuses during a hold" "down refused" staging down
+if [[ ! -s "$CALLS" ]]; then pass "a refused up or down runs no docker"; else fail "a refused up or down runs no docker: $(cat "$CALLS")"; fi
+expect_refused "STAGING_IGNORE_HOLD=1 lets up go on" "run staging.sh setup first" env STAGING_IGNORE_HOLD=1 \
+  PATH="$TMP/bin:$PATH" STAGING_DIR="$BOX" bash "$HERE/staging.sh" up sha-abc1234
+expect_ok "hold replaces a release hold" staging hold "R1 release checks"
 expect_ok "unhold resumes CI deploys" staging unhold
 expect_refused "after unhold a CI deploy reaches up" "run staging.sh setup first" ci "deploy sha-abc1234 $DIGEST"
 
@@ -368,6 +410,9 @@ echo "--- the chaos test show through the CI key"
 rm -f "$BOX/hold"
 expect_ok "e2e-hold holds an idle staging" ci "e2e-hold 42"
 if [[ "$(cat "$BOX/hold")" == *" | e2e run 42" ]]; then pass "the hold names the run"; else fail "the hold names the run: $(cat "$BOX/hold")"; fi
+expect_refused "unhold by hand refuses a test run's hold" "e2e run 42): unhold refused" staging unhold
+expect_refused "hold by hand refuses to replace a test run's hold" "hold refused" staging hold "R1 release checks"
+if [[ "$(cat "$BOX/hold")" == *" | e2e run 42" ]]; then pass "the test run keeps its hold"; else fail "the test run keeps its hold: $(cat "$BOX/hold")"; fi
 expect_ok "e2e-unhold of another run" ci "e2e-unhold 43"
 if [[ -f "$BOX/hold" ]]; then pass "leaves the run's hold"; else fail "leaves the run's hold"; fi
 expect_ok "e2e-unhold removes its own hold" ci "e2e-unhold 42"
@@ -408,6 +453,126 @@ PY
 if [[ "$(ci "e2e-recordings 901")" == "finalized 312000 1" ]]; then pass "e2e-recordings lists a test episode's recordings"; else fail "e2e-recordings lists a test episode's recordings: $(ci "e2e-recordings 901" 2>&1)"; fi
 expect_refused "e2e-recordings refuses other shows" "is not a test episode" ci "e2e-recordings 902"
 expect_refused "e2e-recordings needs a show number" "the CI key may only run" ci "e2e-recordings 1 OR 1=1"
+python3 - "$BOX/data/unheard.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.executescript("""
+CREATE TABLE show_templates (id INTEGER PRIMARY KEY, owner_user_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL);
+ALTER TABLE shows ADD COLUMN template_id INTEGER REFERENCES show_templates(id) ON DELETE SET NULL;
+CREATE TABLE series_uploads (session_id TEXT PRIMARY KEY, series_id INTEGER NOT NULL REFERENCES show_templates(id) ON DELETE CASCADE);
+INSERT INTO show_templates (id, owner_user_id, name) VALUES
+  (1, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-live'),
+  (2, (SELECT id FROM users WHERE username = 'staging-host'), 'e2e-42-set'),
+  (3, (SELECT id FROM users WHERE username = 'boss'), 'e2e-boss'),
+  (4, (SELECT id FROM users WHERE username = 'staging-host'), 'Real show'),
+  (5, (SELECT id FROM users WHERE username = 'e2e-host'), 'e2e-43-live');
+INSERT INTO series_uploads VALUES ('upload-1', 1);
+INSERT INTO shows (id, title, date, template_id) VALUES (903, 'e2e-42-set #1', '2026-11-17', 2);
+""")
+PY
+out="$(ci e2e-cleanup 2>&1)"
+if [[ "$out" == "deleted 2 test Show(s); kept, with episodes: e2e-42-set" ]]; then
+  pass "e2e-cleanup deletes the test hosts' test Shows without episodes"
+else
+  fail "e2e-cleanup deletes the test hosts' test Shows without episodes: $out"
+fi
+left="$(python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(','.join(r[0] for r in c.execute('SELECT name FROM show_templates ORDER BY id')), c.execute('SELECT COUNT(*) FROM series_uploads').fetchone()[0])" "$BOX/data/unheard.db")"
+if [[ "$left" == "e2e-42-set,e2e-boss,Real show 0" ]]; then
+  pass "e2e-cleanup keeps other Shows and drops the deleted Show's uploads"
+else
+  fail "e2e-cleanup keeps other Shows and drops the deleted Show's uploads: $left"
+fi
+expect_refused "e2e-cleanup takes no arguments" "the CI key may only run" ci "e2e-cleanup 1"
+
+today="$(date -u +%F)"
+python3 - "$BOX/data/unheard.db" "$today" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+day = sys.argv[2]
+con.execute("ALTER TABLE shows ADD COLUMN start_time TEXT")
+con.execute("ALTER TABLE shows ADD COLUMN end_time TEXT")
+con.executemany(
+    "INSERT INTO shows (id, title, date, start_time, end_time) VALUES (?, ?, ?, ?, ?)",
+    [
+        (910, "Copied show", day, "20:00", None),  # no end: a point inside the slot
+        (911, "Own test show", day, "19:10", "21:07"),
+        (912, "Earlier show", day, "17:00", "19:30"),  # ends when the slot starts
+        (913, "No start time", day, None, None),
+        (914, "Another day", "2026-01-01", "20:00", None),
+    ],
+)
+con.commit()
+PY
+slot_days() { # the shows 910-914 as id:days from today
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(f'{i}:{d}' for i, d in c.execute(\"SELECT id, CAST(julianday(date) - julianday(?) AS INTEGER) FROM shows WHERE id BETWEEN 910 AND 913 ORDER BY id\", (sys.argv[2],))), c.execute('SELECT date FROM shows WHERE id = 914').fetchone()[0])" "$BOX/data/unheard.db" "$today"
+}
+out="$(ci "e2e-free-slot $today 19:30 21:59" 2>&1)"
+if [[ "$out" == "slot $today 19:30-21:59: moved 2 show(s) to the day before: 910 Copied show, 911 Own test show" ]]; then
+  pass "e2e-free-slot moves the shows in the slot to the day before"
+else
+  fail "e2e-free-slot moves the shows in the slot to the day before: $out"
+fi
+if [[ "$(slot_days)" == "910:-1 911:-1 912:0 913:0 2026-01-01" ]]; then
+  pass "e2e-free-slot leaves shows outside the slot alone"
+else
+  fail "e2e-free-slot leaves shows outside the slot alone: $(slot_days)"
+fi
+if [[ "$(ci "e2e-free-slot $today 19:30 21:59")" == "slot $today 19:30-21:59: free" ]]; then
+  pass "e2e-free-slot on a free slot changes nothing"
+else
+  fail "e2e-free-slot on a free slot changes nothing"
+fi
+expect_refused "e2e-free-slot refuses a day far from today" "is not between yesterday and two days ahead" ci "e2e-free-slot 2026-01-01 19:30 21:59"
+# A test books a day ahead in Berlin time: up to two days ahead of the box's UTC date.
+ahead="$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=2))")"
+if [[ "$(ci "e2e-free-slot $ahead 00:03 01:03")" == "slot $ahead 00:03-01:03: free" ]]; then
+  pass "e2e-free-slot takes a slot two days ahead"
+else
+  fail "e2e-free-slot takes a slot two days ahead"
+fi
+far="$(python3 -c "import datetime; print(datetime.datetime.now(datetime.timezone.utc).date() + datetime.timedelta(days=3))")"
+expect_refused "e2e-free-slot refuses three days ahead" "is not between yesterday and two days ahead" ci "e2e-free-slot $far 00:03 01:03"
+expect_refused "e2e-free-slot needs a date and two times" "the CI key may only run" ci "e2e-free-slot $today 25:00 26:00"
+expect_refused "e2e-free-slot cannot add commands" "the CI key may only run" ci "e2e-free-slot $today 19:30 21:59; reboot"
+
+announce() { # the announce_* settings, sorted
+  python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(' '.join(f'{k}={v}' for k, v in c.execute(\"SELECT key, value FROM app_settings WHERE key GLOB 'announce_*' ORDER BY key\")))" "$BOX/data/unheard.db"
+}
+python3 - "$BOX/data/unheard.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+con.execute("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('announce_feed_per_day', '1'), ('announce_slots', '12:00,18:00')")
+con.commit()
+PY
+before="$(announce)"
+ci "e2e-instagram on 14:05" >/dev/null
+ci "e2e-instagram on 14:35" >/dev/null
+on="$(announce)"
+if [[ "$on" == *announce_approval_mode=never* && "$on" == *announce_feed_per_day=20* && "$on" == *announce_slots=14:35* ]]; then
+  pass "e2e-instagram on sets the test limits and feed time"
+else
+  fail "e2e-instagram on sets the test limits and feed time: $on"
+fi
+ci "e2e-instagram off" >/dev/null
+if [[ "$(announce)" == "$before" ]]; then
+  pass "e2e-instagram off restores the settings from before the first on"
+else
+  fail "e2e-instagram off restores the settings from before the first on: $(announce)"
+fi
+if [[ "$(ci "e2e-instagram off")" == "no saved announcement settings: nothing to restore" ]]; then
+  pass "e2e-instagram off twice changes nothing"
+else
+  fail "e2e-instagram off twice changes nothing"
+fi
+python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('ALTER TABLE shows ADD COLUMN soundcloud_public INTEGER DEFAULT 0'); c.commit()" "$BOX/data/unheard.db"
+ci "e2e-instagram public 901" >/dev/null
+public="$(python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute('SELECT group_concat(soundcloud_public) FROM (SELECT soundcloud_public FROM shows WHERE id IN (901, 902) ORDER BY id)').fetchone()[0])" "$BOX/data/unheard.db")"
+if [[ "$public" == "1,0" ]]; then pass "e2e-instagram public marks a test episode's track public"; else fail "e2e-instagram public marks a test episode's track public: $public"; fi
+expect_refused "e2e-instagram public refuses other shows" "is not a test episode" ci "e2e-instagram public 902"
+expect_refused "e2e-instagram public needs a show number" "the CI key may only run" ci "e2e-instagram public 1 OR 1=1"
+expect_refused "e2e-instagram needs a valid time" "the CI key may only run" ci "e2e-instagram on 24:00"
+expect_refused "e2e-instagram takes only on and off" "the CI key may only run" ci "e2e-instagram on 12:00; reboot"
 
 AUTH="$TMP/authorized_keys"
 cp "$HERE/ci-deploy.pub" "$BOX/ci-deploy.pub"
@@ -451,7 +616,26 @@ cat >"$TMP/pushbin/ssh" <<EOF
 #!/usr/bin/env bash
 PATH="$TMP/bin:\$PATH" STAGING_DIR="$BOX" bash "$HERE/staging.sh" install-env
 EOF
-chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh"
+SM="$TMP/sm.json"
+cat >"$TMP/pushbin/bws" <<EOF
+#!/usr/bin/env bash
+[[ -n "\${BWS_ACCESS_TOKEN:-}" ]] || { echo "Missing access token" >&2; exit 1; }
+[[ "\$*" == "secret list --output json" ]] || { echo "stub bws: \$*" >&2; exit 1; }
+cat "$SM"
+EOF
+chmod +x "$TMP/pushbin/bw" "$TMP/pushbin/ssh" "$TMP/pushbin/bws"
+
+# Secrets Manager with the station SoundCloud app, the e2e login (and an unrelated secret).
+sm_secrets() {
+  printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"},
+    {"key":"SOUNDCLOUD_CLIENT_SECRET","value":"%s"},
+    {"key":"INSTAGRAM_ACCESS_TOKEN_DEV","value":"igdevtoken"},
+    {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
+    {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
+    {"key":"STAGING_E2E_HOST_PASSWORD","value":"%s"},
+    {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" "${2-$E2E_PW}" >"$SM"
+}
+sm_secrets stationclientsecret
 
 r2_items() {
   printf '[{"name":"Moafunk STAGING_R2_ACCESS_KEY_ID","login":{"password":"0123456789abcdef0123456789abcdef"}},
@@ -459,7 +643,11 @@ r2_items() {
 }
 
 push() {
-  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging bash "$HERE/push-secrets.sh" root@staging.test
+  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging BWS_ACCESS_TOKEN=sm-token bash "$HERE/push-secrets.sh" root@staging.test
+}
+
+push_without_sm_token() {
+  PATH="$TMP/pushbin:$PATH" BW_FOLDER=Staging env -u BWS_ACCESS_TOKEN bash "$HERE/push-secrets.sh" root@staging.test
 }
 
 # Password of the vault item NAME (empty when it is not a string).
@@ -492,6 +680,33 @@ else
   fail "the host item has the username and 24 characters"
 fi
 if out="$(push 2>&1)" && [[ "$out" != *created* ]]; then pass "a second run creates nothing"; else fail "a second run creates nothing: $out"; fi
+if grep -qx "SOUNDCLOUD_CLIENT_ID=stationclientid" "$BOX/.env" && grep -qx "SOUNDCLOUD_CLIENT_SECRET=stationclientsecret" "$BOX/.env"; then
+  pass "the box gets the SoundCloud app from Secrets Manager"
+else
+  fail "the box gets the SoundCloud app from Secrets Manager"
+fi
+if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
+if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the listed secrets come from Secrets Manager"; fi
+if grep -qx "INSTAGRAM_ACCESS_TOKEN_DEV=igdevtoken" "$BOX/.env" && grep -qx "INSTAGRAM_ACCOUNT=dev" "$BOX/.env"; then
+  pass "the box gets the Instagram test account"
+else
+  fail "the box gets the Instagram test account"
+fi
+if grep -q "igprodtoken" "$BOX/.env"; then fail "the Instagram station token reached the box"; else pass "the Instagram station token stays off the box"; fi
+if grep -q "^STAGING_E2E_HOST_PASSWORD_HASH='\$argon2id\\$" "$BOX/.env" && ! grep -qF "$E2E_PW" "$BOX/.env"; then
+  pass "the box gets the e2e login from Secrets Manager, only as a hash"
+else
+  fail "the box gets the e2e login from Secrets Manager, only as a hash"
+fi
+
+expect_refused "push without a Secrets Manager token stops" "export BWS_ACCESS_TOKEN" push_without_sm_token
+sm_secrets ""
+expect_refused "an empty SoundCloud secret stops the push" "Secrets Manager secret SOUNDCLOUD_CLIENT_SECRET is empty" push
+printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"}]' >"$SM"
+expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager secrets named SOUNDCLOUD_CLIENT_SECRET" push
+sm_secrets stationclientsecret ""
+expect_refused "an empty e2e login stops the push" "Secrets Manager secret STAGING_E2E_HOST_PASSWORD is empty" push
+sm_secrets stationclientsecret
 
 r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 jq '.[1:]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"

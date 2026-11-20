@@ -1,4 +1,4 @@
-name: BACKUP - Database and R2 Storage
+name: OPS - Back up database and R2
 
 on:
   # Weekly scheduled backup (Sunday 3am UTC)
@@ -49,44 +49,60 @@ jobs:
 
       - name: Determine backup type
         id: backup-type
+        env:
+          EVENT: ${{ github.event_name }}
+          # Boolean inputs: an unchecked box is false and must stay false.
+          IN_DB: ${{ inputs.backup_db }}
+          IN_R2: ${{ inputs.backup_r2 }}
+          IN_FULL: ${{ inputs.full_r2_backup }}
         run: |
           # Default: DB only for submission triggers, full backup for cron/manual
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            echo "backup_db=true" >> $GITHUB_OUTPUT
-            echo "backup_r2=false" >> $GITHUB_OUTPUT
-            echo "full_r2=false" >> $GITHUB_OUTPUT
-            echo "trigger=artist-submission" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            echo "backup_db=true" >> $GITHUB_OUTPUT
-            echo "backup_r2=true" >> $GITHUB_OUTPUT
-            echo "full_r2=true" >> $GITHUB_OUTPUT
-            echo "trigger=weekly-cron" >> $GITHUB_OUTPUT
+          if [[ "$EVENT" == "repository_dispatch" ]]; then
+            echo "backup_db=true" >> "$GITHUB_OUTPUT"
+            echo "backup_r2=false" >> "$GITHUB_OUTPUT"
+            echo "full_r2=false" >> "$GITHUB_OUTPUT"
+            echo "trigger=artist-submission" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT" == "schedule" ]]; then
+            echo "backup_db=true" >> "$GITHUB_OUTPUT"
+            echo "backup_r2=true" >> "$GITHUB_OUTPUT"
+            echo "full_r2=true" >> "$GITHUB_OUTPUT"
+            echo "trigger=weekly-cron" >> "$GITHUB_OUTPUT"
           else
-            echo "backup_db=${{ inputs.backup_db || 'true' }}" >> $GITHUB_OUTPUT
-            echo "backup_r2=${{ inputs.backup_r2 || 'true' }}" >> $GITHUB_OUTPUT
-            echo "full_r2=${{ inputs.full_r2_backup || 'false' }}" >> $GITHUB_OUTPUT
-            echo "trigger=manual" >> $GITHUB_OUTPUT
+            # Only an explicit false skips a part; a missing value keeps the default.
+            echo "backup_db=$([[ "$IN_DB" == false ]] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+            echo "backup_r2=$([[ "$IN_R2" == false ]] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+            echo "full_r2=$([[ "$IN_FULL" == true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+            echo "trigger=manual" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Log backup configuration
+        env:
+          EVENT: ${{ github.event_name }}
+          TRIGGER: ${{ steps.backup-type.outputs.trigger }}
+          BACKUP_DB: ${{ steps.backup-type.outputs.backup_db }}
+          BACKUP_R2: ${{ steps.backup-type.outputs.backup_r2 }}
+          FULL_R2: ${{ steps.backup-type.outputs.full_r2 }}
+          ARTIST_ID: ${{ github.event.client_payload.artist_id }}
         run: |
-          echo "Backup trigger: ${{ steps.backup-type.outputs.trigger }}"
-          echo "Backup DB: ${{ steps.backup-type.outputs.backup_db }}"
-          echo "Backup R2: ${{ steps.backup-type.outputs.backup_r2 }}"
-          echo "Full R2 snapshot: ${{ steps.backup-type.outputs.full_r2 }}"
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            echo "Artist ID: ${{ github.event.client_payload.artist_id }}"
+          echo "Backup trigger: $TRIGGER"
+          echo "Backup DB: $BACKUP_DB"
+          echo "Backup R2: $BACKUP_R2"
+          echo "Full R2 snapshot: $FULL_R2"
+          if [[ "$EVENT" == "repository_dispatch" ]]; then
+            echo "Artist ID: $ARTIST_ID"
           fi
 
       - name: Setup SSH key
         env:
           HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
           HETZNER_SSH_KEY: ${{ steps.bitwarden-secrets.outputs.HETZNER_SSH_KEY }}
+          # Pinned host key of the production server; a different key stops the backup.
+          PROD_HOST_KEY: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL76nCwfiKTFFhXYlN68sxFT4jd0m9IAQpmbLFyL/nru
         run: |
           mkdir -p ~/.ssh
           echo "$HETZNER_SSH_KEY" > ~/.ssh/hetzner.pem
           chmod 600 ~/.ssh/hetzner.pem
-          ssh-keyscan -H "$HETZNER_IP" >> ~/.ssh/known_hosts 2>/dev/null || true
+          printf '%s %s\n' "$HETZNER_IP" "$PROD_HOST_KEY" > ~/.ssh/prod_known_hosts
 
       # The box gets the backup scripts from deploy_hetzner.sh, but rclone has no
       # config there until this runs. setup_rclone.sh reads the R2 keys from the
@@ -95,7 +111,8 @@ jobs:
         env:
           HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
         run: |
-          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
+          ssh -i ~/.ssh/hetzner.pem -o UserKnownHostsFile="$HOME/.ssh/prod_known_hosts" \
+            -o StrictHostKeyChecking=yes root@"$HETZNER_IP" \
             "cd /opt/unheard-backend && ./scripts/backup/setup_rclone.sh"
 
       - name: Run database backup
@@ -104,28 +121,36 @@ jobs:
           HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
         run: |
           echo "Running database backup on the Hetzner box..."
-          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
+          ssh -i ~/.ssh/hetzner.pem -o UserKnownHostsFile="$HOME/.ssh/prod_known_hosts" \
+            -o StrictHostKeyChecking=yes root@"$HETZNER_IP" \
             "cd /opt/unheard-backend && ./scripts/backup/backup-db.sh"
 
       - name: Run R2 backup
         if: steps.backup-type.outputs.backup_r2 == 'true'
         env:
           HETZNER_IP: ${{ steps.bitwarden-secrets.outputs.HETZNER_IP }}
+          FULL_R2: ${{ steps.backup-type.outputs.full_r2 }}
         run: |
           echo "Running R2 backup on the Hetzner box..."
           FULL_FLAG=""
-          if [[ "${{ steps.backup-type.outputs.full_r2 }}" == "true" ]]; then
+          if [[ "$FULL_R2" == "true" ]]; then
             FULL_FLAG="--full"
           fi
-          ssh -i ~/.ssh/hetzner.pem -o StrictHostKeyChecking=no root@"$HETZNER_IP" \
+          ssh -i ~/.ssh/hetzner.pem -o UserKnownHostsFile="$HOME/.ssh/prod_known_hosts" \
+            -o StrictHostKeyChecking=yes root@"$HETZNER_IP" \
             "cd /opt/unheard-backend && ./scripts/backup/backup-r2.sh $FULL_FLAG"
 
       - name: Backup summary
         if: always()
+        env:
+          EVENT: ${{ github.event_name }}
+          TRIGGER: ${{ steps.backup-type.outputs.trigger }}
+          STATUS: ${{ job.status }}
+          ARTIST_ID: ${{ github.event.client_payload.artist_id }}
         run: |
           echo "=== Backup Job Complete ==="
-          echo "Trigger: ${{ steps.backup-type.outputs.trigger }}"
-          echo "Status: ${{ job.status }}"
-          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            echo "Artist ID: ${{ github.event.client_payload.artist_id }}"
+          echo "Trigger: $TRIGGER"
+          echo "Status: $STATUS"
+          if [[ "$EVENT" == "repository_dispatch" ]]; then
+            echo "Artist ID: $ARTIST_ID"
           fi

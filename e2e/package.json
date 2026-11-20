@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "typecheck": "tsc -p ."
+    "local": "playwright test -c playwright.local.config.ts",
+    "typecheck": "tsc -p .",
+    "unit": "node --test lib/*.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.64.1",

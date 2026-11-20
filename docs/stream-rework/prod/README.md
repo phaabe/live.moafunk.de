@@ -20,7 +20,7 @@ backend ffmpeg (STREAM_OUTPUT=icecast)
 |------|---------|---------|
 | `icecast.xml` | `/etc/moafunk/icecast.xml` | Icecast-KH: `/live.mp3` + `/test.mp3` mounts, port 8010 |
 | `icecast-kh.Dockerfile` | `/etc/moafunk/icecast-kh.Dockerfile` | builds the pinned Icecast-KH image from source |
-| `moafunk.liq` | `/etc/moafunk/moafunk.liq` | Liquidsoap: harbor inputs → Icecast, secrets from env. **Auto-synced by the `deploy-hetzner` CI job** (restarts Liquidsoap only on change) — edit it in the repo, not on the box |
+| `moafunk.liq` | `/etc/moafunk/moafunk.liq` | Liquidsoap: harbor inputs → Icecast, secrets from env. Edit it in the repo, not on the box. No CI job copies it: after a change, copy it to the box by hand, run `systemctl restart liquidsoap`, then check that an upload without a password gets 401 on both harbor mounts (`curl -s -o /dev/null -w '%{http_code}' -X PUT http://127.0.0.1:8005/test`, and `/live`) |
 | `stream.env.example` | `/etc/moafunk/stream.env` (filled) | harbor + Icecast passwords (Bitwarden-injected) |
 | `liquidsoap.service` | `/etc/systemd/system/` | supervises Liquidsoap (docker, `Restart=always`, mem cap) |
 | `icecast.service` | `/etc/systemd/system/` | supervises Icecast-KH (docker, `Restart=always`, mem cap) |

@@ -1,0 +1,525 @@
+/*
+ * Host pages (milestone 46 design): Dashboard, Schedule, My Shows, Show,
+ * Episode, Studio and On Air. Everything is scoped to .host-page, so the
+ * admin pages keep their look. Mono stays for headings, dates, clocks and
+ * buttons; body text uses the UI font.
+ */
+
+.host-page {
+  font-family: var(--font-ui);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  width: 100%;
+}
+
+.host-page .page-title {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: 2rem;
+  line-height: 1.15;
+  color: #fff;
+}
+
+.host-page .back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #b0b0c4;
+  font: 600 var(--font-size-sm) var(--font-ui);
+  cursor: pointer;
+}
+
+.host-page .back-link:hover {
+  color: #fff;
+}
+
+/* Text that only the flow check and screen readers need ("·" between row parts). */
+.host-page .sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------- cards ---------- */
+.host-page .board-card {
+  border-color: #2a2a42;
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+.host-page .board-card-head {
+  padding: 12px var(--spacing-md);
+  border-bottom-color: #2a2a42;
+}
+
+.host-page .board-card-title {
+  font-family: var(--font-family);
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #ddd;
+}
+
+.host-page .board-card-body {
+  padding: var(--spacing-md);
+}
+
+.host-page .board-card.next-step {
+  border-color: #5c5620;
+}
+
+.host-page .board-card.next-step.needs-file {
+  border-color: #5a4416;
+}
+
+.host-page .lead {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.host-page .lead-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1.5px solid var(--color-primary);
+  border-radius: 22px;
+  color: var(--color-primary);
+}
+
+.host-page .needs-file .lead-icon {
+  border-style: dashed;
+  border-color: var(--color-warning);
+  color: #fbbf24;
+}
+
+.host-page .lead .text {
+  margin: 0;
+  color: #dcdce6;
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}
+
+/* ---------- rows: one divided list per card ---------- */
+.host-page .board-card > .board-rows {
+  gap: 0;
+}
+
+.host-page .board-card > .board-rows > li + li {
+  border-top: 1px solid #1e1e34;
+}
+
+.host-page .board-card > .board-rows .board-row {
+  flex-wrap: nowrap;
+  gap: 12px;
+  min-height: 68px;
+  padding: 10px var(--spacing-md);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.host-page .board-card > .board-rows a.board-row:hover {
+  background: #151530;
+}
+
+.host-page .row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.host-page .row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--spacing-md);
+}
+
+.host-page .date-chip {
+  flex: none;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-alt);
+  color: #ddd;
+  font-family: var(--font-family);
+  line-height: 1.05;
+}
+
+.host-page .date-chip small {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a0a0b4;
+}
+
+.host-page .date-chip b {
+  font-size: 15px;
+}
+
+.host-page .date-chip.mine {
+  background: var(--color-primary);
+  color: #000;
+}
+
+.host-page .date-chip.mine small {
+  color: #3d3800;
+}
+
+.host-page .date-chip.wrapup {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--color-warning);
+  color: #fbbf24;
+}
+
+.host-page .date-chip.wrapup small {
+  color: #fbbf24;
+}
+
+.host-page .row-time {
+  font: 700 14px var(--font-family);
+  color: #d0d0dc;
+  white-space: nowrap;
+}
+
+.host-page .row-title {
+  font-weight: 700;
+  font-size: var(--font-size-md);
+  color: #fff;
+}
+
+.host-page .row-title.big {
+  font: 700 1.3rem/1.2 var(--font-family);
+}
+
+.host-page .row-host,
+.host-page .row-sub {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  color: #a0a0b4;
+}
+
+.host-page .row-host.mine {
+  color: var(--color-primary);
+}
+
+.host-page .row-tags {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 6px;
+}
+
+.host-page .row-icon {
+  flex: none;
+  color: var(--color-primary);
+}
+
+.host-page .row-icon.read-only {
+  color: #8e8ea4;
+}
+
+.host-page .row-icon.none {
+  width: 18px;
+}
+
+.host-page .tag {
+  border-radius: var(--radius-md);
+}
+
+.host-page .tag-upcoming {
+  color: #a3c4ff;
+}
+
+@media (max-width: 640px) {
+  .host-page .page-title {
+    font-size: 1.625rem;
+  }
+
+  .host-page .row-body {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  /* Tags go on a second line under the row text, so names keep their width. */
+  .host-page .board-card > .board-rows .board-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'main icon'
+      'tags icon';
+    row-gap: 6px;
+  }
+
+  .host-page .board-row > .row-main {
+    grid-area: main;
+  }
+
+  .host-page .board-row > .row-tags,
+  .host-page .board-row > .tag {
+    grid-area: tags;
+    justify-self: start;
+    justify-content: flex-start;
+    margin-left: 68px;
+  }
+
+  .host-page .board-row > .row-icon {
+    grid-area: icon;
+  }
+}
+
+/* ---------- status pills ---------- */
+.host-page .status-banner {
+  justify-content: flex-start;
+  gap: 6px 12px;
+  border-radius: var(--radius-xl);
+}
+
+.host-page .status-banner .dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #3478f6;
+}
+
+.host-page .status-banner.ok .dot {
+  background: var(--color-success);
+}
+
+.host-page .status-banner.warn .dot {
+  background: var(--color-warning);
+}
+
+.host-page .status-banner.live .dot,
+.host-page .status-banner.failed .dot {
+  background: var(--color-error);
+}
+
+.host-page .status-banner.live .dot {
+  animation: host-pulse 1.6s infinite;
+}
+
+@keyframes host-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host-page .status-banner.live .dot {
+    animation: none;
+  }
+}
+
+/* ---------- buttons (BaseButton) ---------- */
+.host-page button.base-button {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: var(--radius-lg);
+  font-family: var(--font-family);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.host-page button.base-button.variant-secondary {
+  background: transparent;
+  border: 1px solid #4a4a60;
+}
+
+.host-page button.base-button.variant-danger {
+  color: #000;
+}
+
+.host-page button.base-button.quiet-danger {
+  background: transparent;
+  border: 1px solid #7a2626;
+  color: #ff9b93;
+}
+
+.host-page button.base-button:disabled {
+  opacity: 1;
+  background: #12122a;
+  border: 1px solid #2a2a42;
+  color: #7a7a90;
+}
+
+.host-page button.base-button.block {
+  width: 100%;
+}
+
+.host-page button.base-button.xl {
+  min-height: 56px;
+  font-size: var(--font-size-md);
+}
+
+/* ---------- form fields ---------- */
+.host-page .board-card .field {
+  gap: 6px;
+}
+
+.host-page .board-card .field .label,
+.host-page .board-card .form-input .label,
+.host-page .board-card .field-label {
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8bc;
+}
+
+.host-page .board-card .field .input,
+.host-page .board-card .form-input .input {
+  min-height: 44px;
+  border: 1px solid #34344c;
+  border-radius: var(--radius-lg);
+  background: #06060f;
+  font: 15px var(--font-ui);
+}
+
+.host-page .pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* Live / Pre-recorded as a two-way switch, with the real radios inside. */
+.host-page .mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  max-width: 420px;
+  padding: 4px;
+  border: 1px solid #34344c;
+  border-radius: 10px;
+  background: #06060f;
+}
+
+.host-page .mode label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  border-radius: 7px;
+  color: #a8a8bc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.host-page .mode label:has(input:checked) {
+  background: #1d1d36;
+  color: var(--color-primary);
+  box-shadow: inset 0 0 0 1px var(--color-primary);
+}
+
+.host-page .mode label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.host-page .mode input {
+  position: absolute;
+  opacity: 0;
+}
+
+.host-page .mode label:has(input:focus-visible) {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.host-page .check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  font-weight: 700;
+}
+
+.host-page .check input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--color-primary);
+}
+
+/* ---------- covers ---------- */
+.host-page .cover {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-alt);
+  color: #5c5c78;
+}
+
+.host-page .cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---------- two columns on desktop, stacked on phones ---------- */
+.host-page .cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+}
+
+.host-page .cols > .main {
+  flex: 999 1 520px;
+  min-width: 0;
+}
+
+.host-page .cols > .side {
+  flex: 1 1 340px;
+  min-width: 0;
+}
+
+/* Errors and empty lists. */
+.host-page .field-error {
+  margin: 0;
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
+
+.host-page .empty {
+  margin: 0;
+  padding: var(--spacing-xl) var(--spacing-md);
+  text-align: center;
+  color: #c8c8d4;
+  font-family: var(--font-family);
+}

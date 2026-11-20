@@ -18,10 +18,13 @@ pub fn truncate_caption(caption: &str, limit: usize) -> String {
     if caption.len() <= limit {
         return caption.to_owned();
     }
-    // Find last whitespace before the limit (leave room for "…")
-    let truncate_at = caption[..limit - 1]
-        .rfind(char::is_whitespace)
-        .unwrap_or(limit - 1);
+    // Find last whitespace before the limit (leave room for "…"). Never cut
+    // inside a multi-byte character such as an emoji.
+    let mut end = limit - 1;
+    while !caption.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncate_at = caption[..end].rfind(char::is_whitespace).unwrap_or(end);
     format!("{}…", &caption[..truncate_at])
 }
 
@@ -51,6 +54,15 @@ async fn download_file_bytes(presigned_url: &str) -> Result<Vec<u8>, String> {
 // The helpers below call the Telegram Bot API directly via reqwest multipart
 // to work around this limitation.
 
+/// Bot API URL of `method`. Tests point the base at a local fake.
+fn api_url(token: &str, method: &str) -> String {
+    #[cfg(not(test))]
+    let base = "https://api.telegram.org".to_string();
+    #[cfg(test)]
+    let base = crate::fake_telegram::API_BASE.with(|base| base.borrow().clone());
+    format!("{base}/bot{token}/{method}")
+}
+
 /// Response envelope from the Telegram Bot API.
 #[derive(serde::Deserialize)]
 struct TgResponse {
@@ -62,7 +74,8 @@ struct TgResponse {
 /// Send a photo via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
-async fn send_photo_raw(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_photo_raw(
     token: &str,
     chat_id: i64,
     photo_bytes: Vec<u8>,
@@ -91,7 +104,7 @@ async fn send_photo_raw(
         form = form.text("reply_markup", markup.to_owned());
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/sendPhoto");
+    let url = api_url(token, "sendPhoto");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .multipart(form)
@@ -118,6 +131,7 @@ async fn send_photo_raw(
 /// Send a video via the Telegram Bot API using raw reqwest multipart.
 ///
 /// Returns the `message_id` of the sent message on success.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_video_raw(
     token: &str,
     chat_id: i64,
@@ -147,7 +161,7 @@ pub async fn send_video_raw(
         form = form.text("reply_markup", markup.to_owned());
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/sendVideo");
+    let url = api_url(token, "sendVideo");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .multipart(form)
@@ -172,6 +186,7 @@ pub async fn send_video_raw(
 }
 
 /// Send an audio file via the Telegram Bot API using raw reqwest multipart.
+#[allow(clippy::too_many_arguments)]
 async fn send_audio_raw(
     token: &str,
     chat_id: i64,
@@ -204,7 +219,7 @@ async fn send_audio_raw(
         );
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/sendAudio");
+    let url = api_url(token, "sendAudio");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .multipart(form)
@@ -250,7 +265,7 @@ pub async fn edit_message_caption_raw(
         body["reply_markup"] = markup_val;
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/editMessageCaption");
+    let url = api_url(token, "editMessageCaption");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .json(&body)
@@ -273,6 +288,7 @@ pub async fn edit_message_caption_raw(
 /// Edit the media (photo or video) of an existing message.
 ///
 /// `media_type` should be `"photo"` or `"video"`.
+#[allow(clippy::too_many_arguments)]
 pub async fn edit_message_media_raw(
     token: &str,
     chat_id: i64,
@@ -311,7 +327,7 @@ pub async fn edit_message_media_raw(
         form = form.text("reply_markup", markup.to_owned());
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/editMessageMedia");
+    let url = api_url(token, "editMessageMedia");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .multipart(form)
@@ -356,7 +372,7 @@ pub async fn send_message_raw(
         body["reply_markup"] = markup_val;
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+    let url = api_url(token, "sendMessage");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .json(&body)
@@ -401,7 +417,7 @@ pub async fn edit_message_text_raw(
         body["reply_markup"] = markup_val;
     }
 
-    let url = format!("https://api.telegram.org/bot{token}/editMessageText");
+    let url = api_url(token, "editMessageText");
     let resp: TgResponse = reqwest::Client::new()
         .post(&url)
         .json(&body)
@@ -628,7 +644,7 @@ async fn send_artist_preview(state: &Arc<AppState>, artist_id: i64) -> Result<()
         .telegram_bot_token
         .as_deref()
         .unwrap_or_default();
-    let photo_msg_id = if let Some(ref pic_key) = artist
+    let photo_msg_id = if let Some(pic_key) = artist
         .pic_overlay_key
         .as_ref()
         .or(artist.pic_cropped_key.as_ref())
@@ -906,9 +922,9 @@ async fn send_show_update_notification(
     let chat = ChatId(chat_id);
 
     // Send photo with caption if show has a cover
-    let cover_key = show.cover_generated_at.and_then(|_| {
+    let cover_key = show.cover_generated_at.map(|_| {
         // Cover exists if cover_generated_at is set
-        Some(format!("shows/{}/cover.png", show.id))
+        format!("shows/{}/cover.png", show.id)
     });
 
     let token = state
@@ -1637,3 +1653,7 @@ pub async fn send_sort_order_prompt(state: &Arc<AppState>, show_id: i64) -> Resu
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "telegram_notify_tests.rs"]
+mod tests;

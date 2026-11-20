@@ -99,6 +99,9 @@ Optional environment variables (ZIP artist image stamping):
 	- Path to a `.ttf` font file used to render the artist name.
 	- If unset, the server tries a few common system font paths.
 
+Optional environment variables (Instagram announcements):
+- `INSTAGRAM_ACCOUNT` — `dev` or `prod` (default: `dev`). The account this server posts announcements (stories, feed images) to. Staging uses `dev`, production `prod`. The chosen account needs its `INSTAGRAM_ACCESS_TOKEN_<DEV|PROD>` and `INSTAGRAM_BUSINESS_ACCOUNT_ID_<DEV|PROD>`; without them nothing is posted. Tokens are refreshed weekly and stored per account in the database.
+
 Optional environment variables (Telegram bot):
 - `TELEGRAM_BOT_TOKEN` — BotFather token. If unset, the bot is disabled entirely.
 - `TELEGRAM_ADMIN_CHAT_ID` — Numeric chat ID that is allowed to issue commands and receives notifications. Use a negative value for group chats.
@@ -202,6 +205,29 @@ sudo certbot --nginx -d admin.live.moafunk.de
 # Reload nginx
 sudo systemctl reload nginx
 ```
+
+## Instagram announcements
+
+The scheduler checks every 60 s and posts due announcements of an episode:
+
+- **pre** and **post**: feed images at a configured slot time. The caption gets the station hashtags (setting `hashtags`, default `#moafunk`).
+- **onair**: a story, sent when the episode goes live, only if the host left it on.
+- **post** gets its time only when the episode's SoundCloud track is public: the next day, evening slot first, else the next free slot.
+- Posts that need approval wait in `pending_approval` and are never sent. When their time passes they stay pending; approving moves a feed post to the next free slot.
+- The pause switch in the admin settings stops all sends.
+- Each sent or failed post sends a notice to the admin Telegram topic. Admins retry failed posts in the admin queue.
+
+### Staging
+
+- Staging must run with `INSTAGRAM_ACCOUNT=dev` (test account `moafunk_tester`) and the dev token only. Never put a prod token on staging.
+- Manual test on staging, before production:
+  1. Book a test episode. Plan a pre post, leave the on-air story on, plan a post.
+  2. Check the pre post on `moafunk_tester` at its time.
+  3. Go live: check the on-air story.
+  4. Make the SoundCloud track public: the post gets its time; check it at that time.
+  5. Cancel an announcement: nothing is posted.
+  6. Make a send fail (for example a wrong dev token): the row is `failed`, Telegram shows the error, and **Retry** in the admin queue works after the fix.
+- Pilot: 2 hosts use announcements on staging (test account) before production posts to `@moafunk_radio`.
 
 ## Telegram Bot
 

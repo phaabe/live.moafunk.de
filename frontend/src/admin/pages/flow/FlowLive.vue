@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
+import { showsApi } from '@admin/api';
 import {
   useHostFlow,
   useAudioCapture,
@@ -10,12 +11,18 @@ import {
   streamRecordingMimeType,
 } from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
+import BoardIcon from '@admin/components/BoardIcon.vue';
 
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
  * Go Live. Nothing goes live by itself. The router gate opens it 30 min
- * before the start. Go Live works from the start time once the test
- * broadcast sounds right.
+ * before the start. Go Live works from the start time once the soundcheck
+ * is confirmed.
+ *
+ * Studio · Back on air (`studio-backonair`): the episode is still on air but
+ * no tab sends audio, e.g. after a reload. The server keeps it on air for
+ * 5 minutes after a drop. Going back on air needs only an input: the show
+ * passed its soundcheck before.
  */
 const router = useRouter();
 const flow = useHostFlow();
@@ -33,12 +40,13 @@ const secondsToStart = computed(() => {
   return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
 });
 
-const soundcheck = computed(() => {
+/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. */
+const countdown = computed(() => {
   const left = secondsToStart.value;
-  if (left <= 0) return 'Soundcheck · it is air time';
+  if (left <= 0) return { label: 'Soundcheck · it is air time', clock: '' };
   const mm = String(Math.floor(left / 60)).padStart(2, '0');
   const ss = String(left % 60).padStart(2, '0');
-  return `Soundcheck · show starts in ${mm}:${ss}`;
+  return { label: 'Soundcheck · show starts in ', clock: `${mm}:${ss}` };
 });
 
 const record = computed({
@@ -46,14 +54,35 @@ const record = computed({
   set: (value: boolean) => flow.setRecordStream(value),
 });
 
+// The soundcheck card. Its test broadcast uses the socket that Go Live needs.
+const soundcheck = ref<{ stopTest?: () => void } | null>(null);
+
 const goingLive = ref(false);
 const wentLive = ref(false);
 const goLiveError = ref<string | null>(null);
 
+// The router opens On Air when this tab is live, so on air here means this tab
+// does not send: a reload, a closed tab or a lost connection. (If another tab
+// of the host is live, going back on air takes over, as Go Live does.)
+const backOnAir = ref(false);
+
+/** Is the episode on air? Null when the server cannot say. */
+async function onAirNow(showId: number): Promise<boolean | null> {
+  try {
+    return (await showsApi.get(showId)).on_air === true;
+  } catch {
+    return null;
+  }
+}
+
+onMounted(async () => {
+  if (show.value) backOnAir.value = (await onAirNow(show.value.id)) === true;
+});
+
 const canGoLive = computed(
   () =>
     !!show.value &&
-    flow.liveTestPassed.value &&
+    (backOnAir.value || flow.liveTestPassed.value) &&
     audioCapture.isCapturing.value &&
     secondsToStart.value <= 0
 );
@@ -69,6 +98,18 @@ async function goLive() {
   const showId = show.value.id;
   goingLive.value = true;
   goLiveError.value = null;
+  if (backOnAir.value) {
+    // This click is a user gesture: resume audio before the request.
+    audioCapture.resumeAudioContext();
+    // The 5 minutes ran out: the normal soundcheck. If the server cannot say, go on.
+    if ((await onAirNow(showId)) === false) {
+      backOnAir.value = false;
+      goingLive.value = false;
+      return;
+    }
+  }
+  // A test broadcast the host still listens to: connect() would reuse its socket.
+  soundcheck.value?.stopTest?.();
   // Take over the socket's callbacks from the soundcheck: this connection is
   // the broadcast. On Air registers its own once it opens.
   const socket = useStreamSocket({
@@ -116,67 +157,103 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="studio">
-    <router-link :to="episodePath" class="back-link">&lt; Episode</router-link>
+  <div class="studio host-page">
+    <router-link :to="episodePath" class="back-link"
+      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
+    >
     <h1 class="page-title">Studio</h1>
-    <p class="pill warn">{{ soundcheck }}</p>
-
-    <LiveSetupTest studio />
-
-    <label class="check">
-      <input v-model="record" type="checkbox" />
-      Record this show
-    </label>
-
-    <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
-    <div>
-      <BaseButton :disabled="!canGoLive" :loading="goingLive" @click="goLive">Go Live</BaseButton>
+    <template v-if="backOnAir">
+      <p class="pill status-banner live">
+        <span class="dot" aria-hidden="true"></span>Still on air · no audio
+      </p>
+      <p class="notice" role="alert">
+        Your show is still on air, but no audio arrives. Listeners hear silence.
+      </p>
+    </template>
+    <p v-else class="pill status-banner warn countdown">
+      <span class="countdown-label"
+        ><span class="dot" aria-hidden="true"></span>{{ countdown.label }}</span
+      ><span v-if="countdown.clock" class="countdown-clock">{{ countdown.clock }}</span>
+    </p>
+    <div class="cols">
+      <div class="main">
+        <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
+      </div>
+      <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
+      <aside class="side go-live">
+        <label v-if="!backOnAir" class="check">
+          <input v-model="record" type="checkbox" />
+          Record this show
+        </label>
+        <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
+        <BaseButton class="block xl" :disabled="!canGoLive" :loading="goingLive" @click="goLive"
+          ><BoardIcon name="broadcast" :size="20" />{{
+            backOnAir ? 'Go back on air' : 'Go Live'
+          }}</BaseButton
+        >
+      </aside>
     </div>
   </div>
 </template>
 
 <style scoped>
 .studio {
-  max-width: 560px;
+  max-width: 1120px;
   margin: 0 auto;
+}
+
+.countdown {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.countdown-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fde7b0;
+}
+
+.countdown-clock {
+  font: 700 3rem/1 var(--font-family);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.notice {
+  margin: 0 0 var(--spacing-md);
+  padding: var(--spacing-md);
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
+}
+
+.go-live {
+  position: sticky;
+  top: var(--spacing-md);
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--color-surface);
+  border: 1px solid #2a2a42;
+  border-radius: var(--radius-xl);
 }
 
-.back-link {
-  align-self: flex-start;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-.page-title {
-  margin: 0;
-}
-
-.pill {
-  align-self: flex-start;
-  margin: 0;
-  padding: var(--spacing-xs) var(--spacing-md);
-  border-radius: var(--radius-md);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-}
-
-.pill.warn {
-  border-color: var(--color-warning, var(--color-border));
-}
-
-.check {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-  font-size: var(--font-size-sm);
-}
-
-.field-error {
-  color: var(--color-error);
-  font-size: var(--font-size-sm);
-  margin: 0;
+@media (max-width: 640px) {
+  .go-live {
+    top: auto;
+    bottom: 0;
+    gap: var(--spacing-sm);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    background: #05050f;
+  }
 }
 </style>

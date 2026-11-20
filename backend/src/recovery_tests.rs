@@ -39,6 +39,7 @@ async fn state() -> (
         recovery_mail: recovery_mail::RecoveryMailer::for_test(&endpoint),
         recovery_controls: handlers::recovery::RecoveryControls::default(),
         stream_state: stream_bridge::new_shared_state(),
+        soundcheck_state: stream_bridge::new_shared_state(),
         stream_metrics: stream_metrics::new_shared(),
         recording_manager: recording::new_shared_manager(temp.path().to_path_buf()),
         recording_finalizer: Arc::default(),

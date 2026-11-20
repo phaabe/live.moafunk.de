@@ -1,18 +1,25 @@
-name: E2E - Chaos test show on staging
+name: TEST - Chaos show on staging
 
 # One test show on https://staging.live.moafunk.de proves the stream, the
-# recording and the self-recovery after a dropout (e2e/). It runs after every
-# staging deploy (backend.yml calls it), every night, and by hand: a soak of
-# `duration` extra minutes on air before each release.
-# Schedule and workflow_dispatch work only once this file is on main.
+# recording and the self-recovery after a dropout (e2e/). A second job,
+# instagram-e2e, posts a host's announcements to the Instagram test account.
+# It runs every night,
+# by hand (a soak of `duration` extra minutes on air), and on each release PR
+# into main (e2e-release.yml calls it with release_sha). Not on PRs into
+# staging and not after a staging deploy: merges into staging never wait for it.
+# nightly.yml starts the nightly run on the staging branch, so it uses this
+# file and the tests from staging, not the old copy on main.
 on:
   workflow_call:
-  pull_request:
-    branches: [staging]
-    # staging.sh holds the test's e2e-* requests (copied to the box by hand).
-    paths: ['e2e/**', '.github/workflows/e2e-staging.yml', 'backend/staging/staging.sh']
-  schedule:
-    - cron: '30 2 * * *'
+    inputs:
+      release_sha:
+        description: The release commit; staging must run exactly its image
+        type: string
+        required: true
+      duration:
+        description: Extra minutes on air
+        type: string
+        default: '0'
   workflow_dispatch:
     inputs:
       duration:
@@ -24,10 +31,23 @@ permissions:
 
 jobs:
   chaos-show:
+    # One leg per e2e job, one after the other: the chaos test show, then the
+    # Instagram announcements (own check on the dashboard, own job name).
+    name: ${{ matrix.job }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - job: chaos-show
+            project: chaos
+          - job: instagram-e2e
+            project: instagram
     runs-on: ubuntu-latest
     timeout-minutes: 150
-    # Two runs never share staging, and a deploy (backend.yml, same group)
-    # waits until the run ends. A waiting run starts after the current one.
+    # Two test runs never share staging; a waiting run starts after the
+    # current one. A deploy (backend.yml) is not in this group: it waits for
+    # the run's hold, so it never cancels a waiting test run.
     concurrency:
       group: staging-box
       cancel-in-progress: false
@@ -37,17 +57,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The nightly run tests staging with the staging branch's test.
-          ref: ${{ github.event_name == 'schedule' && 'staging' || '' }}
+          # A release run tests with the release commit's test. Other runs use
+          # the branch they run on; the nightly run is on staging.
+          ref: ${{ inputs.release_sha || '' }}
 
-      - name: Get the staging CI key and the host login from Bitwarden
+      - name: Get the staging CI key and the e2e host login from Bitwarden
         id: secrets
         uses: bitwarden/sm-action@v2
         with:
           access_token: ${{ secrets.BW_ACCESS_TOKEN }}
           secrets: |
             ba04c03e-d633-40a6-a49f-b50301724312 > STAGING_DEPLOY_SSH_KEY
-            1137ba63-20f1-4544-b8f8-b5040008ade4 > STAGING_HOST_PASSWORD
+            4a6cfb10-f992-43de-94f6-b50600a71958 > STAGING_E2E_HOST_PASSWORD
 
       - name: Write the CI key and the pinned host key
         env:
@@ -63,26 +84,78 @@ jobs:
             echo "STAGING_KNOWN_HOSTS=$RUNNER_TEMP/staging-known-hosts"
           } >>"$GITHUB_ENV"
 
+      - name: Check staging runs the release commit
+        # Only for a release PR. Then nothing in CI can change the image
+        # during the run: the release hold is there, and a deploy skips it.
+        if: inputs.release_sha != ''
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        # Anchor: the check after the tests runs the same script.
+        run: &check-release-image |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::release_sha must be a full commit hash"; exit 1; }
+          status="$(ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de status)"
+          echo "Staging: $(tr '\n' ' ' <<<"$status")"
+          tag="$(sed -n 's/^tag: //p' <<<"$status")"
+          if [[ ! "$tag" =~ ^sha-[0-9a-f]{7,40}$ || "$RELEASE_SHA" != "${tag#sha-}"* ]]; then
+            echo "::error::staging runs ${tag:-no image}, not the release sha-${RELEASE_SHA:0:7}. Put that image on staging and hold it (docs/deployment.md), then re-run this job."
+            exit 1
+          fi
+          echo "Staging runs the release: $tag"
+
+      - name: Hold staging for this run
+        # Before the install, so a deploy that started just before has ended
+        # when the test starts. A deploy (backend.yml) waits for this hold.
+        # A hold someone else set stays theirs.
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-hold $E2E_RUN"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: e2e/package-lock.json
 
-      - name: Install the test, Chromium and ffmpeg
+      - name: Install ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+
+      - name: Install the test and Chromium
         working-directory: e2e
         run: |
           set -euo pipefail
-          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
           npm ci
           npx playwright install --with-deps chromium
           npm run typecheck
+          npm run unit
 
-      - name: Run the chaos test show
+      - name: Run the e2e tests of this job
         working-directory: e2e
         env:
-          STAGING_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_HOST_PASSWORD }}
-        run: npx playwright test
+          STAGING_E2E_HOST_PASSWORD: ${{ steps.secrets.outputs.STAGING_E2E_HOST_PASSWORD }}
+          PROJECT: ${{ matrix.project }}
+        run: npx playwright test --project "$PROJECT"
+
+      - name: Check staging still runs the release commit
+        # A redeploy by hand during the run ignores the hold. Then the test
+        # did not test the release, so the job must fail.
+        if: ${{ !cancelled() && inputs.release_sha != '' && env.STAGING_SSH_KEY != '' }}
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: *check-release-image
+
+      - name: Restore the announcement settings (also after a failure)
+        # The test restores them itself; this covers a timeout or a cancel.
+        if: always() && matrix.project == 'instagram' && env.STAGING_SSH_KEY != ''
+        run: |
+          ssh -i "$STAGING_SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o UserKnownHostsFile="$STAGING_KNOWN_HOSTS" -o StrictHostKeyChecking=yes \
+            root@staging.live.moafunk.de "e2e-instagram off"
 
       - name: Remove this run's hold (also after a failure)
         if: always() && env.STAGING_SSH_KEY != ''
@@ -95,8 +168,21 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-staging-${{ github.run_id }}
+          name: e2e-staging-${{ matrix.project }}-${{ github.run_id }}
           path: |
             e2e/playwright-report/
             e2e/test-results/
           retention-days: 14
+
+  dashboard:
+    # The test dashboard after every run: nightly, by hand or on a release PR
+    # (a soak when duration > 0).
+    needs: chaos-show
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/test-dashboard.yml
+    with:
+      soak-minutes: ${{ inputs.duration || '0' }}
+    secrets: inherit

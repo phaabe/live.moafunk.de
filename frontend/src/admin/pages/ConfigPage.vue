@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { settingsApi } from '../api';
+import { settingsApi, type ServiceSettings } from '../api';
 
 // --- Notifications ---
 const notificationsEnabled = ref(true);
@@ -29,7 +29,39 @@ async function toggleNotifications() {
   }
 }
 
-onMounted(loadNotificationSettings);
+// --- Connections: SoundCloud / Instagram ---
+const services = ref<ServiceSettings>({ soundcloud: true, instagram: true });
+const servicesLoading = ref(true);
+const SERVICES: { key: keyof ServiceSettings; label: string }[] = [
+  { key: 'soundcloud', label: 'SoundCloud' },
+  { key: 'instagram', label: 'Instagram' },
+];
+
+async function loadServices() {
+  try {
+    services.value = await settingsApi.getServices();
+  } catch (e) {
+    console.error('Failed to load service settings:', e);
+  } finally {
+    servicesLoading.value = false;
+  }
+}
+
+async function toggleService(key: keyof ServiceSettings) {
+  const before = services.value;
+  services.value = { ...before, [key]: !before[key] };
+  try {
+    services.value = await settingsApi.setServices(services.value);
+  } catch (e) {
+    services.value = before;
+    console.error('Failed to update service settings:', e);
+  }
+}
+
+onMounted(() => {
+  loadNotificationSettings();
+  loadServices();
+});
 </script>
 
 <template>
@@ -65,6 +97,36 @@ onMounted(loadNotificationSettings);
           <p class="text-muted notification-hint">
             Controls all bot notifications: stream alerts, artist submissions, show updates,
             Instagram previews.
+          </p>
+        </div>
+      </div>
+
+      <div class="card config-card">
+        <div class="card-header">
+          <h2 class="card-title">🔌 Connections</h2>
+        </div>
+        <div class="card-body">
+          <div v-for="service in SERVICES" :key="service.key" class="notification-row service-row">
+            <div class="notification-info">
+              <span class="notification-label">{{ service.label }}</span>
+              <span :class="['badge', services[service.key] ? 'badge-success' : 'badge-error']">
+                {{ services[service.key] ? 'Enabled' : 'Disabled' }}
+              </span>
+            </div>
+            <label class="toggle-switch" :class="{ loading: servicesLoading }">
+              <input
+                type="checkbox"
+                :aria-label="service.label"
+                :checked="services[service.key]"
+                :disabled="servicesLoading"
+                @change="toggleService(service.key)"
+              />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <p class="text-muted notification-hint">
+            Off blocks every post and upload there. Hosts see “temporarily not available”. Scheduled
+            Instagram posts wait until it is on again.
           </p>
         </div>
       </div>
@@ -112,6 +174,10 @@ onMounted(loadNotificationSettings);
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-md);
+}
+
+.service-row + .service-row {
+  margin-top: var(--spacing-md);
 }
 
 .notification-info {

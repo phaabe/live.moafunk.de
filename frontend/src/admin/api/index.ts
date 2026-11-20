@@ -7,6 +7,22 @@ interface ApiError {
   details?: string;
 }
 
+const LOGIN_ENDPOINT = '/api/auth/login';
+
+let onUnauthorized: (() => void) | null = null;
+
+/** Run `handler` when an API call answers 401: the session has expired. */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+/** fetch for API calls. A 401 from the login call is a wrong password, not an expired session. */
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(url, init);
+  if (response.status === 401 && url !== LOGIN_ENDPOINT) onUnauthorized?.();
+  return response;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -17,7 +33,7 @@ class ApiClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
-    const response = await fetch(url, {
+    const response = await apiFetch(url, {
       ...options,
       credentials: 'include', // Include cookies for auth
       headers: {
@@ -84,7 +100,7 @@ export interface LoginResponse {
 
 export const authApi = {
   login: (username: string, password: string) =>
-    api.post<LoginResponse>('/api/auth/login', { username, password }),
+    api.post<LoginResponse>(LOGIN_ENDPOINT, { username, password }),
 
   logout: () => api.post<void>('/api/auth/logout'),
 
@@ -217,9 +233,6 @@ export const artistsApi = {
 
   get: (id: number) => api.get<ArtistDetail>(`/api/artists/${id}`),
 
-  updateStatus: (id: number, status: string) =>
-    api.put<void>(`/api/artists/${id}/status`, { status }),
-
   delete: (id: number) => api.delete<void>(`/api/artists/${id}`),
 
   assignShow: (artistId: number, showId: number) =>
@@ -279,7 +292,7 @@ export const artistsApi = {
     id: number,
     type: 'original' | 'cropped' | 'overlay' = 'original'
   ): Promise<Blob> => {
-    const response = await fetch(`${API_BASE}/api/artists/${id}/image-proxy?type=${type}`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/image-proxy?type=${type}`, {
       credentials: 'include',
     });
     if (!response.ok) {
@@ -300,7 +313,7 @@ export const artistsApi = {
     formData.append('original', data.original);
     formData.append('cropped', data.cropped, 'cropped.jpg');
     formData.append('branded', data.branded, 'branded.jpg');
-    const response = await fetch(`${API_BASE}/api/artists/${id}/picture`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/picture`, {
       method: 'PUT',
       credentials: 'include',
       body: formData,
@@ -316,7 +329,7 @@ export const artistsApi = {
   saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
     const formData = new FormData();
     formData.append('image', blob, 'overlay.jpg');
-    const response = await fetch(`${API_BASE}/api/artists/${id}/overlays`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/overlays`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -379,7 +392,7 @@ export const artistsApi = {
     if (data.track1_name) formData.append('track1_name', data.track1_name);
     if (data.track2_name) formData.append('track2_name', data.track2_name);
 
-    const response = await fetch(`${API_BASE}/api/artists/${id}/audio`, {
+    const response = await apiFetch(`${API_BASE}/api/artists/${id}/audio`, {
       method: 'PUT',
       credentials: 'include',
       body: formData,
@@ -512,8 +525,13 @@ export interface ShowDetail {
   /** The Show (series) of this episode, when it is linked to one. */
   series_slug?: string | null;
   series_name?: string | null;
+  /** The Show's description and cover, for hosts who view another host's episode. */
+  series_description?: string | null;
+  series_cover_url?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
+  /** "Upcoming" | "Finished · wrap-up open" | "Finished" */
+  episode_status_label?: string;
   /** True while this episode is on air (recorded or not). */
   on_air?: boolean;
   /** Length of a pre-recorded set booked through Book Slot, in seconds. */
@@ -542,9 +560,6 @@ export const showsApi = {
   /** Read-only list of all shows (incl. other users') for any authenticated user. */
   overview: () => api.get<{ shows: ShowOverviewItem[] }>('/api/shows-overview'),
 
-  /** List all shows assigned to the authenticated user (host or artist) */
-  myShows: () => api.get<{ shows: Show[] }>('/api/my-shows'),
-
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
 
   create: (data: Partial<Show> & { template_id?: number; host_user_id?: number }) =>
@@ -561,7 +576,7 @@ export const showsApi = {
     const formData = new FormData();
     formData.append('file', file);
     const token = localStorage.getItem('auth_token');
-    const resp = await fetch(`/api/shows/${showId}/upload-cover`, {
+    const resp = await apiFetch(`/api/shows/${showId}/upload-cover`, {
       method: 'POST',
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: formData,
@@ -631,7 +646,7 @@ export const showsApi = {
       }
 
       onProgress?.({ phase: 'uploading', percent: 0 });
-      const response = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
+      const response = await apiFetch(`${API_BASE}/api/shows/${showId}/upload-recording`, {
         method: 'POST',
         credentials: 'include',
         body: formData,
@@ -651,7 +666,7 @@ export const showsApi = {
 
     // Step 1: Initialize upload
     onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
-    const initResponse = await fetch(`${API_BASE}/api/shows/${showId}/upload-recording/init`, {
+    const initResponse = await apiFetch(`${API_BASE}/api/shows/${showId}/upload-recording/init`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -679,7 +694,7 @@ export const showsApi = {
       const chunkFormData = new FormData();
       chunkFormData.append('chunk', chunk);
 
-      const chunkResponse = await fetch(
+      const chunkResponse = await apiFetch(
         `${API_BASE}/api/shows/${showId}/upload-recording/chunk/${session_id}?index=${i}`,
         {
           method: 'POST',
@@ -701,7 +716,7 @@ export const showsApi = {
 
     // Step 3: Finalize upload
     onProgress?.({ phase: 'finalizing', percent: 0 });
-    const finalizeResponse = await fetch(
+    const finalizeResponse = await apiFetch(
       `${API_BASE}/api/shows/${showId}/upload-recording/finalize/${session_id}`,
       {
         method: 'POST',
@@ -760,7 +775,7 @@ export const showsApi = {
   /** Fetch a show image as a same-origin blob (avoids R2 CORS issues).
    *  @param type 'cover' (default, with overlay) or 'collage' (plain 2×2 grid) */
   getImageBlob: async (id: number, type: 'cover' | 'collage' = 'cover'): Promise<Blob> => {
-    const response = await fetch(`${API_BASE}/api/shows/${id}/image-proxy?type=${type}`, {
+    const response = await apiFetch(`${API_BASE}/api/shows/${id}/image-proxy?type=${type}`, {
       credentials: 'include',
     });
     if (!response.ok) {
@@ -770,11 +785,105 @@ export const showsApi = {
   },
 
   listOverlays: (id: number) => api.get<OverlayListResponse>(`/api/shows/${id}/overlays`),
+};
 
-  saveOverlay: async (id: number, blob: Blob): Promise<{ key: string; url: string }> => {
+// Announcements: the three Instagram slots of an episode (CONTEXT.md "Promotion").
+export type AnnouncementSlot = 'pre' | 'onair' | 'post';
+export type AnnouncementState =
+  | 'draft'
+  | 'pending_approval'
+  | 'scheduled'
+  | 'armed'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
+export type AnnouncementImage = 'cover' | 'upload' | 'guest';
+
+export interface Announcement {
+  id: number;
+  show_id: number;
+  slot: AnnouncementSlot;
+  channel: string;
+  state: AnnouncementState;
+  /** RFC 3339; null for the on-air story and a post slot that waits for SoundCloud. */
+  scheduled_at: string | null;
+  /** RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved. */
+  requested_at: string | null;
+  headline: string;
+  caption: string;
+  image_source: AnnouncementImage;
+  image_key: string | null;
+  layout: 'band' | 'split';
+  collaborator: boolean;
+  sent_at: string | null;
+  permalink: string | null;
+  error: string | null;
+  /** The host chose "Post now". */
+  send_now: boolean;
+}
+
+export interface AnnouncementInput {
+  headline: string;
+  caption: string;
+  image_source: AnnouncementImage;
+  image_key?: string;
+  layout: 'band' | 'split';
+  collaborator: boolean;
+  scheduled_at?: string;
+  /** Send within a minute instead of at `scheduled_at` (pre slot only). */
+  send_now?: boolean;
+}
+
+/** A post slot the composer offers. A taken one carries the reason. */
+export interface AnnouncementTime {
+  scheduled_at: string;
+  free: boolean;
+  reason?: string | null;
+  default?: boolean;
+}
+
+/** What the host's Promotion card and composer must say before a post is saved. */
+export interface AnnouncementMeta {
+  /** An admin has paused all posting. */
+  paused: boolean;
+  /** This host's posts wait for an admin first. */
+  needs_approval: boolean;
+  /** Admin switches; a service that is off is "temporarily not available". */
+  services: ServiceSettings;
+}
+
+const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
+
+export const announcementsApi = {
+  list: async (showId: number): Promise<Announcement[]> => {
+    const r = await api.get<Announcement[] | { announcements: Announcement[] }>(
+      announcementsPath(showId)
+    );
+    return Array.isArray(r) ? r : r.announcements;
+  },
+
+  /** Create or replace a slot. 409 when the slot or a limit is taken. */
+  save: (showId: number, slot: AnnouncementSlot, input: AnnouncementInput) =>
+    api.put<Announcement>(`${announcementsPath(showId)}/${slot}`, input),
+
+  /** Cancel a slot; refused once it is sent. */
+  cancel: (showId: number, slot: AnnouncementSlot) =>
+    api.delete<Announcement>(`${announcementsPath(showId)}/${slot}`),
+
+  times: async (showId: number, slot: AnnouncementSlot): Promise<AnnouncementTime[]> => {
+    const r = await api.get<AnnouncementTime[] | { slots: AnnouncementTime[] }>(
+      `${announcementsPath(showId)}/slots?slot=${slot}`
+    );
+    return Array.isArray(r) ? r : r.slots;
+  },
+
+  meta: (showId: number) => api.get<AnnouncementMeta>(`${announcementsPath(showId)}/meta`),
+
+  /** Upload a JPEG or PNG photo for an announcement; save it with `image_source: 'upload'`. */
+  upload: async (showId: number, file: File): Promise<{ image_key: string }> => {
     const formData = new FormData();
-    formData.append('image', blob, 'overlay.jpg');
-    const response = await fetch(`${API_BASE}/api/shows/${id}/overlays`, {
+    formData.append('file', file);
+    const response = await apiFetch(`${API_BASE}${announcementsPath(showId)}/uploads`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -785,6 +894,21 @@ export const showsApi = {
     }
     return response.json();
   },
+
+  previewUrl: (
+    showId: number,
+    slot: AnnouncementSlot,
+    headline: string,
+    layout: string,
+    image: AnnouncementImage = 'cover',
+    imageKey: string | null = null
+  ) =>
+    `${API_BASE}${announcementsPath(showId)}/${slot}/preview.jpg?${new URLSearchParams({
+      headline,
+      layout,
+      image_source: image,
+      ...(imageKey ? { image_key: imageKey } : {}),
+    })}`,
 };
 
 // Show Templates API — per-user reusable (name + cover + description) bundles
@@ -809,7 +933,7 @@ export const showTemplatesApi = {
   ): Promise<{ success: boolean; cover_url?: string }> => {
     const formData = new FormData();
     formData.append('file', file);
-    const resp = await fetch(`/api/show-templates/${templateId}/cover`, {
+    const resp = await apiFetch(`/api/show-templates/${templateId}/cover`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -817,8 +941,6 @@ export const showTemplatesApi = {
     if (!resp.ok) throw new Error(await resp.text());
     return resp.json();
   },
-
-  delete: (id: number) => api.delete<void>(`/api/show-templates/${id}`),
 };
 
 // Show series: a host's "Show" in the flow, with dated episodes.
@@ -841,6 +963,8 @@ export interface Series {
   rhythm: SeriesRhythm | null;
   /** e.g. "Sundays · 12:00–14:00" */
   rhythm_line: string | null;
+  /** The host's own Instagram account, without "@"; announcements invite it as collaborator. */
+  instagram_handle?: string | null;
 }
 
 export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
@@ -862,12 +986,26 @@ export interface SeriesDetail extends Series {
   episodes: SeriesEpisode[];
 }
 
+/** A row of the host Dashboard: an upcoming episode of any host. */
+export interface UpcomingEpisode {
+  id: number;
+  date: string;
+  start_time: string | null;
+  end_time: string | null;
+  show_name: string;
+  host_username: string;
+  mode: 'live' | 'prerecorded';
+  mode_label: string;
+}
+
 export interface NewSeries {
   name: string;
   description: string;
   cover: File | null;
   /** null: "No fixed rhythm"; each episode books a free date and time. */
   rhythm: SeriesRhythm | null;
+  /** Only the Show page sends it (without "@"); empty means no collaborator. */
+  instagram_handle?: string;
 }
 
 /** A bookable date and time of a series' rhythm. */
@@ -905,9 +1043,12 @@ const seriesPath = (slug: string) => `/api/series/${encodeURIComponent(slug)}`;
 export const seriesApi = {
   list: () => api.get<{ series: Series[] }>('/api/series'),
 
+  /** All hosts' upcoming episodes, by date and start time. */
+  upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
+
   /** One of the caller's series, or null when it is not theirs (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
-    const resp = await fetch(seriesPath(slug), { credentials: 'include' });
+    const resp = await apiFetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;
     if (!resp.ok) throw await errorOf(resp);
     return resp.json();
@@ -934,7 +1075,7 @@ export const seriesApi = {
     for (let index = 0; index < totalChunks; index++) {
       const form = new FormData();
       form.append('chunk', file.slice(index * SET_CHUNK_SIZE, (index + 1) * SET_CHUNK_SIZE));
-      const resp = await fetch(
+      const resp = await apiFetch(
         `${seriesPath(slug)}/upload/chunk/${encodeURIComponent(session_id)}?index=${index}`,
         { method: 'POST', credentials: 'include', body: form }
       );
@@ -964,28 +1105,30 @@ export const seriesApi = {
     ),
 
   /** Create a series; the cover goes up in the same request. */
-  create: async (input: NewSeries): Promise<Series> => {
-    const form = new FormData();
-    form.append('name', input.name);
-    form.append('description', input.description);
-    if (input.rhythm) {
-      form.append('repeat_rule', input.rhythm.repeat_rule);
-      form.append('weekday', String(input.rhythm.weekday));
-      form.append('start_time', input.rhythm.start_time);
-      form.append('end_time', input.rhythm.end_time);
-    } else {
-      form.append('repeat_rule', 'none');
-    }
-    if (input.cover) form.append('cover', input.cover);
-    const resp = await fetch('/api/series', {
-      method: 'POST',
-      credentials: 'include',
-      body: form,
-    });
-    if (!resp.ok) throw await errorOf(resp);
-    return resp.json();
-  },
+  create: (input: NewSeries) => sendSeries('POST', '/api/series', input),
+
+  /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
+  update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
 };
+
+async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {
+  const form = new FormData();
+  form.append('name', input.name);
+  form.append('description', input.description);
+  if (input.rhythm) {
+    form.append('repeat_rule', input.rhythm.repeat_rule);
+    form.append('weekday', String(input.rhythm.weekday));
+    form.append('start_time', input.rhythm.start_time);
+    form.append('end_time', input.rhythm.end_time);
+  } else {
+    form.append('repeat_rule', 'none');
+  }
+  if (input.instagram_handle !== undefined) form.append('instagram_handle', input.instagram_handle);
+  if (input.cover) form.append('cover', input.cover);
+  const resp = await apiFetch(url, { method, credentials: 'include', body: form });
+  if (!resp.ok) throw await errorOf(resp);
+  return resp.json();
+}
 
 // SoundCloud API
 export interface SoundCloudStatus {
@@ -1004,11 +1147,22 @@ export interface NotificationSettings {
   enabled: boolean;
 }
 
+/** Admin switches for the outside services. Off blocks every post there. */
+export interface ServiceSettings {
+  soundcloud: boolean;
+  instagram: boolean;
+}
+
 export const settingsApi = {
   getNotifications: () => api.get<NotificationSettings>('/api/settings/notifications'),
 
   setNotifications: (enabled: boolean) =>
     api.put<NotificationSettings>('/api/settings/notifications', { enabled }),
+
+  getServices: () => api.get<ServiceSettings>('/api/settings/services'),
+
+  setServices: (services: ServiceSettings) =>
+    api.put<ServiceSettings>('/api/settings/services', services),
 };
 
 // Users API
@@ -1246,7 +1400,7 @@ export const hostFlowApi = {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/api/my-show/upload?show_id=${showId}`, {
+    const response = await apiFetch(`${API_BASE}/api/my-show/upload?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       body: formData,
@@ -1286,7 +1440,7 @@ export const hostFlowApi = {
 
     // Step 1: Init
     onProgress?.({ phase: 'uploading', percent: 0, chunkIndex: 0, totalChunks });
-    const initResponse = await fetch(`${API_BASE}/api/my-show/upload/init?show_id=${showId}`, {
+    const initResponse = await apiFetch(`${API_BASE}/api/my-show/upload/init?show_id=${showId}`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -1313,7 +1467,7 @@ export const hostFlowApi = {
       const chunkFormData = new FormData();
       chunkFormData.append('chunk', chunk);
 
-      const chunkResponse = await fetch(
+      const chunkResponse = await apiFetch(
         `${API_BASE}/api/my-show/upload/chunk/${session_id}?index=${i}&show_id=${showId}`,
         {
           method: 'POST',
@@ -1335,7 +1489,7 @@ export const hostFlowApi = {
 
     // Step 3: Finalize
     onProgress?.({ phase: 'finalizing', percent: 0 });
-    const finalizeResponse = await fetch(
+    const finalizeResponse = await apiFetch(
       `${API_BASE}/api/my-show/upload/finalize/${session_id}?show_id=${showId}`,
       {
         method: 'POST',
@@ -1353,4 +1507,55 @@ export const hostFlowApi = {
     onProgress?.({ phase: 'finalizing', percent: 100 });
     return finalizeResponse.json();
   },
+};
+
+// Instagram announcements: admin queue, policy and account status
+export type ApprovalMode = 'first_two' | 'always' | 'never';
+
+export interface AnnouncementSettings {
+  limit_per_episode: number;
+  feed_per_day: number;
+  feed_per_week: number;
+  stories_per_day: number;
+  pre_days_before: number;
+  post_days_after: number;
+  /** "HH:MM", Berlin time. */
+  slots: string[];
+  approval_mode: ApprovalMode;
+  paused: boolean;
+}
+
+export interface QueuedAnnouncement {
+  id: number;
+  show_id: number;
+  show_title: string;
+  series_name: string;
+  host_handle: string | null;
+  slot: AnnouncementSlot;
+  state: string;
+  scheduled_at: string | null;
+  sent_at: string | null;
+  permalink: string | null;
+  error: string | null;
+}
+
+export interface InstagramStatus {
+  account: 'dev' | 'prod';
+  account_username: string;
+  token_expires_at: string | null;
+  token_refreshed_at: string | null;
+  quota_used: number | null;
+  quota_total: number | null;
+}
+
+export const instagramAdminApi = {
+  getSettings: () => api.get<AnnouncementSettings>('/api/settings/announcements'),
+  saveSettings: (settings: AnnouncementSettings) =>
+    api.put<AnnouncementSettings>('/api/settings/announcements', settings),
+  /** `from` and `to` are Berlin dates, YYYY-MM-DD. */
+  list: (from: string, to: string) =>
+    api.get<QueuedAnnouncement[]>(`/api/admin/announcements?from=${from}&to=${to}`),
+  act: (id: number, action: 'approve' | 'reject' | 'retry') =>
+    api.post<QueuedAnnouncement>(`/api/admin/announcements/${id}/${action}`),
+  status: () => api.get<InstagramStatus>('/api/admin/instagram/status'),
 };

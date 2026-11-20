@@ -11,6 +11,23 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- An old browser cannot read the app's JavaScript and would show a blank
+         page. The second script fails to parse there, so the flag stays unset. -->
+    <script>
+      window.__modernBrowser = false;
+    </script>
+    <script>
+      window.__modernBrowser = null?.a ?? true;
+    </script>
+    <script>
+      if (!window.__modernBrowser) {
+        var note = document.createElement('p');
+        note.style.cssText = 'margin:2rem;padding:1rem;font:600 1.1rem sans-serif;background:#3a1414;color:#ffd2cc';
+        note.textContent =
+          'Your browser is too old for Moafunk Admin. Update it, or use a current Chrome, Edge or Firefox.';
+        document.getElementById('app').appendChild(note);
+      }
+    </script>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

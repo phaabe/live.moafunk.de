@@ -328,20 +328,16 @@ async fn main() -> anyhow::Result<()> {
         let pronouns = random_pronouns(&mut rng);
         let handle = build_handle(&name);
 
-        let track1_name = format!(
-            "{}",
-            ["Opening", "Groove", "Pulse", "Neon", "Afterhours"]
-                .choose(&mut rng)
-                .copied()
-                .unwrap_or("Opening")
-        );
-        let track2_name = format!(
-            "{}",
-            ["Second Wind", "Bassline", "Drift", "Moonlight", "Finale"]
-                .choose(&mut rng)
-                .copied()
-                .unwrap_or("Second Wind")
-        );
+        let track1_name = ["Opening", "Groove", "Pulse", "Neon", "Afterhours"]
+            .choose(&mut rng)
+            .copied()
+            .unwrap_or("Opening")
+            .to_string();
+        let track2_name = ["Second Wind", "Bassline", "Drift", "Moonlight", "Finale"]
+            .choose(&mut rng)
+            .copied()
+            .unwrap_or("Second Wind")
+            .to_string();
 
         let instagram = maybe_url(&mut rng, "https://instagram.com", &handle);
         let soundcloud = maybe_url(&mut rng, "https://soundcloud.com", &handle);

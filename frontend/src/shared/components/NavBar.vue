@@ -20,11 +20,11 @@ interface NavItem {
 const navItems: NavItem[] = [
   {
     label: 'Dashboard',
-    hostLabel: 'Schedule',
     path: '/dashboard',
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
   },
+  { label: 'Schedule', path: '/schedule', roles: ['host'], category: 'Radio' },
   {
     label: 'Calendar',
     path: '/calendar',
@@ -48,6 +48,12 @@ const navItems: NavItem[] = [
   { label: 'Recording', path: '/recording', roles: ['admin', 'superadmin'], category: 'UNHEARD' },
   { label: 'Users', path: '/users', roles: ['admin', 'superadmin'], category: 'Configuration' },
   { label: 'Config', path: '/config', roles: ['admin', 'superadmin'], category: 'Configuration' },
+  {
+    label: 'Instagram',
+    path: '/admin/instagram',
+    roles: ['admin', 'superadmin'],
+    category: 'Configuration',
+  },
 ];
 
 // Preserve category order
@@ -197,7 +203,7 @@ watch(
         <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">✕</button>
       </div>
       <div class="mobile-menu-links">
-        <!-- Hosts have two items (Schedule, My Shows): no category toggle. -->
+        <!-- Hosts have three items (Dashboard, Schedule, My Shows): no category toggle. -->
         <template v-if="isHost">
           <router-link
             v-for="item in visibleNavItems"

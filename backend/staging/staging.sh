@@ -11,16 +11,18 @@
 #   staging.sh check-r2             the R2 token reaches the staging buckets and no production bucket
 #   staging.sh up sha-<commit> [sha256:<digest>]
 #                                   check, then pull and start that image with the stream chain
-#   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them
+#   staging.sh hold <reason>        pause CI deploys (for release checks); staging.sh unhold resumes them.
+#                                   During a hold, up and down refuse, and hold and unhold refuse a test run's
+#                                   hold; STAGING_IGNORE_HOLD=1 overrides
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
 #                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
-#                                   e2e-recordings)
+#                                   e2e-recordings, e2e-cleanup, e2e-free-slot; for the Instagram test: e2e-instagram on <HH:MM>|off)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
 #   staging.sh seed-db <file|->     replace the staging DB with a scrubbed copy
-#   staging.sh users                set the staging logins (staging-admin, staging-host) from .env
+#   staging.sh users                set the staging logins (staging-admin, staging-host, e2e-host) from .env
 set -euo pipefail
 
 STAGING_DIR="${STAGING_DIR:-/opt/unheard-staging}"
@@ -38,12 +40,20 @@ STAGING_BUCKETS="unheard-artists-staging moafunk-staging"
 PROD_BUCKETS="unheard-artists-prod unheard-artists-dev moafunk-prod"
 
 # Values install-env reads from stdin (push-secrets.sh sends them from Bitwarden).
-SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_R2_ACCESS_KEY_ID
-STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
-STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD"
+SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_E2E_HOST_PASSWORD
+STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
+STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD
+STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET
+STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV"
+
+# The station's production SoundCloud account: never the staging account.
+STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
+# The SoundCloud app's only redirect URI. Production forwards staging logins
+# (state 'staging.…') to this box (SOUNDCLOUD_FORWARD_URL on production).
+PROD_SOUNDCLOUD_CALLBACK=https://admin.live.moafunk.de/api/soundcloud/callback
 
 # Login passwords: stored only as argon2 hashes, so any characters are fine.
-LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD"
+LOGIN_PASSWORDS="STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_E2E_HOST_PASSWORD"
 
 STREAM_PASSWORD_KEYS="HARBOR_TEST_PASSWORD HARBOR_LIVE_PASSWORD ICECAST_SOURCE_PASSWORD
 ICECAST_ADMIN_PASSWORD ICECAST_RELAY_PASSWORD"
@@ -131,6 +141,10 @@ check_env_file_syntax() {
 forbidden_key() {
   case "$1" in
     SOUNDCLOUD_AUTO_UPLOAD | TELEGRAM_ENABLED) return 1 ;;
+    # The SoundCloud app and the test account (check_env pins them).
+    SOUNDCLOUD_CLIENT_ID | SOUNDCLOUD_CLIENT_SECRET | SOUNDCLOUD_REDIRECT_URI | SOUNDCLOUD_ACCOUNT | SOUNDCLOUD_KEEP_TRACKS) return 1 ;;
+    # The Instagram test account only (check_env pins INSTAGRAM_ACCOUNT=dev).
+    INSTAGRAM_ACCOUNT | INSTAGRAM_ACCESS_TOKEN_DEV | INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV) return 1 ;;
     SOUNDCLOUD_* | TELEGRAM_* | INSTAGRAM_* | FACEBOOK_* | OPENAI_* | RECOVERY_* | GITHUB_DISPATCH_TOKEN) return 0 ;;
   esac
   return 1
@@ -141,10 +155,12 @@ check_env() {
   [[ -f "$file" ]] || die "missing $file"
   check_env_file_syntax "$file"
 
-  # Unset bucket names fall back to production buckets, and SoundCloud
-  # auto-upload defaults to on, so every value here is required explicitly.
+  # Unset bucket names fall back to production buckets, and a SoundCloud login
+  # must use the app's only redirect URI, so every value here is required explicitly.
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
-    SOUNDCLOUD_AUTO_UPLOAD=false TELEGRAM_ENABLED=false \
+    SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
+    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false INSTAGRAM_ACCOUNT=dev \
+    STAGING_E2E_HOST_USERNAME=e2e-host \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
     key="${pair%%=*}"
@@ -165,9 +181,19 @@ check_env() {
   for key in SUPERADMIN_USERNAME STAGING_HOST_USERNAME; do
     [[ "$(env_value "$key" "$file")" =~ ^[a-z0-9-]+$ ]] || problem "$key must be set (lowercase letters, digits, -)"
   done
-  for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH; do
+  for key in SUPERADMIN_PASSWORD_HASH STAGING_HOST_PASSWORD_HASH STAGING_E2E_HOST_PASSWORD_HASH; do
     [[ "$(env_value "$key" "$file")" == '$argon2'* ]] || problem "$key must be an argon2 hash"
   done
+
+  # Uploads go to the test account; the backend refuses a login of any other
+  # account and deletes old tracks of this one (SOUNDCLOUD_KEEP_TRACKS).
+  for key in SOUNDCLOUD_CLIENT_ID SOUNDCLOUD_CLIENT_SECRET; do
+    [[ -n "$(env_value "$key" "$file")" ]] || problem "$key must be set (the SoundCloud app)"
+  done
+  value="$(env_value SOUNDCLOUD_ACCOUNT "$file")"
+  [[ "$value" =~ ^[a-z0-9_-]+$ ]] || problem "SOUNDCLOUD_ACCOUNT must be set (permalink of the test account)"
+  [[ "$value" != "$STATION_SOUNDCLOUD_ACCOUNT" ]] ||
+    problem "SOUNDCLOUD_ACCOUNT must not be the station account $STATION_SOUNDCLOUD_ACCOUNT"
 
   for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$file" | cut -d= -f1); do
     if forbidden_key "$key"; then problem "$key must not be set in staging"; fi
@@ -451,7 +477,6 @@ cmd_up() {
   # One deploy at a time (CI and a person can meet here).
   exec 9>"$STAGING_DIR/.deploy.lock"
   flock -w 900 9 || die "another deploy is still running"
-  [[ ! -f "$STAGING_DIR/hold" ]] || echo "note: staging is on hold ($(cat "$STAGING_DIR/hold")); deploying by hand anyway"
   check_all_env
   check_r2
   STAGING_TAG="$tag"
@@ -491,6 +516,20 @@ cmd_hold() {
   printf '%s | %s | %s\n' "$(date -u +%Y-%m-%dT%H:%MZ)" "$(cat "$STAGING_DIR/tag" 2>/dev/null || echo none)" "$reason" \
     >"$STAGING_DIR/hold"
   echo "staging is on hold: CI deploys are skipped until staging.sh unhold"
+}
+
+# A command by hand that would break a held staging: a release candidate under
+# test, or a running chaos test show. With "e2e" only the hold of a test run
+# counts (hold, unhold). STAGING_IGNORE_HOLD=1 overrides.
+guard_hold() { # command [e2e]
+  local hold
+  hold="$(cat "$STAGING_DIR/hold" 2>/dev/null)" || return 0
+  [[ "${2:-}" != e2e || "$hold" == *" | e2e run "* ]] || return 0
+  if [[ "${STAGING_IGNORE_HOLD:-}" == 1 ]]; then
+    echo "note: staging is on hold ($hold); STAGING_IGNORE_HOLD=1, so $1 goes on"
+    return 0
+  fi
+  die "staging is on hold ($hold): $1 refused. Ask who set the hold, or override with STAGING_IGNORE_HOLD=1."
 }
 
 cmd_unhold() {
@@ -534,9 +573,132 @@ ci_e2e() {
     echo "connections from $ip to ports 80 and 443 are reset for ${secs}s"
   elif [[ "$request" =~ ^e2e-recordings\ ([0-9]{1,12})$ ]]; then
     e2e_recordings "${BASH_REMATCH[1]}"
+  elif [[ "$request" == e2e-cleanup ]]; then
+    e2e_cleanup
+  elif [[ "$request" =~ ^e2e-free-slot\ ([0-9]{4}-[0-9]{2}-[0-9]{2})\ (([01][0-9]|2[0-3]):[0-5][0-9])\ (([01][0-9]|2[0-3]):[0-5][0-9])$ ]]; then
+    e2e_free_slot "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]}"
+  elif [[ "$request" =~ ^e2e-instagram\ on\ (([01][0-9]|2[0-3]):[0-5][0-9])$ ]]; then
+    e2e_instagram on "${BASH_REMATCH[1]}"
+  elif [[ "$request" == "e2e-instagram off" ]]; then
+    e2e_instagram off
+  elif [[ "$request" =~ ^e2e-instagram\ public\ ([0-9]{1,12})$ ]]; then
+    e2e_instagram public "${BASH_REMATCH[1]}"
   else
-    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>"
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-free-slot <date> <HH:MM> <HH:MM>, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
   fi
+}
+
+# Announcement settings for the Instagram e2e test. "on" saves the current
+# announce_* settings once, then raises the limits, turns off approval and the
+# pause, sends the post-announcement on the episode day and offers only the
+# feed time <HH:MM> (Berlin). "off" puts the saved settings back. "public
+# <show>" marks a test episode's SoundCloud track public, which unlocks its
+# post-announcement, without SoundCloud (soundcloud.spec.ts tests that).
+e2e_instagram() {
+  python3 - "$STAGING_DIR/data/unheard.db" "$STAGING_DIR/e2e-instagram.json" "$@" <<'PY'
+import json, os, sqlite3, sys
+
+db, saved, mode = sys.argv[1:4]
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(db, timeout=30)
+if mode == "public":
+    show = int(sys.argv[4])
+    title = con.execute("SELECT title FROM shows WHERE id = ?", (show,)).fetchone()
+    if not title or not (title[0] or "").startswith("e2e-"):
+        sys.exit(f"show {show} is not a test episode (e2e-...)")
+    con.execute("UPDATE shows SET soundcloud_public = 1 WHERE id = ?", (show,))
+    con.commit()
+    print(f"show {show}: SoundCloud track marked public")
+elif mode == "on":
+    if not os.path.exists(saved):
+        rows = dict(con.execute("SELECT key, value FROM app_settings WHERE key GLOB 'announce_*'"))
+        with open(saved, "w") as f:
+            json.dump(rows, f)
+    test = {
+        "announce_feed_per_day": "20",
+        "announce_feed_per_week": "50",
+        "announce_stories_per_day": "20",
+        "announce_limit_per_episode": "3",
+        "announce_post_days_after": "0",
+        "announce_approval_mode": "never",
+        "announce_paused": "false",
+        "announce_slots": sys.argv[4],
+    }
+    con.executemany(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        test.items(),
+    )
+    con.commit()
+    print(f"announcement test settings on, feed time {sys.argv[4]}")
+elif not os.path.exists(saved):
+    print("no saved announcement settings: nothing to restore")
+else:
+    with open(saved) as f:
+        rows = json.load(f)
+    con.execute("DELETE FROM app_settings WHERE key GLOB 'announce_*'")
+    con.executemany(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+        rows.items(),
+    )
+    con.commit()
+    os.remove(saved)
+    print(f"announcement settings restored ({len(rows)} saved)")
+PY
+}
+
+# Delete the test Shows ("e2e-…" of e2e-host, or of staging-host from older
+# runs) that have no episodes left:
+# the API has no route that deletes a Show. Their uploads go with them. A Show
+# that still has an episode stays, so the next run's clean-up still finds it.
+e2e_cleanup() {
+  python3 - "$STAGING_DIR/data/unheard.db" <<'PY'
+import sqlite3, sys
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(sys.argv[1], timeout=30)
+con.execute("PRAGMA foreign_keys = ON")
+test_show = (
+    "name GLOB 'e2e-*' AND owner_user_id IN"
+    " (SELECT id FROM users WHERE username IN ('e2e-host', 'staging-host'))"
+)
+has_episodes = "EXISTS (SELECT 1 FROM shows WHERE template_id = show_templates.id)"
+kept = [r[0] for r in con.execute(
+    f"SELECT name FROM show_templates WHERE {test_show} AND {has_episodes} ORDER BY id"
+)]
+deleted = con.execute(
+    f"DELETE FROM show_templates WHERE {test_show} AND NOT {has_episodes}"
+).rowcount
+con.commit()
+print(f"deleted {deleted} test Show(s)" + (f"; kept, with episodes: {', '.join(kept)}" if kept else ""))
+PY
+}
+
+# Make room for a test booking. The API refuses a slot that overlaps another
+# show of the same day, and staging has copies of production shows and people's
+# own test shows. Every show in the way moves to the day before. The rule is
+# the API's (time_windows_overlap in handlers/api.rs). Only for yesterday to
+# two days ahead, so a wrong call cannot move shows far away: a test books up
+# to a day ahead in Berlin time, which can be two days ahead of this box's UTC
+# date.
+e2e_free_slot() {
+  python3 - "$STAGING_DIR/data/unheard.db" "$@" <<'PY'
+import datetime, sqlite3, sys
+db, day, start, end = sys.argv[1:5]
+today = datetime.datetime.now(datetime.timezone.utc).date()
+if not -1 <= (datetime.date.fromisoformat(day) - today).days <= 2:
+    sys.exit(f"e2e-free-slot: {day} is not between yesterday and two days ahead")
+# The API may be running: wait for its write lock instead of failing.
+con = sqlite3.connect(db, timeout=30)
+in_the_way = (
+    "date = ? AND start_time IS NOT NULL AND"
+    " ((? < COALESCE(end_time, start_time) AND start_time < ?) OR start_time = ?)"
+)
+slot = (day, start, end, start)
+moved = [f"{i} {t}" for i, t in con.execute(f"SELECT id, title FROM shows WHERE {in_the_way} ORDER BY id", slot)]
+con.execute(f"UPDATE shows SET date = date(date, '-1 day') WHERE {in_the_way}", slot)
+con.commit()
+print(f"slot {day} {start}-{end}: " + (f"moved {len(moved)} show(s) to the day before: {', '.join(moved)}" if moved else "free"))
+PY
 }
 
 # The recordings of a test episode ("e2e-…"), one line each: status,
@@ -694,9 +856,11 @@ PY
 }
 
 # The staging logins from .env, with passwords from Bitwarden: staging-admin
-# (superadmin) and staging-host (host). Needed because the backend seeds a
-# superadmin only into an empty users table, and every user in a production
-# copy has an unusable password. Resets both to the Bitwarden password.
+# (superadmin), staging-host (host, for people) and e2e-host (host, only for
+# the e2e tests, so a person never takes over a test's stream). Needed because
+# the backend seeds a superadmin only into an empty users table, and every
+# user in a production copy has an unusable password. Resets all to the
+# Bitwarden password.
 staging_users() {
   local env="$STAGING_DIR/.env"
   [[ -f "$1" ]] || die "missing $1 (start staging first)"
@@ -704,16 +868,19 @@ staging_users() {
     ADMIN_HASH="$(env_value SUPERADMIN_PASSWORD_HASH "$env")" \
     HOST_NAME="$(env_value STAGING_HOST_USERNAME "$env")" \
     HOST_HASH="$(env_value STAGING_HOST_PASSWORD_HASH "$env")" \
+    E2E_NAME="$(env_value STAGING_E2E_HOST_USERNAME "$env")" \
+    E2E_HASH="$(env_value STAGING_E2E_HOST_PASSWORD_HASH "$env")" \
     python3 - "$1" <<'PY'
 import os, sqlite3, sys
 
 logins = [
     (os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"], "superadmin"),
     (os.environ["HOST_NAME"], os.environ["HOST_HASH"], "host"),
+    (os.environ["E2E_NAME"], os.environ["E2E_HASH"], "host"),
 ]
 for name, hashed, role in logins:
     if not name or not hashed.startswith("$argon2"):
-        sys.exit(f"staging: the {role} login needs a username and an argon2 hash in .env (run push-secrets.sh)")
+        sys.exit(f"staging: a {role} login needs a username and an argon2 hash in .env (run push-secrets.sh)")
 # The API may be running: wait for its write lock instead of failing.
 con = sqlite3.connect(sys.argv[1], timeout=30)
 if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone():
@@ -780,18 +947,30 @@ main() {
       echo "env ok"
       ;;
     check-r2) check_r2 ;;
-    up) cmd_up "${1:-}" "${2:-}" ;;
-    hold) cmd_hold "$@" ;;
-    unhold) cmd_unhold ;;
+    up)
+      guard_hold up
+      cmd_up "${1:-}" "${2:-}"
+      ;;
+    hold)
+      guard_hold hold e2e
+      cmd_hold "$@"
+      ;;
+    unhold)
+      guard_hold unhold e2e
+      cmd_unhold
+      ;;
     ci-deploy) cmd_ci_deploy ;;
     install-ci-key) cmd_install_ci_key ;;
-    down) cmd_down ;;
+    down)
+      guard_hold down
+      cmd_down
+      ;;
     status) cmd_status ;;
     export-db) cmd_export_db ;;
     seed-db) cmd_seed_db "${1:-}" ;;
     users) staging_users "$STAGING_DIR/data/unheard.db" ;;
     *)
-      sed -n '7,23p' "$0" >&2
+      sed -n '7,25p' "$0" >&2
       exit 2
       ;;
   esac

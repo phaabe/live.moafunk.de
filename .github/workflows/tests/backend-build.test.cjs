@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -13,27 +13,25 @@ const workflow = yaml.load(readFileSync(path.resolve(__dirname, '../backend.yml'
 const build = workflow.jobs['build-and-push'];
 const monitoring = workflow.jobs['deploy-monitoring'];
 const staging = workflow.jobs['deploy-staging'];
-const e2e = workflow.jobs['e2e-staging'];
-const chaos = yaml.load(readFileSync(path.resolve(__dirname, '../e2e-staging.yml'), 'utf8'));
 
 // These workflow conditions use only property reads, booleans and comparisons.
 // GitHub preserves boolean workflow_dispatch inputs in the inputs context.
-const deployed = { 'deploy-staging': { outputs: { deployed: 'true' } } };
-function enabled(condition, event, inputs, ref = 'refs/heads/main', needs = deployed) {
+function enabled(condition, event, inputs, ref = 'refs/heads/main') {
   if (condition === undefined) return true;
   return runInNewContext(
     `Boolean(${condition})`,
-    { github: { event_name: event, ref }, inputs, needs },
+    // cancelled() is false: these cases model runs nobody cancelled.
+    { github: { event_name: event, ref }, inputs, cancelled: () => false },
     { timeout: 1000, contextCodeGeneration: { strings: false, wasm: false } }
   );
 }
 
-test('only image build, staging deploy, its chaos test and explicitly requested monitoring jobs remain', () => {
+test('only image build, staging deploy, the test dashboard and explicitly requested monitoring jobs remain', () => {
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [
     'build-and-push',
     'deploy-monitoring',
     'deploy-staging',
-    'e2e-staging',
+    'test-dashboard',
   ]);
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.push.branches, ['main', 'staging']);
@@ -49,9 +47,8 @@ test('only image build, staging deploy, its chaos test and explicitly requested 
 
 const cases = [
   ['push', {}, ['build-and-push']],
-  ['push', {}, ['build-and-push', 'deploy-staging', 'e2e-staging'], 'refs/heads/staging'],
-  // Staging on hold: nothing new deployed, so no chaos test show.
-  ['push', {}, ['build-and-push', 'deploy-staging'], 'refs/heads/staging', { 'deploy-staging': { outputs: {} } }],
+  // A merge into staging deploys and never waits for the chaos test show.
+  ['push', {}, ['build-and-push', 'deploy-staging', 'test-dashboard'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push'], 'refs/heads/staging'],
   ['workflow_dispatch', { build: true, deploy_monitoring: false }, ['build-and-push']],
   ['workflow_dispatch', { build: false, deploy_monitoring: false }, []],
@@ -68,11 +65,10 @@ const cases = [
     ['build-and-push'],
   ],
 ];
-for (const [event, inputs, expected, ref = 'refs/heads/main', needs = deployed] of cases) {
-  const hold = needs === deployed ? '' : ' (staging on hold)';
-  test(`${event} on ${ref}${hold} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
+for (const [event, inputs, expected, ref = 'refs/heads/main'] of cases) {
+  test(`${event} on ${ref} ${JSON.stringify(inputs)} selects ${expected.join(', ') || 'no jobs'}`, () => {
     const selected = Object.entries(workflow.jobs)
-      .filter(([, job]) => enabled(job.if, event, inputs, ref, needs))
+      .filter(([, job]) => enabled(job.if, event, inputs, ref))
       .map(([id]) => id);
     assert.deepEqual(selected, expected);
     for (const id of selected.filter((id) => id === 'build-and-push')) {
@@ -188,7 +184,7 @@ test('image summary records the exact image and source without contacting a host
 test('staging deploy reaches only the staging box, with the exact image built', () => {
   assert.equal(staging.needs, 'build-and-push');
   assert.deepEqual(staging.permissions, { contents: 'read' });
-  assert.deepEqual(staging.concurrency, { group: 'staging-box', 'cancel-in-progress': false });
+  assert.deepEqual(staging.concurrency, { group: 'staging-deploy', 'cancel-in-progress': false });
   assert.deepEqual(staging.environment, { name: 'staging', url: 'https://staging.live.moafunk.de' });
   const text = JSON.stringify(staging);
   assert.deepEqual(
@@ -211,47 +207,58 @@ test('staging deploy reaches only the staging box, with the exact image built', 
   assert.match(deploy.run, /root@staging\.live\.moafunk\.de "deploy \$tag \$DIGEST"/);
 });
 
-test('the chaos test show runs after each staging deploy and never next to one', () => {
-  assert.equal(e2e.needs, 'deploy-staging');
-  assert.deepEqual(staging.outputs, { deployed: '${{ steps.deploy.outputs.deployed }}' });
-  assert.equal(e2e.uses, './.github/workflows/e2e-staging.yml');
-  assert.equal(e2e.secrets, 'inherit');
-  assert.deepEqual(Object.keys(chaos.on).sort(), [
-    'pull_request',
-    'schedule',
-    'workflow_call',
-    'workflow_dispatch',
-  ]);
-  assert.deepEqual(chaos.permissions, { contents: 'read' });
-  const job = chaos.jobs['chaos-show'];
-  assert.deepEqual(job.concurrency, staging.concurrency, 'deploys wait for a running test');
-  const text = JSON.stringify(chaos);
-  assert.deepEqual(
-    [...text.matchAll(/secrets\.([A-Z_]+)/g)].map((match) => match[1]),
-    ['BW_ACCESS_TOKEN']
-  );
-  assert.doesNotMatch(text, /HETZNER|178\.104\.160\.103|admin\.live|deploy_hetzner|scp/i);
-  const keys = job.steps.find((step) => step.id === 'secrets');
-  assert.deepEqual(
-    keys.with.secrets.trim().split('\n').map((line) => line.split(' > ')[1]),
-    ['STAGING_DEPLOY_SSH_KEY', 'STAGING_HOST_PASSWORD']
-  );
-  const hostKey = job.steps.find((step) => step.env?.HOST_KEY).env.HOST_KEY;
-  assert.equal(hostKey, staging.steps.find((step) => step.id === 'deploy').env.HOST_KEY);
-  const unhold = job.steps.find((step) => /e2e-unhold/.test(step.run ?? ''));
-  assert.match(unhold.if, /always\(\)/, 'the hold is removed also after a failure');
+test('no staging deploy starts the chaos test show, and deploys never share the tests\' concurrency group', () => {
+  const load = (file) => yaml.load(readFileSync(path.resolve(__dirname, '..', file), 'utf8'));
+  assert.equal(staging.outputs, undefined, 'nothing reads a deploy result any more');
+  for (const job of Object.values(workflow.jobs)) {
+    assert.notEqual(job.uses, './.github/workflows/e2e-staging.yml');
+  }
+  // GitHub keeps one waiting job per group and cancels the older one, so a
+  // shared group drops deploys and test runs (issue 1014). A test holds the
+  // box instead, and the deploy waits for that hold.
+  const tests = [load('e2e-staging.yml').jobs['chaos-show'], load('e2e-soundcloud.yml').jobs.soundcloud];
+  for (const job of tests) {
+    assert.notEqual(job.concurrency.group, staging.concurrency.group);
+    const names = job.steps.map((step) => step.name ?? step.uses);
+    const hold = job.steps.find((step) => step.name === 'Hold staging for this run');
+    assert.match(hold.run, /StrictHostKeyChecking=yes/);
+    assert.match(hold.run, /"e2e-hold \$E2E_RUN"/);
+    assert.ok(names.indexOf(hold.name) < names.indexOf('actions/setup-node@v4'), 'hold before the install');
+  }
+  assert.ok(staging['timeout-minutes'] > Number(staging.steps.find((step) => step.id === 'deploy').env.WAIT_MINUTES));
+  assert.ok(Number(staging.steps.find((step) => step.id === 'deploy').env.WAIT_MINUTES) > tests[0]['timeout-minutes']);
 });
 
-test('staging deploy step passes tag and digest, treats a hold as success, fails otherwise', () => {
+test('staging deploy step passes tag and digest, waits for a test hold, skips a release hold, fails otherwise', () => {
   const deploy = staging.steps.find((step) => step.id === 'deploy');
   const dir = mkdtempSync(path.join(tmpdir(), 'staging-deploy-'));
   const bin = path.join(dir, 'bin');
   execFileSync('/bin/mkdir', [bin]);
-  // Fake ssh: records its last argument and exits with FAKE_EXIT.
-  execFileSync('/bin/bash', ['-c', `printf '%s\\n' '#!/bin/bash' 'echo "\${@: -1}" >"$RUNNER_TEMP/ssh-request"' 'exit "\${FAKE_EXIT:-0}"' >"${bin}/ssh" && chmod +x "${bin}/ssh"`]);
+  // Fake ssh: records its last argument, counts its calls, prints FAKE_OUT and
+  // exits with FAKE_EXIT; from call FAKE_OK_FROM on it exits 0.
+  writeFileSync(
+    path.join(bin, 'ssh'),
+    [
+      '#!/bin/bash',
+      'echo "${@: -1}" >"$RUNNER_TEMP/ssh-request"',
+      'echo x >>"$RUNNER_TEMP/ssh-calls"',
+      'calls=$(wc -l <"$RUNNER_TEMP/ssh-calls")',
+      '[[ -n "${FAKE_OK_FROM:-}" && "$calls" -ge "$FAKE_OK_FROM" ]] && { echo deployed; exit 0; }',
+      'printf "%b\\n" "${FAKE_OUT:-}"',
+      'exit "${FAKE_EXIT:-0}"',
+    ].join('\n')
+  );
+  chmodSync(path.join(bin, 'ssh'), 0o755);
+  const calls = () => {
+    const file = path.join(dir, 'ssh-calls');
+    const n = readFileSync(file, 'utf8').trim().split('\n').length;
+    rmSync(file);
+    return n;
+  };
+  const testHold = 'staging is on hold (2026-11-19T10:00Z | sha-1111111 | e2e run 44507662622); sha-abc1234 was not deployed';
+  const releaseHold = 'staging is on hold (2026-11-19T10:00Z | sha-1111111 | r2 release checks); sha-abc1234 was not deployed';
   const digest = `sha256:${'c'.repeat(64)}`;
   const source = `abc1234${'d'.repeat(33)}`;
-  const output = path.join(dir, 'output');
   const run = (env) =>
     execFileSync('/bin/bash', ['--noprofile', '--norc', '-e', '-c', deploy.run], {
       env: {
@@ -261,26 +268,33 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
         HOST_KEY: 'staging.live.moafunk.de ssh-ed25519 AAAA',
         SOURCE_SHA: source,
         DIGEST: digest,
-        GITHUB_OUTPUT: output,
+        WAIT_MINUTES: '5',
+        RETRY_SECONDS: '0',
         ...env,
       },
       stdio: 'pipe',
     }).toString();
-  // What the step left in GITHUB_OUTPUT; the file is emptied for the next run.
-  const outputs = () => {
-    const text = readFileSync(output, 'utf8');
-    writeFileSync(output, '');
-    return text;
-  };
   try {
-    writeFileSync(output, '');
     run({});
     assert.equal(readFileSync(path.join(dir, 'ssh-request'), 'utf8'), `deploy sha-abc1234 ${digest}\n`);
-    assert.equal(outputs(), 'deployed=true\n');
-    assert.match(run({ FAKE_EXIT: '3' }), /Staging is on hold/);
-    assert.equal(outputs(), '', 'a hold deploys nothing, so no chaos test show');
+    assert.equal(calls(), 1);
+    // A person's release hold: skip this image, green, with a notice.
+    assert.match(run({ FAKE_EXIT: '3', FAKE_OUT: releaseHold }), /Staging is on hold/);
+    assert.equal(calls(), 1);
+    // A test's hold: try again until the test has removed it, then deploy.
+    const waited = run({ FAKE_EXIT: '3', FAKE_OUT: testHold, FAKE_OK_FROM: '3' });
+    assert.match(waited, /A test holds staging/);
+    assert.match(waited, /deployed/);
+    assert.doesNotMatch(waited, /Staging is on hold/);
+    assert.equal(calls(), 3);
+    // A test's hold that does not end: red, not a silent skip.
+    assert.throws(
+      () => run({ FAKE_EXIT: '3', FAKE_OUT: testHold, WAIT_MINUTES: '0' }),
+      (error) => /Staging stays on a test hold/.test(error.stdout.toString())
+    );
+    assert.equal(calls(), 1);
     assert.throws(() => run({ FAKE_EXIT: '1' }));
-    assert.equal(outputs(), '');
+    calls();
     rmSync(path.join(dir, 'ssh-request'));
     assert.throws(() => run({ DIGEST: '' }));
     assert.throws(() => readFileSync(path.join(dir, 'ssh-request')), 'no ssh without a digest');
@@ -290,38 +304,102 @@ test('staging deploy step passes tag and digest, treats a hold as success, fails
   }
 });
 
-test('regression CI always checks main and staging PRs and pushes without publishing or production access', () => {
-  const ci = yaml.load(readFileSync(path.resolve(__dirname, '../backend-build-tests.yml'), 'utf8'));
-  assert.deepEqual(ci.on, {
-    pull_request: { branches: ['main', 'staging'] },
-    push: { branches: ['main', 'staging'] },
-  });
+test('the workflow tests always run on main and staging PRs and pushes, once, without publishing or production access', () => {
+  const ci = yaml.load(readFileSync(path.resolve(__dirname, '../epic-ci.yml'), 'utf8'));
+  for (const event of ['pull_request', 'push']) {
+    assert.equal(ci.on[event].paths, undefined, `${event}: no path filter`);
+    for (const branch of ['main', 'staging']) {
+      assert.ok(ci.on[event].branches.includes(branch), `${event} on ${branch}`);
+    }
+  }
   assert.deepEqual(ci.permissions, { contents: 'read' });
-  assert.deepEqual(Object.keys(ci.jobs), ['backend-build-tests']);
-  const job = ci.jobs['backend-build-tests'];
+  const job = ci.jobs.frontend;
+  assert.equal(job.name, 'frontend-ci');
   assert.equal(job.if, undefined);
+  assert.equal(job.needs, undefined);
   assert.equal(job.permissions, undefined);
   assert.equal(job.environment, undefined);
   assert.equal(job.uses, undefined);
-  assert.deepEqual(
-    job.steps.filter((step) => step.uses).map((step) => step.uses),
-    ['actions/checkout@v4', 'actions/setup-node@v4']
-  );
   assert.equal(job.steps[0].with['persist-credentials'], false);
-  assert.deepEqual(
-    job.steps.filter((step) => step.run).map((step) => [step.run, step['working-directory']]),
-    [
-      ['npm ci --ignore-scripts', 'frontend'],
-      ['node --test .github/workflows/tests/backend-build.test.cjs', undefined],
-      ['node --test .github/workflows/tests/deploy-production.test.cjs', undefined],
-    ]
-  );
-  for (const step of job.steps) {
+  // The first two commands: install without scripts, then the workflow tests.
+  // So no code from a dependency runs before they read the checkout.
+  const [checkout, node, install, tests] = job.steps;
+  assert.deepEqual([checkout.uses, node.uses], ['actions/checkout@v4', 'actions/setup-node@v4']);
+  assert.equal(install.run, 'npm ci --ignore-scripts');
+  assert.equal(tests.run, 'node --test ../.github/workflows/tests/*.test.cjs');
+  for (const step of [install, tests]) {
     assert.equal(step.if, undefined);
     assert.equal(step['continue-on-error'], undefined);
   }
-  assert.doesNotMatch(
-    JSON.stringify(ci),
-    /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token|upload-artifact/i
-  );
+  assert.doesNotMatch(JSON.stringify(job), /secrets\.|bitwarden|docker\/|\bssh\b|\bscp\b|packages|id-token/i);
+  // No other job runs them a second time.
+  const runners = readdirSync(path.resolve(__dirname, '..'))
+    .filter((file) => /\.ya?ml$/.test(file))
+    .flatMap((file) => {
+      const jobs = yaml.load(readFileSync(path.resolve(__dirname, '..', file), 'utf8')).jobs ?? {};
+      return Object.entries(jobs)
+        .filter(([, j]) => (j.steps ?? []).some((step) => /workflows\/tests\//.test(step.run ?? '')))
+        .map(([id]) => `${file}:${id}`);
+    });
+  assert.deepEqual(runners, ['epic-ci.yml:frontend']);
+});
+
+// shortcut: only `**` and `*` are handled, enough for these path filters.
+function globToRegExp(glob) {
+  const body = glob
+    .split('**')
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*'))
+    .join('.*');
+  return new RegExp(`^${body}$`);
+}
+
+// Sources of the build-context COPY lines (not COPY --from=<stage>).
+function copySources(dockerfile) {
+  return dockerfile
+    .split('\n')
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([cmd, ...args]) => cmd === 'COPY' && !args.some((arg) => arg.startsWith('--from=')))
+    .flatMap(([, ...args]) => args.filter((arg) => !arg.startsWith('--')).slice(0, -1));
+}
+
+// A source is missing when no paths entry matches it. For a directory, a file
+// deep inside it must match, so the whole tree is covered.
+function uncoveredSources(sources, paths, isDir) {
+  const patterns = paths.map(globToRegExp);
+  return sources.filter((source) => {
+    const sample = isDir(source) ? `${source}/zz-any/zz-file.ts` : source.replace(/\*/g, 'x');
+    return !patterns.some((pattern) => pattern.test(sample));
+  });
+}
+
+test('glob helper matches like the GitHub path filter for ** and *', () => {
+  assert.ok(globToRegExp('frontend/**').test('frontend/src/shared/api.ts'));
+  assert.ok(globToRegExp('frontend/package*.json').test('frontend/package-lock.json'));
+  assert.ok(!globToRegExp('frontend/package*.json').test('frontend/src/package.json'));
+  assert.ok(!globToRegExp('frontend/src/admin/**').test('frontend/src/shared/api.ts'));
+  assert.ok(!globToRegExp('backend/**').test('backend-old/x'));
+});
+
+test('a COPY source with no paths entry is reported', () => {
+  const dockerfile = 'COPY --chown=1 frontend ./\nCOPY --from=builder /app/x ./x\nCOPY a.txt b.txt ./\n';
+  assert.deepEqual(copySources(dockerfile), ['frontend', 'a.txt', 'b.txt']);
+  // The old filter: a change in frontend/src/shared built no image (issue 1017).
+  const oldPaths = ['backend/**', 'frontend/src/admin/**', 'frontend/package*.json'];
+  assert.deepEqual(uncoveredSources(['frontend'], oldPaths, () => true), ['frontend']);
+  assert.deepEqual(uncoveredSources(['frontend/package*.json'], oldPaths, () => false), []);
+});
+
+test('every file the backend Dockerfile copies triggers an image build', () => {
+  const root = path.resolve(__dirname, '../../..');
+  const sources = copySources(readFileSync(path.join(root, 'backend/Dockerfile'), 'utf8'));
+  assert.ok(sources.includes('frontend'), 'the admin build copies all of frontend/');
+  const isDir = (source) => {
+    try {
+      return statSync(path.join(root, source)).isDirectory();
+    } catch {
+      return false; // a glob such as frontend/package*.json
+    }
+  };
+  assert.deepEqual(uncoveredSources(sources, workflow.on.push.paths, isDir), []);
+  assert.ok(workflow.on.push.paths.includes('.github/workflows/backend.yml'));
 });

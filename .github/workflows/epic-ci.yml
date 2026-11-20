@@ -1,4 +1,4 @@
-name: EPIC - Integration checks
+name: CHECK - Backend and frontend
 
 on:
   pull_request:
@@ -15,7 +15,10 @@ on:
       - staging
 
 # Both checks must exist for every PR, including documentation-only changes.
-# Keep path filters out of this workflow so these names can be required.
+# Keep path filters out of `on:` so these names can be required: a required
+# check that never starts blocks the merge. Instead, on PRs into staging,
+# backend-ci is skipped by its `if` when the PR touches nothing it checks.
+# A skipped job reports success.
 permissions:
   contents: read
 
@@ -24,8 +27,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  backend-scope:
+    name: backend-ci scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      backend: ${{ steps.touches.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its parents, for scripts/pr-touches.sh.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check what the PR changes
+        id: touches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          backend="$(scripts/pr-touches.sh '^backend/|\.sh$|^scripts/coverage-floors\.cjs$|^\.github/workflows/epic-ci\.yml$|^\.github/actions/apt-install/')"
+          echo "backend=$backend" >>"$GITHUB_OUTPUT"
+
   backend:
     name: backend-ci
+    needs: backend-scope
+    # Runs unless the scope says false, so a failed scope job never skips it.
+    if: ${{ !cancelled() && needs.backend-scope.outputs.backend != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -39,11 +68,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # Only this job saves the apt cache, on pushes to staging and main.
+      # The other jobs that install ffmpeg restore it.
       - name: Install system dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: pkg-config libssl-dev ffmpeg
+          save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main') }}
 
       - name: Install Rust
         id: toolchain
@@ -51,16 +82,60 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # Restores the dependency builds of the last staging push. Only staging
+      # pushes save, so PR runs cannot evict each other's caches.
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+
       - name: Check backend formatting
         run: cargo fmt --check
 
-      - name: Run backend tests
+      # Every run measures coverage, so the floors below gate PRs too.
+      # Pushes to staging also keep the results for the test dashboard
+      # (test-dashboard.yml).
+      - name: Install the coverage tool
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: cargo test --locked --all-targets
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - name: Run backend tests
+        id: tests
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          rustup component add llvm-tools-preview
+          mkdir -p ../results
+          # src/bin/ holds dev tools, not product code.
+          ignore='src/bin/'
+          cargo llvm-cov --locked --all-targets --no-report | tee ../results/cargo-test.txt
+          cargo llvm-cov report --json --summary-only --ignore-filename-regex "$ignore" \
+            --output-path ../results/coverage.json
+          cargo llvm-cov report --lcov --ignore-filename-regex "$ignore" \
+            --output-path ../results/lcov.info
+
+      # Only the critical modules in backend/coverage-floors.json are gated;
+      # all other coverage is reported on the test dashboard.
+      - name: Check coverage floors
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        working-directory: .
+        run: node scripts/coverage-floors.cjs results/coverage.json backend/coverage-floors.json
+
+      - name: Keep the results for the test dashboard
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-backend
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Run Clippy
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
-        run: cargo clippy --locked --all-targets
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check the shell scripts (shellcheck)
         if: ${{ !cancelled() }}
@@ -91,16 +166,18 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # No install scripts, and the workflow tests run first: no code from a
+      # dependency runs before they read the checkout.
       - name: Install dependencies
         id: dependencies
-        run: npm ci
-
-      - name: Run frontend lint
-        run: npm run lint
+        run: npm ci --ignore-scripts
 
       - name: Test workflow rules
-        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: node --test ../.github/workflows/tests/*.test.cjs
+
+      - name: Run frontend lint
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm run lint
 
       - name: Run frontend typecheck
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
@@ -108,4 +185,29 @@ jobs:
 
       - name: Run frontend tests
         if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
-        run: npm test -- --run
+        env:
+          REPORT: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REPORT" == true ]]; then
+            mkdir -p ../results
+            npm test -- --run --coverage --reporter=default --reporter=json --outputFile.json=../results/vitest.json
+            cp coverage/coverage-summary.json coverage/lcov.info ../results/
+          else
+            npm test -- --run
+          fi
+
+      # frontend.yml builds the website only on main. This step shows a
+      # broken build on the PR.
+      - name: Build the website
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: npm run build
+
+      - name: Keep the results for the test dashboard
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-frontend
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 14
