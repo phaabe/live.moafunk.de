@@ -691,6 +691,10 @@ async fn main() -> anyhow::Result<()> {
             get(announcement_image::api_announcement_preview),
         )
         .route(
+            "/api/shows/:id/announcements/:slot/image.jpg",
+            get(announcement_image::api_announcement_image),
+        )
+        .route(
             "/api/shows/:id/overlays",
             get(handlers::api::api_list_show_overlays),
         )

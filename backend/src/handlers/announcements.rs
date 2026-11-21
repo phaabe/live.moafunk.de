@@ -155,6 +155,9 @@ pub struct AnnouncementStatus {
     pub sent_at: Option<String>,
     /// The public link of a sent post.
     pub permalink: Option<String>,
+    /// Set when a sent post's picture can be loaded (`.../:slot/image.jpg`);
+    /// changes with the row.
+    pub image_version: Option<String>,
 }
 
 /// GET /api/shows/:id/announcements/status — read-only, for every signed-in
@@ -178,7 +181,8 @@ pub async fn api_announcement_status(
     }
     let rows: Vec<AnnouncementStatus> = sqlx::query_as(
         "SELECT slot, channel, state, scheduled_at, sent_at, \
-                CASE WHEN state = 'sent' THEN permalink END AS permalink \
+                CASE WHEN state = 'sent' THEN permalink END AS permalink, \
+                CASE WHEN state = 'sent' THEN updated_at END AS image_version \
          FROM announcements WHERE show_id = ? AND state <> 'draft' \
          ORDER BY CASE slot WHEN 'pre' THEN 0 WHEN 'onair' THEN 1 ELSE 2 END, channel",
     )

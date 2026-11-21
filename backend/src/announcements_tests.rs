@@ -970,11 +970,15 @@ async fn every_host_reads_the_status_without_the_post_text() {
         json!([
             { "slot": "pre", "channel": "instagram", "state": "sent",
               "scheduled_at": rows[0]["scheduled_at"], "sent_at": "2030-06-03T16:00:00Z",
-              "permalink": "https://instagram.com/p/abc" },
+              "permalink": "https://instagram.com/p/abc",
+              "image_version": rows[0]["image_version"] },
             { "slot": "onair", "channel": "instagram", "state": "failed",
-              "scheduled_at": rows[1]["scheduled_at"], "sent_at": null, "permalink": null },
+              "scheduled_at": rows[1]["scheduled_at"], "sent_at": null, "permalink": null,
+              "image_version": null },
         ])
     );
+    // Only a sent post's picture may be loaded.
+    assert!(rows[0]["image_version"].is_string(), "{rows}");
     assert!(!rows.to_string().contains("Secret draft"));
     assert!(!rows.to_string().contains("Token expired"));
 
