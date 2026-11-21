@@ -883,20 +883,20 @@ describe('On Air', () => {
 });
 // The Studio's own flow checks are in studioSoundcheck.test.ts.
 describe('flow', () => {
-  it('Studio · On Air matches the flow', async () => {
-    vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
-    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
-    await mountPage(StudioOnAir);
-    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
-    await expectFlow('studio-onair', root);
-  });
-
+  // Jump the clock to 42:09, then run one 1 s tick. Running every timer
+  // through 42 minutes took over 5 s per test on a busy CI box.
   async function mountOnAirAt4210() {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
-    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
+    vi.setSystemTime(new Date('2026-11-15T12:42:09Z'));
+    await vi.advanceTimersByTimeAsync(1000);
   }
+
+  it('Studio · On Air matches the flow', async () => {
+    await mountOnAirAt4210();
+    await expectFlow('studio-onair', root);
+  });
 
   it('Studio · On Air, reconnecting matches the flow (a drop of more than 10 minutes)', async () => {
     mocks.socketState = ref('connecting');
