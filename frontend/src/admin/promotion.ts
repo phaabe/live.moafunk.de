@@ -1,4 +1,4 @@
-import type { Announcement, AnnouncementSlot } from './api';
+import type { Announcement, AnnouncementSlot, AnnouncementTime } from './api';
 import { episodeDay } from './episodeRow';
 import { addDays, format, parseISO } from 'date-fns';
 
@@ -27,6 +27,35 @@ export function handleError(handle: string): string | null {
 export function postTime(iso: string): string {
   const berlin = new Date(iso).toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' });
   return `${episodeDay(berlin.slice(0, 10))} · ${berlin.slice(11, 16)}`;
+}
+
+/** Instagram takes at most 3 collaborators and 20 tagged accounts on a post (the backend checks it too). */
+export const COLLABORATORS_MAX = 3;
+export const TAGS_MAX = 20;
+
+/** The slot names on the card, in the composer and on its buttons. */
+export const SLOT_NAMES: Record<AnnouncementSlot, string> = {
+  pre: 'Pre-announcement',
+  onair: 'On-air story',
+  post: 'Post-announcement',
+};
+
+/** One day of the composer's slot picker: "Fr 23.10." and its times ("18:00"). */
+export interface TimeDay {
+  day: string;
+  times: (AnnouncementTime & { time: string })[];
+}
+
+/** The offered times grouped by their Berlin day, in the given order. */
+export function groupTimes(times: AnnouncementTime[]): TimeDay[] {
+  const days: TimeDay[] = [];
+  for (const t of times) {
+    const [day, time] = postTime(t.scheduled_at).split(' · ');
+    const last = days[days.length - 1];
+    if (last?.day === day) last.times.push({ ...t, time });
+    else days.push({ day, times: [{ ...t, time }] });
+  }
+  return days;
 }
 
 /** Announcement photo upload: JPEG or PNG, max 10 MB (the backend checks it too). */

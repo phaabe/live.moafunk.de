@@ -814,12 +814,19 @@ export interface Announcement {
   image_source: AnnouncementImage;
   image_key: string | null;
   layout: 'band' | 'split';
+  /** Invite the show's own Instagram account as collaborator. */
   collaborator: boolean;
+  /** More collaborator accounts (handles without "@"). Feed posts only. */
+  extra_collaborators: string[];
+  /** Accounts tagged on the image (handles without "@"). Feed posts only. */
+  user_tags: string[];
   sent_at: string | null;
   permalink: string | null;
   error: string | null;
   /** The host chose "Post now". */
   send_now: boolean;
+  /** Changes with every save: the version of the slot's picture. */
+  updated_at: string;
 }
 
 export interface AnnouncementInput {
@@ -829,6 +836,8 @@ export interface AnnouncementInput {
   image_key?: string;
   layout: 'band' | 'split';
   collaborator: boolean;
+  extra_collaborators?: string[];
+  user_tags?: string[];
   scheduled_at?: string;
   /** Send within a minute instead of at `scheduled_at` (pre slot only). */
   send_now?: boolean;
@@ -859,7 +868,10 @@ export interface AnnouncementMeta {
 export type AnnouncementStatus = Pick<
   Announcement,
   'slot' | 'channel' | 'state' | 'scheduled_at' | 'sent_at' | 'permalink'
->;
+> & {
+  /** Set for a sent post: its picture may be loaded (see `imageUrl`). */
+  image_version?: string | null;
+};
 
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
 
@@ -920,6 +932,16 @@ export const announcementsApi = {
       layout,
       image_source: image,
       ...(imageKey ? { image_key: imageKey } : {}),
+    })}`,
+
+  /**
+   * The picture of a set-up slot (the episode's hosts) or a sent post (every
+   * host). `version` changes with the slot, so the browser may cache it.
+   */
+  imageUrl: (showId: number, slot: AnnouncementSlot, version: string, size?: 'thumb') =>
+    `${API_BASE}${announcementsPath(showId)}/${slot}/image.jpg?${new URLSearchParams({
+      v: version,
+      ...(size ? { size } : {}),
     })}`,
 };
 

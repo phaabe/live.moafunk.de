@@ -23,6 +23,7 @@
     "button: Cancel booking",
     "h2: Promotion · Instagram",
     "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
+    "check: On air · story 9:16 | Sent when you go live",
     "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public",
     "h2: Recording",
     "button: Upload to SoundCloud"
@@ -35,6 +36,9 @@
     "h2: Social media",
     "pill: Upcoming",
     "button: Edit",
+    "button: Edit on-air story",
+    "button: Cancel on-air story",
+    "button: Set up post-announcement",
     "link: live.moafunk.de",
     "row: Pre-show | starts in 5 days",
     "row: Show time | 12:00–14:00",
@@ -42,8 +46,8 @@
     "row: Studio | Opens So 25.10. · 11:30",
     "row: Mode | Live from the Studio",
     "row: SoundCloud | After the show",
-    "row: Pre · feed post 4:5 Fr 23.10. · 18:00 | Scheduled",
-    "row: On air · story 9:16 Sent when you go live | Scheduled",
-    "row: Post · feed post 4:5 Set up after the show | Not set up"
+    "row: Pre-announcement · Instagram feed post · Fr 23.10. · 18:00 | Scheduled",
+    "row: On-air story · Instagram story · when you go live | Scheduled",
+    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
   ]
 }

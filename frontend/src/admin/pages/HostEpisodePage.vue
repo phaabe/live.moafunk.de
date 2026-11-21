@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BaseButton } from '@shared/components';
+import { BaseButton, BaseModal } from '@shared/components';
 import {
   announcementsApi,
   seriesApi,
   showsApi,
   type Announcement,
+  type AnnouncementSlot,
   type ServiceSettings,
   type ShowDetail,
 } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
+import AnnounceComposer from '../components/AnnounceComposer.vue';
 import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
 import PromotionCard from '../components/PromotionCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
@@ -28,6 +30,7 @@ import {
   inSlot,
   INSTAGRAM_OFF_NOTE,
   postTime,
+  SLOT_NAMES,
   slotState,
 } from '../promotion';
 
@@ -50,8 +53,8 @@ const announcements = ref<Announcement[]>([]);
 const paused = ref(false);
 /** Admin switches; off reads "temporarily not available". */
 const services = ref<ServiceSettings>({ soundcloud: true, instagram: true });
-/** The Show's Instagram handle (collaborator), without "@". */
-const handle = ref<string | null>(null);
+/** The slot whose post widget is open in the popup. */
+const composing = ref<AnnouncementSlot | null>(null);
 let poll: ReturnType<typeof setTimeout> | null = null;
 
 const id = computed(() => Number(route.params.id));
@@ -106,16 +109,13 @@ async function load(resetView: boolean) {
 }
 
 async function loadPromotion() {
-  const slug = show.value?.series_slug;
-  const [list, meta, series] = await Promise.all([
+  const [list, meta] = await Promise.all([
     announcementsApi.list(id.value),
     announcementsApi.meta(id.value),
-    slug ? seriesApi.get(slug) : null,
   ]);
   announcements.value = list;
   paused.value = meta.paused;
   services.value = meta.services;
-  handle.value = series?.instagram_handle || null;
 }
 
 async function reloadPromotion() {
@@ -144,7 +144,13 @@ const instagramPill = computed(() => {
     : 'Instagram · post-announcement';
 });
 
-const openComposer = (slot: 'pre' | 'post') => router.push(`/shows/${id.value}/announce/${slot}`);
+const openComposer = (slot: AnnouncementSlot) => (composing.value = slot);
+
+/** The post widget saved: close it and show the new state. */
+async function composed() {
+  composing.value = null;
+  await reloadPromotion();
+}
 
 async function cancelPost() {
   if (!window.confirm('Cancel the post-announcement?')) return;
@@ -355,13 +361,28 @@ async function publish() {
           :show="show"
           :phase="phase"
           :announcements="announcements"
-          :handle="handle"
           :paused="paused"
           :instagram-off="!services.instagram"
           @changed="reloadPromotion"
+          @compose="openComposer"
         />
       </div>
     </template>
+    <BaseModal
+      :open="!!composing"
+      :title="composing ? SLOT_NAMES[composing] : ''"
+      size="xl"
+      @close="composing = null"
+    >
+      <div v-if="composing" class="host-page">
+        <AnnounceComposer
+          :show-id="show.id"
+          :slot="composing"
+          @done="composed"
+          @cancel="composing = null"
+        />
+      </div>
+    </BaseModal>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
 </template>
