@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, type Series } from '../../api';
+import { seriesApi, type Series, type UpcomingEpisode } from '../../api';
 import { draftOf, draftValid, toNewSeries, type SeriesDraft } from '../../seriesDraft';
 import { cleanHandle, handleError } from '../../promotion';
 import BoardIcon from '../BoardIcon.vue';
@@ -10,16 +10,19 @@ import CoverDrop from '../CoverDrop.vue';
 import SeriesFields from '../SeriesFields.vue';
 import { showFacts } from './showFacts';
 
-// One Show on My Show (#1050). Read mode lists the details as plain text;
-// Edit turns the same card into the Show form. The page decides which card
-// edits (`editing`) and asks before unsaved changes (`dirty`) are dropped.
+// One Show on My Show (#1050). Read mode lists the details as plain text,
+// and the whole card opens the Show page. Edit turns the same card into the
+// Show form. The page decides which card edits (`editing`) and asks before
+// unsaved changes (`dirty`) are dropped.
 
 const props = defineProps<{
   show: Series;
   /** Who hosts the Show. Today only its owner; a list, so more hosts fit later (#1047). */
   hosts: string[];
+  /** The next episode; null when none is booked, undefined when the episodes could not load. */
+  next?: UpcomingEpisode | null;
   editing: boolean;
-  /** In the grid: a smaller cover, Day and Time as one item, a plain Book Slot. */
+  /** In the grid: a smaller cover and name. */
   compact?: boolean;
 }>();
 const emit = defineEmits<{
@@ -40,7 +43,7 @@ const saving = ref(false);
 const error = ref<string | null>(null);
 
 const showPath = computed(() => `/shows/${props.show.slug}`);
-const facts = computed(() => showFacts(props.show, props.hosts, props.compact));
+const facts = computed(() => showFacts(props.show, props.next));
 const coverSize = computed(() => (props.compact ? 120 : 180));
 const handleProblem = computed(() => handleError(cleanHandle(handle.value)));
 const canSave = computed(() => draftValid(draft.value) && !handleProblem.value);
@@ -134,34 +137,23 @@ async function save() {
 
     <template v-else>
       <div class="top">
-        <!-- The name is the link for screen readers; the cover is a bigger target. -->
-        <router-link :to="showPath" class="cover" tabindex="-1" aria-hidden="true">
+        <div class="cover">
           <img v-if="show.cover_url" :src="show.cover_url" alt="" />
           <BoardIcon v-else name="image" :size="compact ? 32 : 40" />
-        </router-link>
+        </div>
         <div class="text">
           <h2 class="show-name">
+            <!-- The one link of the card; it stretches over the whole card. -->
             <router-link :to="showPath" class="name-link"
               ><span>{{ show.name }}</span
               ><BoardIcon name="chevron" :size="compact ? 22 : 28"
             /></router-link>
           </h2>
           <p v-if="show.description" class="description">{{ show.description }}</p>
-          <div v-if="!compact" class="actions">
-            <BaseButton @click="router.push(`${showPath}/book`)"
-              ><BoardIcon name="calendar-plus" />Book Slot</BaseButton
-            >
-            <BaseButton variant="secondary" @click="emit('edit')"
-              ><BoardIcon name="pencil" :size="16" />Edit</BaseButton
-            >
-          </div>
         </div>
       </div>
       <div class="details">
-        <div class="details-head">
-          <h3>Details</h3>
-          <span class="read-only"><BoardIcon name="lock" :size="12" />Read only</span>
-        </div>
+        <h3 class="details-head">Details</h3>
         <dl class="facts">
           <div v-for="fact in facts" :key="fact.label">
             <dt>{{ fact.label }}</dt>
@@ -169,11 +161,11 @@ async function save() {
           </div>
         </dl>
       </div>
-      <div v-if="compact" class="actions">
-        <BaseButton variant="secondary" @click="router.push(`${showPath}/book`)"
+      <div class="actions">
+        <BaseButton variant="secondary" class="book" @click="router.push(`${showPath}/book`)"
           ><BoardIcon name="calendar-plus" :size="16" />Book Slot</BaseButton
         >
-        <BaseButton variant="secondary" @click="emit('edit')"
+        <BaseButton variant="secondary" class="edit" @click="emit('edit')"
           ><BoardIcon name="pencil" :size="16" />Edit</BaseButton
         >
       </div>
@@ -190,6 +182,24 @@ async function save() {
 
 .my-show-card.editing {
   border: 2px solid var(--color-primary);
+}
+
+/* Read mode: the name link covers the whole card (::after), so a click
+   anywhere opens the Show page. The buttons sit above it. */
+.my-show-card:not(.editing) {
+  position: relative;
+  transition: border-color 0.15s;
+}
+
+.my-show-card:not(.editing):hover,
+.my-show-card:not(.editing):focus-within {
+  border-color: #5c5620;
+}
+
+.name-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
 }
 
 /* ---------- edit bar ---------- */
@@ -277,7 +287,7 @@ async function save() {
   color: var(--color-primary);
 }
 
-.name-link:hover span,
+.my-show-card:hover .name-link span,
 .name-link:focus-visible span {
   text-decoration: underline;
   text-underline-offset: 4px;
@@ -293,14 +303,43 @@ async function save() {
   font-size: 15px;
 }
 
+/* Book Slot and Edit share the card's full width, each in its own quiet color. */
 .actions {
+  position: relative;
+  z-index: 1;
   display: flex;
-  flex-wrap: wrap;
   gap: 10px;
+  padding: 0 24px 24px;
 }
 
 .compact > .actions {
   padding: 0 20px 20px;
+}
+
+.actions :deep(.base-button) {
+  flex: 1 1 0;
+}
+
+.my-show-card .actions :deep(button.base-button.book) {
+  background: #221f00;
+  border: 1px solid #5c5620;
+  color: var(--color-primary);
+}
+
+.my-show-card .actions :deep(button.base-button.book:hover) {
+  background: #2e2a00;
+  border-color: #8f8536;
+}
+
+.my-show-card .actions :deep(button.base-button.edit) {
+  background: #1a1a33;
+  border: 1px solid #34344c;
+  color: #c8c8d8;
+}
+
+.my-show-card .actions :deep(button.base-button.edit:hover) {
+  border-color: #4a4a60;
+  color: #fff;
 }
 
 /* ---------- details ---------- */
@@ -315,41 +354,29 @@ async function save() {
 }
 
 .details-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   margin: 0 0 16px;
-}
-
-.details-head h3 {
-  margin: 0;
   font: 700 12px var(--font-family);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #c8c8d8;
 }
 
-.read-only {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid #34344c;
-  border-radius: 6px;
-  color: #a8a8bc;
-  font: 600 12px var(--font-ui);
-}
-
+/* Fixed places: Next episode, Rhythm, Instagram. */
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px 24px;
   margin: 0;
 }
 
+/* In the grid: Next episode on its own row, Rhythm and Instagram below. */
 .compact .facts {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 20px;
+}
+
+.compact .facts > div:first-child {
+  grid-column: 1 / -1;
 }
 
 .facts > div {
@@ -537,15 +564,11 @@ async function save() {
     font-size: 24px;
   }
 
-  .my-show-card:not(.compact) .actions {
-    flex-direction: column;
-    gap: 8px;
-    padding-top: 4px;
-  }
-
+  /* Two buttons side by side: keep each label on one line. */
   .actions :deep(.base-button) {
-    flex: 1 1 auto;
     min-height: 48px;
+    padding: 0 10px;
+    white-space: nowrap;
   }
 
   .details,
@@ -559,10 +582,15 @@ async function save() {
     gap: 14px 16px;
   }
 
+  .facts > div:first-child {
+    grid-column: 1 / -1;
+  }
+
   .facts dd {
     font-size: 16px;
   }
 
+  .actions,
   .compact > .actions {
     padding: 0 16px 16px;
   }

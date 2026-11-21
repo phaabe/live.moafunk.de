@@ -5,7 +5,7 @@ import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-
 import { useAuthStore } from '../stores/auth';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
 import { showFacts } from '../components/my-show/showFacts';
-import type { Series } from '../api';
+import type { Series, UpcomingEpisode } from '../api';
 
 // My Show (#1050): read mode, edit mode, the discard prompt and ?edit=<slug>.
 // The list itself and the flow check are in hostScreens.test.ts.
@@ -31,9 +31,25 @@ const UNHEARD: Series = {
   instagram_handle: null,
 };
 
+/** Brunchtime's next episode. */
+const BRUNCH_31: UpcomingEpisode = {
+  id: 31,
+  title: 'Brunchtime #31',
+  date: '2099-01-04',
+  start_time: '12:00',
+  end_time: '14:00',
+  show_name: 'Brunchtime',
+  series_slug: 'brunchtime',
+  host_username: 'lena',
+  mode: 'live',
+  mode_label: 'Live',
+};
+
 let app: App | undefined;
 let root: HTMLDivElement;
 let mySeries: Series[];
+/** GET /api/upcoming-episodes; null answers 500. */
+let upcoming: UpcomingEpisode[] | null;
 /** The body of the last PUT /api/series/:slug. */
 let put: FormData | undefined;
 let putFails: boolean;
@@ -41,6 +57,7 @@ let confirm: Mock<[message?: string], boolean>;
 
 beforeEach(() => {
   mySeries = [BRUNCHTIME];
+  upcoming = [BRUNCH_31];
   put = undefined;
   putFails = false;
   root = document.createElement('div');
@@ -51,6 +68,11 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
       if (url === '/api/series') return Response.json({ series: mySeries });
+      if (url === '/api/upcoming-episodes') {
+        return upcoming
+          ? Response.json({ episodes: upcoming })
+          : Response.json({ error: 'boom' }, { status: 500 });
+      }
       const slug = url.match(/^\/api\/series\/([^/]+)$/)?.[1];
       const show = mySeries.find((s) => s.slug === slug);
       if (show && options?.method === 'PUT') {
@@ -158,6 +180,26 @@ describe('My Show read mode', () => {
     const router = await mount();
     (root.querySelector('.name-link') as HTMLAnchorElement).click();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
+  });
+
+  it('has one link, the name, which CSS stretches over the whole card', async () => {
+    await mount();
+    const links = [...card('Brunchtime').querySelectorAll('a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/shows/brunchtime']);
+  });
+
+  it("shows each Show's next episode, or that none is booked", async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    await mount();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | So 04.01. · 12:00–14:00');
+    expect(facts(card('UNHEARD'))[0]).toBe('Next episode | None booked');
+  });
+
+  it('still shows the cards when the episodes cannot load', async () => {
+    upcoming = null;
+    await mount();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | Could not load');
   });
 });
 
@@ -340,24 +382,23 @@ describe('My Show grid', () => {
 });
 
 describe('showFacts', () => {
-  it('has no Day and no Time without a fixed rhythm', () => {
-    expect(showFacts(UNHEARD, ['lena'])).toEqual([
-      { label: 'Repeats', value: 'No fixed rhythm' },
+  it('keeps the same three facts in the same order for every Show', () => {
+    expect(showFacts(BRUNCHTIME, BRUNCH_31)).toEqual([
+      { label: 'Next episode', value: 'So 04.01. · 12:00–14:00' },
+      { label: 'Rhythm', value: 'Every week · Sundays · 12:00–14:00' },
+      { label: 'Instagram', value: '@brunchtime' },
+    ]);
+    expect(showFacts(UNHEARD, null)).toEqual([
+      { label: 'Next episode', value: 'None booked' },
+      { label: 'Rhythm', value: 'No fixed rhythm' },
       { label: 'Instagram', value: 'Not set' },
-      { label: 'Hosts', value: 'lena' },
     ]);
   });
 
-  it('lists every host', () => {
-    const biweekly: Series = {
-      ...BRUNCHTIME,
-      rhythm: { ...BRUNCHTIME.rhythm!, repeat_rule: 'biweekly', weekday: 5 },
-    };
-    expect(showFacts(biweekly, ['lena', 'jonas'], true)).toEqual([
-      { label: 'Repeats', value: 'Every 2 weeks' },
-      { label: 'Day · Time', value: 'Friday · 12:00–14:00' },
-      { label: 'Instagram', value: '@brunchtime' },
-      { label: 'Hosts', value: 'lena, jonas' },
-    ]);
+  it('says so when the episodes could not load', () => {
+    expect(showFacts(BRUNCHTIME, undefined)[0]).toEqual({
+      label: 'Next episode',
+      value: 'Could not load',
+    });
   });
 });

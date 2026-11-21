@@ -456,13 +456,11 @@
         "link: Brunchtime",
         "button: Book Slot",
         "button: Edit",
-        "row: Repeats | Every week",
-        "row: Day | Sunday",
-        "row: Time | 12:00–14:00",
-        "row: Instagram | Not set",
-        "row: Hosts | lena"
+        "row: Next episode | So 04.01. · 12:00–14:00",
+        "row: Rhythm | Every week · Sundays · 12:00–14:00",
+        "row: Instagram | Not set"
       ],
-      "why": "Redesign #1050 (approved in the issue): My Show shows each Show as a card (one card, or a grid of two per row) with its name, the details as plain text (Repeats, Day, Time, Instagram, Hosts), Book Slot and Edit; the name opens the Show page. It replaces the title My Shows and the list row. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1050 (approved in the issue, card feedback of 2026-11-21): My Show shows each Show as a card (one card, or a grid of two per row) with its name, the details as plain text in fixed places (Next episode, Rhythm, Instagram), and Book Slot and Edit across the card; the whole card opens the Show page. It replaces the title My Shows and the list row. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "episode",

@@ -127,6 +127,23 @@ beforeEach(() => {
           });
         case '/api/series':
           return Response.json({ series: mySeries });
+        case '/api/upcoming-episodes':
+          return Response.json({
+            episodes: [
+              {
+                id: 31,
+                title: 'Brunchtime #31',
+                date: '2099-01-04',
+                start_time: '12:00',
+                end_time: '14:00',
+                show_name: 'Brunchtime',
+                series_slug: 'brunchtime',
+                host_username: 'lena',
+                mode: 'live',
+                mode_label: 'Live',
+              },
+            ],
+          });
         case '/api/series/brunchtime':
           return Response.json(DETAIL);
         case '/api/series/night':
@@ -333,16 +350,14 @@ describe('My Shows', () => {
       'Sunday brunch sounds, every week from 12:00.'
     );
     expect(facts(card)).toEqual([
-      'Repeats | Every week',
-      'Day | Sunday',
-      'Time | 12:00–14:00',
+      'Next episode | So 04.01. · 12:00–14:00',
+      'Rhythm | Every week · Sundays · 12:00–14:00',
       'Instagram | @brunchtime',
-      'Hosts | lena',
     ]);
-    expect(card.querySelector('.read-only')?.textContent?.trim()).toBe('Read only');
+    expect(card.textContent).not.toContain('Read only');
     expect(card.querySelectorAll('input, select, textarea')).toHaveLength(0);
     expect(cardButtons(card)).toEqual([
-      { text: 'Book Slot', primary: true },
+      { text: 'Book Slot', primary: false },
       { text: 'Edit', primary: false },
     ]);
     expect(card.querySelector('.name-link')?.getAttribute('href')).toBe('/shows/brunchtime');
@@ -364,13 +379,17 @@ describe('My Shows', () => {
       '/shows/brunchtime',
       '/shows/night',
     ]);
+    // The same facts in the same places, with or without a rhythm or an episode.
     expect(facts(cards[0])).toEqual([
-      'Repeats | Every week',
-      'Day · Time | Sunday · 12:00–14:00',
+      'Next episode | So 04.01. · 12:00–14:00',
+      'Rhythm | Every week · Sundays · 12:00–14:00',
       'Instagram | Not set',
-      'Hosts | lena',
     ]);
-    // No card shouts louder than the others: Book Slot is plain in the grid.
+    expect(facts(cards[1])).toEqual([
+      'Next episode | None booked',
+      'Rhythm | No fixed rhythm',
+      'Instagram | Not set',
+    ]);
     for (const card of cards) {
       expect(cardButtons(card)).toEqual([
         { text: 'Book Slot', primary: false },

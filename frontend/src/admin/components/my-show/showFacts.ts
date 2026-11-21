@@ -1,38 +1,24 @@
-import type { RepeatRule, Series } from '../../api';
+import type { Series, UpcomingEpisode } from '../../api';
+import { dayAndTime } from '../dashboard/dashboard';
+import { rhythmText } from '../show-page/showPage';
 
-/** One line of a Show's details in read mode: "Repeats · Every week". */
+/** One line of a Show's details in read mode: "Rhythm · Every week · Sundays · 12:00–14:00". */
 export interface ShowFact {
   label: string;
   value: string;
 }
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-
-/** The words of the Repeats select in the Show form. */
-const REPEATS: Record<RepeatRule, string> = {
-  weekly: 'Every week',
-  biweekly: 'Every 2 weeks',
-};
-
 /**
- * A Show's details as plain text for My Show (#1050): Repeats, Day, Time,
- * Instagram and Hosts. `compact` (the grid) puts Day and Time in one item.
- * Without a rhythm there is no Day and no Time.
+ * A Show's details as plain text for My Show (#1050): Next episode, Rhythm
+ * and Instagram. Every card has the same three, so no value moves to another
+ * place when a Show has no rhythm or no episode. `next` is the Show's next
+ * episode, null when none is booked, undefined when the episodes could not load.
  */
-export function showFacts(show: Series, hosts: string[], compact = false): ShowFact[] {
-  const rhythm = show.rhythm;
-  const facts: ShowFact[] = [
-    { label: 'Repeats', value: rhythm ? REPEATS[rhythm.repeat_rule] : 'No fixed rhythm' },
-  ];
-  if (rhythm) {
-    const day = DAYS[rhythm.weekday - 1] ?? '';
-    const time = `${rhythm.start_time}–${rhythm.end_time}`;
-    if (compact) facts.push({ label: 'Day · Time', value: `${day} · ${time}` });
-    else facts.push({ label: 'Day', value: day }, { label: 'Time', value: time });
-  }
-  facts.push(
+export function showFacts(show: Series, next: UpcomingEpisode | null | undefined): ShowFact[] {
+  const nextValue = next === undefined ? 'Could not load' : next ? dayAndTime(next) : 'None booked';
+  return [
+    { label: 'Next episode', value: nextValue },
+    { label: 'Rhythm', value: rhythmText(show) },
     { label: 'Instagram', value: show.instagram_handle ? `@${show.instagram_handle}` : 'Not set' },
-    { label: 'Hosts', value: hosts.join(', ') || '—' }
-  );
-  return facts;
+  ];
 }
