@@ -62,7 +62,14 @@ pub struct Announcement {
     pub image_source: String,
     pub image_key: Option<String>,
     pub layout: String,
+    /// Invite the show's own Instagram account as collaborator.
     pub collaborator: bool,
+    /// More collaborator accounts: a JSON list of handles. Feed posts only.
+    #[serde(serialize_with = "handle_list")]
+    pub extra_collaborators: String,
+    /// Accounts tagged on the image: a JSON list of handles. Feed posts only.
+    #[serde(serialize_with = "handle_list")]
+    pub user_tags: String,
     pub created_by: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -75,6 +82,71 @@ pub struct Announcement {
     /// Set while the scheduler sends this row; see `announcement_send`.
     #[serde(skip)]
     pub send_claimed_at: Option<String>,
+}
+
+/// Instagram takes at most 3 collaborators on a post.
+pub const MAX_COLLABORATORS: usize = 3;
+/// Instagram takes at most 20 tagged accounts on a post.
+pub const MAX_USER_TAGS: usize = 20;
+
+/// A stored JSON list of handles; a broken value reads as none.
+pub fn handles(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn handle_list<S: serde::Serializer>(raw: &str, s: S) -> Result<S::Ok, S::Error> {
+    handles(raw).serialize(s)
+}
+
+/// Instagram handles from the composer: "@" and spaces stripped, lower case,
+/// without duplicates. Err names the first one Instagram would refuse.
+pub fn clean_handles(list: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in list {
+        let h = raw.trim().trim_start_matches('@').to_lowercase();
+        if h.is_empty() {
+            continue;
+        }
+        let allowed = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_';
+        if h.len() > 30 || !h.chars().all(allowed) {
+            return Err(format!(
+                "@{h} is not an Instagram handle: use up to 30 letters, numbers, dots or underscores"
+            ));
+        }
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
+
+/// The show's own Instagram account, without "@".
+pub async fn show_handle(pool: &SqlitePool, show_id: i64) -> Result<Option<String>, sqlx::Error> {
+    let handle: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT t.instagram_handle FROM shows s JOIN show_templates t ON t.id = s.template_id \
+         WHERE s.id = ?",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(handle.flatten().filter(|h| !h.is_empty()))
+}
+
+/// The collaborators of a feed post: the show's account when invited, then
+/// the host's extra accounts, at most [`MAX_COLLABORATORS`].
+pub fn collaborators_of(row: &Announcement, handle: Option<&str>) -> Vec<String> {
+    let mut list: Vec<String> = handle
+        .filter(|_| row.collaborator)
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    for h in handles(&row.extra_collaborators) {
+        if !list.iter().any(|x| x.eq_ignore_ascii_case(&h)) {
+            list.push(h);
+        }
+    }
+    list.truncate(MAX_COLLABORATORS);
+    list
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

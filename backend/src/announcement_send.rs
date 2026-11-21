@@ -294,15 +294,7 @@ async fn publish(
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Show {} not found", row.show_id)))?;
-    let handle: Option<String> = sqlx::query_scalar(
-        "SELECT t.instagram_handle FROM shows s JOIN show_templates t ON t.id = s.template_id \
-         WHERE s.id = ?",
-    )
-    .bind(row.show_id)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten()
-    .filter(|h: &String| !h.is_empty());
+    let handle = announcements::show_handle(&state.db, row.show_id).await?;
 
     let image_key = row
         .image_key
@@ -334,9 +326,10 @@ async fn publish(
     }
     let caption = feed_caption(row.caption.as_deref(), &settings.hashtags);
     let alt_text = format!("{headline} – {show_name}");
-    let collaborators: Vec<String> = handle.filter(|_| row.collaborator).into_iter().collect();
+    let collaborators = announcements::collaborators_of(row, handle.as_deref());
+    let tags = announcements::handles(&row.user_tags);
     client
-        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators)
+        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators, &tags)
         .await
 }
 

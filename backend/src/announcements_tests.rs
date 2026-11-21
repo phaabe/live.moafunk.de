@@ -518,6 +518,109 @@ async fn text_and_image_rules() {
 }
 
 #[tokio::test]
+async fn collaborators_and_tags_rules() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+
+    // "@" and case are dropped, duplicates removed; the list comes back as a list.
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["@Guest.One", "guest.one", "dj_two", "three"],
+                "user_tags": [" @Label ", ""] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(
+        row["extra_collaborators"],
+        json!(["guest.one", "dj_two", "three"])
+    );
+    assert_eq!(row["user_tags"], json!(["label"]));
+
+    // Instagram takes 3 collaborators and 20 tags at most.
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["a", "b", "c", "d"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let tags: Vec<String> = (0..21).map(|i| format!("tag{i}")).collect();
+    let (status, body) = put(&state, host, 1, "pre", json!({ "user_tags": tags })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["not a handle!"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The show's own account counts as one of the 3 when it is invited.
+    let (series, _) = crate::series::insert_series(&state.db, host, "Brunchtime", None, None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE show_templates SET instagram_handle = 'brunchtime' WHERE id = ?")
+        .bind(series)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shows SET template_id = ? WHERE id = 1")
+        .bind(series)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["a", "b", "c"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["Brunchtime", "a", "b"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["extra_collaborators"], json!(["a", "b"]));
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "collaborator": false, "extra_collaborators": ["a", "b", "c"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+
+    // A story takes neither.
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "onair",
+        json!({ "extra_collaborators": ["a"], "user_tags": ["b"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["extra_collaborators"], json!([]));
+    assert_eq!(row["user_tags"], json!([]));
+}
+
+#[tokio::test]
 async fn admin_settings_round_trip() {
     let (state, _t) = state().await;
     let admin = add_user(&state, "admin", "admin").await;

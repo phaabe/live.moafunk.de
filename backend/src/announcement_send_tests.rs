@@ -179,6 +179,31 @@ async fn due_pre_is_sent_once_with_caption_alt_text_and_collaborator() {
 }
 
 #[tokio::test]
+async fn extra_collaborators_and_tags_go_with_the_feed_post() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let id = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+    sqlx::query(
+        "UPDATE announcements SET extra_collaborators = '[\"NightBass\",\"guest\"]', \
+           user_tags = '[\"label\"]' WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    check_due_announcements(&state, berlin(3, 18)).await;
+    let post = &media_posts(&ig)[0];
+    // The show's own account comes first and is not repeated.
+    assert_eq!(post.json("collaborators"), json!(["nightbass", "guest"]));
+    assert_eq!(
+        post.json("user_tags"),
+        json!([{ "username": "label", "x": 0.5, "y": 0.5 }])
+    );
+}
+
+#[tokio::test]
 async fn hashtags_setting_and_no_collaborator() {
     let (state, _t, _tg, ig, _r2) = setup().await;
     let host = add_user(&state, "host", "host").await;
