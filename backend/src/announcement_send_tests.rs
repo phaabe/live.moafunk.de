@@ -178,6 +178,106 @@ async fn due_pre_is_sent_once_with_caption_alt_text_and_collaborator() {
     tg.assert_all_sends_in_topic();
 }
 
+/// The Social media card's picture of a slot: status and JPEG bytes.
+async fn picture(
+    state: &Arc<AppState>,
+    user: i64,
+    slot: &str,
+    size: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let result = crate::announcement_image::api_announcement_image(
+        State(state.clone()),
+        Path((SHOW, slot.to_string())),
+        Query(crate::announcement_image::ImageQuery {
+            size: size.map(str::to_string),
+        }),
+        headers(state, user).await,
+    )
+    .await;
+    let response = match result {
+        Ok(r) => r.into_response(),
+        Err(e) => e.into_response(),
+    };
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 20 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, bytes.to_vec())
+}
+
+async fn image_version(state: &Arc<AppState>, user: i64) -> Value {
+    let (status, body) = outcome(
+        ann::api_announcement_status(State(state.clone()), Path(SHOW), headers(state, user).await)
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body[0]["image_version"].clone()
+}
+
+#[tokio::test]
+async fn slot_picture_for_the_episode_hosts_and_once_sent_for_everyone() {
+    let (state, _t, _tg, _ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let id = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+
+    // Not sent yet: the episode's host sees the rendered post, others don't.
+    let (status, jpeg) = picture(&state, host, "pre", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let full = image::load_from_memory(&jpeg).unwrap();
+    assert_eq!((full.width(), full.height()), (1080, 1350));
+    let (status, thumb) = picture(&state, host, "pre", Some("thumb")).await;
+    assert_eq!(status, StatusCode::OK);
+    let small = image::load_from_memory(&thumb).unwrap();
+    assert_eq!((small.width(), small.height()), (160, 200));
+    assert_eq!(
+        picture(&state, other, "pre", None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(image_version(&state, other).await, Value::Null);
+    // A slot nobody set up has no picture.
+    assert_eq!(
+        picture(&state, host, "post", None).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Sent: every signed-in user gets the posted JPEG.
+    check_due_announcements(&state, berlin(3, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+    let posted = r2.object(&state, "shows/1/announcements/pre.jpg").unwrap();
+    let (status, jpeg) = picture(&state, other, "pre", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(jpeg, posted);
+    assert!(image_version(&state, other).await.is_string());
+}
+
+#[tokio::test]
+async fn extra_collaborators_and_tags_go_with_the_feed_post() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let id = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+    sqlx::query(
+        "UPDATE announcements SET extra_collaborators = '[\"NightBass\",\"guest\"]', \
+           user_tags = '[\"label\"]' WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    check_due_announcements(&state, berlin(3, 18)).await;
+    let post = &media_posts(&ig)[0];
+    // The show's own account comes first and is not repeated.
+    assert_eq!(post.json("collaborators"), json!(["nightbass", "guest"]));
+    assert_eq!(
+        post.json("user_tags"),
+        json!([{ "username": "label", "x": 0.5, "y": 0.5 }])
+    );
+}
+
 #[tokio::test]
 async fn hashtags_setting_and_no_collaborator() {
     let (state, _t, _tg, ig, _r2) = setup().await;

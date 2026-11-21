@@ -155,6 +155,9 @@ pub struct AnnouncementStatus {
     pub sent_at: Option<String>,
     /// The public link of a sent post.
     pub permalink: Option<String>,
+    /// Set when a sent post's picture can be loaded (`.../:slot/image.jpg`);
+    /// changes with the row.
+    pub image_version: Option<String>,
 }
 
 /// GET /api/shows/:id/announcements/status — read-only, for every signed-in
@@ -178,7 +181,8 @@ pub async fn api_announcement_status(
     }
     let rows: Vec<AnnouncementStatus> = sqlx::query_as(
         "SELECT slot, channel, state, scheduled_at, sent_at, \
-                CASE WHEN state = 'sent' THEN permalink END AS permalink \
+                CASE WHEN state = 'sent' THEN permalink END AS permalink, \
+                CASE WHEN state = 'sent' THEN updated_at END AS image_version \
          FROM announcements WHERE show_id = ? AND state <> 'draft' \
          ORDER BY CASE slot WHEN 'pre' THEN 0 WHEN 'onair' THEN 1 ELSE 2 END, channel",
     )
@@ -288,6 +292,10 @@ pub struct AnnouncementInput {
     /// band | split (default band)
     pub layout: Option<String>,
     pub collaborator: Option<bool>,
+    /// More collaborator accounts (handles). Feed posts only.
+    pub extra_collaborators: Option<Vec<String>>,
+    /// Accounts tagged on the image (handles). Feed posts only.
+    pub user_tags: Option<Vec<String>>,
     /// `pre` only: "Post now" instead of a slot. The tick sends it within a
     /// minute; still bound by the per-episode, day and week limits.
     pub send_now: Option<bool>,
@@ -361,6 +369,9 @@ pub async fn api_put_announcement(
         }
     };
     let (image_source, image_key) = image_of(id, &input)?;
+    let collaborator = input.collaborator.unwrap_or(true);
+    let (extra_collaborators, user_tags) =
+        people_of(&state, id, slot, collaborator, &input).await?;
     let send_now = input.send_now.unwrap_or(false);
     if send_now && slot != AnnouncementSlot::Pre {
         return Err(AppError::BadRequest(
@@ -470,14 +481,16 @@ pub async fn api_put_announcement(
     sqlx::query(
         "INSERT INTO announcements (show_id, slot, channel, state, anchor_offset_minutes, \
            scheduled_at, headline, caption, image_source, image_key, layout, collaborator, \
-           created_by, send_now) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+           extra_collaborators, user_tags, created_by, send_now) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT (show_id, slot, channel) DO UPDATE SET \
            state = excluded.state, anchor_offset_minutes = excluded.anchor_offset_minutes, \
            scheduled_at = excluded.scheduled_at, headline = excluded.headline, \
            caption = excluded.caption, image_source = excluded.image_source, \
            image_key = excluded.image_key, layout = excluded.layout, \
-           collaborator = excluded.collaborator, send_now = excluded.send_now, updated_at = CURRENT_TIMESTAMP, \
+           collaborator = excluded.collaborator, \
+           extra_collaborators = excluded.extra_collaborators, user_tags = excluded.user_tags, \
+           send_now = excluded.send_now, updated_at = CURRENT_TIMESTAMP, \
            requested_at = NULL, sent_at = NULL, permalink = NULL, media_id = NULL, error = NULL",
     )
     .bind(id)
@@ -491,7 +504,9 @@ pub async fn api_put_announcement(
     .bind(image_source)
     .bind(image_key)
     .bind(layout)
-    .bind(input.collaborator.unwrap_or(true))
+    .bind(collaborator)
+    .bind(serde_json::json!(extra_collaborators).to_string())
+    .bind(serde_json::json!(user_tags).to_string())
     .bind(user.id)
     .bind(send_now)
     .execute(&mut *tx)
@@ -501,6 +516,45 @@ pub async fn api_put_announcement(
         .ok_or_else(|| AppError::Internal("Announcement vanished".to_string()))?;
     tx.commit().await?;
     Ok(Json(row))
+}
+
+/// Checked extra collaborators and tagged accounts of a save. A story takes
+/// neither: its lists stay empty.
+async fn people_of(
+    state: &Arc<AppState>,
+    show_id: i64,
+    slot: AnnouncementSlot,
+    collaborator: bool,
+    input: &AnnouncementInput,
+) -> Result<(Vec<String>, Vec<String>)> {
+    if !slot.is_feed() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let clean = |list: &Option<Vec<String>>| {
+        announcements::clean_handles(list.as_deref().unwrap_or(&[])).map_err(AppError::BadRequest)
+    };
+    let mut extra = clean(&input.extra_collaborators)?;
+    let tags = clean(&input.user_tags)?;
+    let show = announcements::show_handle(&state.db, show_id)
+        .await?
+        .filter(|_| collaborator);
+    // The show's own account is the `collaborator` flag, not an extra.
+    if let Some(h) = &show {
+        extra.retain(|x| !x.eq_ignore_ascii_case(h));
+    }
+    if extra.len() + usize::from(show.is_some()) > announcements::MAX_COLLABORATORS {
+        return Err(AppError::BadRequest(format!(
+            "A post can have at most {} collaborators",
+            announcements::MAX_COLLABORATORS
+        )));
+    }
+    if tags.len() > announcements::MAX_USER_TAGS {
+        return Err(AppError::BadRequest(format!(
+            "A post can tag at most {} accounts",
+            announcements::MAX_USER_TAGS
+        )));
+    }
+    Ok((extra, tags))
 }
 
 /// `pre_days_before` days before the start, at the first slot from 18:00 on

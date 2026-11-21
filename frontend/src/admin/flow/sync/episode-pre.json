@@ -26,16 +26,17 @@
     "pill: Upcoming",
     "button: Edit",
     "button: Set up pre-announcement",
+    "button: Set up on-air story",
+    "button: Set up post-announcement",
     "link: live.moafunk.de",
     "field: Recording file",
-    "check: On air · story 9:16 Sent when you go live",
     "row: Pre-show | starts in 7 days",
     "row: Show time | 12:00–14:00",
     "row: Post-show | after 14:00",
     "row: Mode | Pre-recorded set",
     "row: SoundCloud | After the show",
-    "row: Pre · feed post 4:5 Before the show | Not set up",
-    "row: On air · story 9:16 Sent when you go live | Off",
-    "row: Post · feed post 4:5 Set up after the show | Not set up"
+    "row: Pre-announcement · Instagram feed post · before the show | Not set up",
+    "row: On-air story · Instagram story · at go-live | Not set up",
+    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
   ]
 }

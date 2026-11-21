@@ -101,10 +101,13 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
     image_key: null,
     layout: 'band',
     collaborator: slot !== 'onair',
+    extra_collaborators: [],
+    user_tags: [],
     sent_at: null,
     permalink: null,
     error: null,
     send_now: false,
+    updated_at: '2026-10-20T10:00:00Z',
     ...overrides,
   };
 }
@@ -200,6 +203,7 @@ beforeEach(() => {
               scheduled_at: a.scheduled_at,
               sent_at: a.sent_at,
               permalink: a.state === 'sent' ? a.permalink : null,
+              image_version: a.state === 'sent' ? a.updated_at : null,
             }))
         );
       if (url === '/api/shows/42/announcements/meta') return Response.json(meta);
@@ -286,6 +290,17 @@ const text = () => root.textContent ?? '';
 function button(label: string): HTMLButtonElement {
   const found = [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
   if (!found) throw new Error(`No button "${label}" in: ${text()}`);
+  return found;
+}
+
+/** The post widget popup (teleported to <body>), or null. */
+const dialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]');
+
+function dialogButton(label: string): HTMLButtonElement {
+  const found = [...(dialog()?.querySelectorAll('button') ?? [])].find(
+    (b) => b.textContent?.trim() === label
+  );
+  if (!found) throw new Error(`No button "${label}" in the popup: ${dialog()?.textContent}`);
   return found;
 }
 
@@ -1026,24 +1041,67 @@ describe('Wrap-up and Done', () => {
 
 describe('Episode · Social media card', () => {
   const row = (name: string) =>
-    [...root.querySelectorAll('.promotion li')].find((li) => li.textContent?.includes(name));
-  const chip = (name: string) => row(name)?.querySelector('.ep-status')?.textContent?.trim();
-  const onair = () => root.querySelector('.promotion input[type="checkbox"]') as HTMLInputElement;
-  const buttons = () =>
-    [...root.querySelectorAll('.promotion button')].map((b) => b.textContent?.trim());
-
-  it('shows a scheduled pre-announcement with Edit and Cancel', async () => {
-    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
-    const router = await mount();
-    expect(text()).toContain('Social media');
-    expect(text()).toContain('@brunchtime is invited as collaborator.');
-    expect(row('Pre')?.textContent).toContain('Fr 23.10. · 18:00');
-    expect(chip('Pre')).toBe('Scheduled');
-    expect(cardStatus('Social media')).toBe('1 scheduled');
-    button('Edit pre-announcement').click();
-    await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/pre')
+    [...root.querySelectorAll('.promotion li')].find(
+      (li) => li.querySelector('b')?.textContent === name
     );
+  const chip = (name: string) => row(name)?.querySelector('.ep-status')?.textContent?.trim();
+  const buttons = (name?: string) =>
+    [...(name ? row(name)! : root.querySelector('.promotion')!).querySelectorAll('button')].map(
+      (b) => b.textContent?.trim()
+    );
+  const picture = (name: string) => row(name)?.querySelector('img')?.getAttribute('src');
+
+  it('starts with every slot not set up, each with its own Set up', async () => {
+    await mount();
+    for (const name of ['Pre-announcement', 'On-air story', 'Post-announcement']) {
+      expect(chip(name)).toBe('Not set up');
+      expect(picture(name)).toBeUndefined();
+    }
+    expect(buttons()).toEqual([
+      'Set up pre-announcement',
+      'Set up on-air story',
+      'Set up post-announcement',
+    ]);
+    expect(row('On-air story')?.textContent).toContain('Instagram story · at go-live');
+    expect(row('Post-announcement')?.textContent).toContain(
+      'Instagram feed post · after the show, once the track is public'
+    );
+    expect(cardStatus('Social media')).toBe('Nothing set up');
+    expect(root.querySelector('.promotion input')).toBeNull();
+    expect(text()).toContain('Instagram posts go out on @moafunk_radio.');
+  });
+
+  it('shows a scheduled pre-announcement with its picture and edits it in the popup', async () => {
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    times = [{ scheduled_at: FR_2310_1800, free: true, default: true }];
+    const router = await mount();
+    expect(row('Pre-announcement')?.textContent).toContain(
+      'Instagram feed post · Fr 23.10. · 18:00'
+    );
+    expect(chip('Pre-announcement')).toBe('Scheduled');
+    expect(cardStatus('Social media')).toBe('1 scheduled');
+    expect(picture('Pre-announcement')).toBe(
+      '/api/shows/42/announcements/pre/image.jpg?v=2026-10-20T10%3A00%3A00Z&size=thumb'
+    );
+
+    button('Edit pre-announcement').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule post'));
+    expect(dialog()?.querySelector('h2')?.textContent).toBe('Pre-announcement');
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
+    dialogButton('Schedule post').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(requests.filter((r) => r.method === 'PUT').map((r) => r.url)).toEqual([
+      '/api/shows/42/announcements/pre',
+    ]);
+  });
+
+  it('closes the popup on Cancel without saving', async () => {
+    await mount();
+    button('Set up pre-announcement').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule post'));
+    dialogButton('Cancel').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(requests.some((r) => r.method === 'PUT')).toBe(false);
   });
 
   it('cancels the pre-announcement after one confirm', async () => {
@@ -1051,61 +1109,56 @@ describe('Episode · Social media card', () => {
     await mount();
     vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
     button('Cancel pre-announcement').click();
-    await vi.waitFor(() => expect(chip('Pre')).toBe('Cancelled'));
+    await vi.waitFor(() => expect(chip('Pre-announcement')).toBe('Cancelled'));
     expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
       '/api/shows/42/announcements/pre'
     );
-    expect(buttons()).toContain('Set up pre-announcement');
-  });
-
-  it('offers to set up a pre slot that is not set up', async () => {
-    await mount();
-    expect(chip('Pre')).toBe('Not set up');
-    expect(buttons()).toEqual(['Set up pre-announcement']);
-    expect(row('Post')?.textContent).toContain('Set up after the show');
-    expect(cardStatus('Social media')).toBe('Not set up');
-  });
-
-  it('switches the armed on-air story off and on again', async () => {
-    announcements = [announcement('onair')];
-    await mount();
-    expect(onair().checked).toBe(true);
-    expect(chip('On air')).toBe('Scheduled');
-    onair().click();
-    await vi.waitFor(() =>
-      expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
-        '/api/shows/42/announcements/onair'
-      )
+    expect(row('Pre-announcement')?.textContent).toContain(
+      'Instagram feed post · cancelled, not sent'
     );
-    await vi.waitFor(() => expect(onair().disabled).toBe(false));
-    expect(onair().checked).toBe(false);
-    onair().click();
-    await vi.waitFor(() =>
-      expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+    expect(buttons('Pre-announcement')).toEqual(['Set up pre-announcement']);
+  });
+
+  it('sets up the on-air story in the popup: no text, no people, at go-live', async () => {
+    await mount();
+    button('Set up on-air story').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule story'));
+    const popup = dialog()!;
+    expect(popup.querySelector('h2')?.textContent).toBe('On-air story');
+    expect(popup.querySelector('textarea')).toBeNull();
+    expect(popup.textContent).not.toContain('More collaborators');
+    expect(popup.textContent).toContain('Goes out when you go live.');
+    expect(requests.some((r) => r.url.includes('/slots?'))).toBe(false);
+
+    dialogButton('Schedule story').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(requests.find((r) => r.method === 'PUT')).toEqual({
+      url: '/api/shows/42/announcements/onair',
+      method: 'PUT',
+      body: {
+        headline: '',
+        caption: '',
         image_source: 'cover',
+        layout: 'band',
         collaborator: false,
-      })
-    );
-    await vi.waitFor(() => expect(onair().checked).toBe(true));
+      },
+    });
+    await vi.waitFor(() => expect(chip('On-air story')).toBe('Scheduled'));
+    expect(row('On-air story')?.textContent).toContain('Instagram story · when you go live');
   });
 
-  it('unchecks the on-air switch again when switching it on is refused', async () => {
-    saveError = Response.json({ error: 'Refused' }, { status: 400 });
-    await mount();
-    expect(onair().checked).toBe(false);
-    onair().click();
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Refused'));
-    expect(onair().checked).toBe(false);
-  });
-
-  it('locks the on-air switch while on air', async () => {
+  it('locks the on-air story once the show is on air', async () => {
     current = episode({ on_air: true });
     announcements = [announcement('onair')];
     await mount();
-    expect(onair().disabled).toBe(true);
+    expect(button('Edit on-air story').disabled).toBe(true);
+    expect(button('Cancel on-air story').disabled).toBe(true);
+    // A pre-announcement nobody set up can't be set up any more.
+    expect(row('Pre-announcement')?.textContent).toContain('Instagram feed post · not sent');
+    expect(buttons('Pre-announcement')).toEqual([]);
   });
 
-  it('shows a sent post with its link and no Edit', async () => {
+  it('shows a sent post with its link and picture, and no buttons', async () => {
     announcements = [
       announcement('pre', {
         state: 'sent',
@@ -1115,13 +1168,25 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre')?.textContent).toContain('Fr 23.10. · 18:00');
-    expect(chip('Pre')).toBe('Sent');
-    const link = root.querySelector('.promotion a') as HTMLAnchorElement;
+    expect(row('Pre-announcement')?.textContent).toContain(
+      'Instagram feed post · sent Fr 23.10. · 18:00'
+    );
+    expect(chip('Pre-announcement')).toBe('Sent');
+    const link = row('Pre-announcement')?.querySelector('a') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('https://instagram.com/p/abc');
     expect(link.textContent).toBe('View post');
-    expect(buttons()).toEqual([]);
-    expect(cardStatus('Social media')).toBe('1 of 3 sent');
+    expect(buttons('Pre-announcement')).toEqual([]);
+    expect(picture('Pre-announcement')).toContain('/api/shows/42/announcements/pre/image.jpg?');
+    expect(cardStatus('Social media')).toBe('1 sent');
+  });
+
+  it('shows the frame when a picture does not load', async () => {
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    await mount();
+    row('Pre-announcement')!.querySelector('img')!.dispatchEvent(new Event('error'));
+    await nextTick();
+    expect(picture('Pre-announcement')).toBeUndefined();
+    expect(row('Pre-announcement')?.querySelector('.frame')).toBeTruthy();
   });
 
   it('links the sent on-air story', async () => {
@@ -1134,7 +1199,7 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    const link = row('On air')?.querySelector('a');
+    const link = row('On-air story')?.querySelector('a');
     expect(link?.textContent).toBe('View story');
     expect(link?.getAttribute('href')).toBe('https://instagram.com/stories/x');
   });
@@ -1142,27 +1207,54 @@ describe('Episode · Social media card', () => {
   it('shows why a post failed', async () => {
     announcements = [announcement('pre', { state: 'failed', error: 'Token expired' })];
     await mount();
-    expect(row('Pre')?.textContent).toContain('Token expired');
-    expect(chip('Pre')).toBe('Failed');
+    expect(row('Pre-announcement')?.textContent).toContain('Token expired');
+    expect(chip('Pre-announcement')).toBe('Failed');
     expect(cardStatus('Social media')).toBe('1 failed');
-    expect(buttons()).toContain('Edit pre-announcement');
+    expect(buttons('Pre-announcement')).toContain('Edit pre-announcement');
   });
 
   it('shows a post slot that waits for SoundCloud', async () => {
     announcements = [announcement('post')];
     await mount();
-    expect(chip('Post')).toBe('Waiting for SoundCloud');
+    expect(chip('Post-announcement')).toBe('Waiting for SoundCloud');
+    expect(row('Post-announcement')?.textContent).toContain(
+      'Instagram feed post · waits for the public track'
+    );
+    expect(cardStatus('Social media')).toBe('1 waiting');
+  });
+
+  it('counts only the slots that are set up', async () => {
+    announcements = [
+      announcement('pre', {
+        state: 'sent',
+        scheduled_at: FR_2310_1800,
+        sent_at: FR_2310_1800,
+        permalink: 'https://instagram.com/p/abc',
+      }),
+      announcement('onair', { state: 'cancelled' }),
+      announcement('post'),
+    ];
+    await mount();
+    expect(chip('On-air story')).toBe('Cancelled');
+    expect(cardStatus('Social media')).toBe('1 sent · 1 waiting');
+  });
+
+  it('sets up the post-announcement before the show', async () => {
+    await mount();
+    button('Set up post-announcement').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Waiting for SoundCloud'));
+    expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement');
   });
 
   it('sets up the post-announcement after the show', async () => {
     current = episode({ date: PAST, episode_status: 'wrapup_open' });
-    const router = await mount();
+    await mount();
     button('< Episode').click();
     await settle();
-    expect(row('Post')?.textContent).toContain('Sent when the track is public');
+    expect(buttons('Pre-announcement')).toEqual([]);
     button('Set up post-announcement').click();
     await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/post')
+      expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement')
     );
   });
 
@@ -1184,9 +1276,13 @@ describe('Episode · Social media card', () => {
     expect(root.querySelector('.promotion .notice')?.textContent).toBe(
       'Instagram is temporarily not available.'
     );
-    expect(button('Set up pre-announcement').disabled).toBe(true);
-    const onair = root.querySelector('.onair input') as HTMLInputElement;
-    expect(onair.disabled).toBe(true);
+    for (const label of [
+      'Set up pre-announcement',
+      'Set up on-air story',
+      'Set up post-announcement',
+    ]) {
+      expect(button(label).disabled).toBe(true);
+    }
   });
 
   it('has no paused note while posting runs', async () => {
@@ -1202,8 +1298,8 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre')?.textContent).toContain('Fr 23.10. · 18:00');
-    expect(row('Pre')?.textContent).toContain(
+    expect(row('Pre-announcement')?.textContent).toContain('Fr 23.10. · 18:00');
+    expect(row('Pre-announcement')?.textContent).toContain(
       'Moved from 12:00: the station already posts that day.'
     );
   });
@@ -1216,7 +1312,7 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre')?.textContent).toContain(
+    expect(row('Pre-announcement')?.textContent).toContain(
       'Moved from Fr 23.10. · 18:00: the station already posts that day.'
     );
   });
@@ -1283,9 +1379,78 @@ describe('Pre-announcement composer', () => {
         image_source: 'cover',
         layout: 'band',
         collaborator: true,
+        extra_collaborators: [],
+        user_tags: [],
         scheduled_at: FR_2310_1800,
       },
     });
+  });
+
+  it('shows the free times by day, the suggested one dashed', async () => {
+    await open();
+    const days = [...root.querySelectorAll('.week .day')].map((d) => ({
+      day: d.querySelector('legend')?.textContent,
+      times: [...d.querySelectorAll('label')].map((l) => l.className.replace('time', '').trim()),
+    }));
+    expect(days).toEqual([{ day: 'Fr 23.10.', times: ['taken', 'on suggested'] }]);
+    // The suggested time is the picked one: no hint needed.
+    expect(text()).not.toContain('The dashed time is the suggested one.');
+    expect(root.querySelector('.when-line')?.textContent).toBe('Goes out Fr 23.10. · 18:00.');
+  });
+
+  it('invites more collaborators and tags people, up to the limits', async () => {
+    const router = await open();
+    const add = async (name: string, value: string, label: string) => {
+      type(name, value);
+      await nextTick();
+      button(label).click();
+      await nextTick();
+    };
+    const chips = () => [...root.querySelectorAll('.chips li')].map((li) => li.textContent?.trim());
+    // @brunchtime is invited already: two more fit.
+    await add('More collaborators', '@Juno.Park', 'Invite');
+    await add('More collaborators', 'juno.park', 'Invite');
+    await add('More collaborators', 'dj_two', 'Invite');
+    expect(chips()).toEqual(['@juno.park', '@dj_two']);
+    expect(field('More collaborators').disabled).toBe(true);
+    await add('Tag people', 'not a handle', 'Tag');
+    expect(text()).toContain('Use up to 30 letters, numbers, dots or underscores.');
+    await add('Tag people', '@label', 'Tag');
+    expect(chips()).toEqual(['@juno.park', '@dj_two', '@label']);
+
+    (root.querySelector('[aria-label="Remove @dj_two"]') as HTMLButtonElement).click();
+    await nextTick();
+    expect(chips()).toEqual(['@juno.park', '@label']);
+    expect(field('More collaborators').disabled).toBe(false);
+
+    type('Headline on the image', 'Sunday brunch');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+      collaborator: true,
+      extra_collaborators: ['juno.park'],
+      user_tags: ['label'],
+    });
+  });
+
+  it('opens a set-up slot with its people', async () => {
+    announcements = [
+      announcement('pre', {
+        scheduled_at: FR_2310_1800,
+        extra_collaborators: ['juno.park'],
+        user_tags: ['label'],
+      }),
+    ];
+    await open();
+    expect([...root.querySelectorAll('.chips li')].map((li) => li.textContent?.trim())).toEqual([
+      '@juno.park',
+      '@label',
+    ]);
+    expect(
+      (root.querySelector('img.preview') as HTMLImageElement | null)?.getAttribute('alt') ??
+        'Preview · 4:5 post by moafunk_radio and brunchtime and juno.park'
+    ).toBe('Preview · 4:5 post by moafunk_radio and brunchtime and juno.park');
   });
 
   it('keeps the fields locked until its data is loaded, so nothing typed is lost', async () => {
@@ -1293,7 +1458,8 @@ describe('Pre-announcement composer', () => {
     seriesGate = new Promise((resolve) => (release = resolve));
     await mount('host', 1, undefined, '/shows/42/announce/pre');
     await vi.waitFor(() => expect(text()).toContain('Schedule post'));
-    const fieldsets = [...root.querySelectorAll('fieldset')];
+    // The day groups of the time picker are locked through their parent.
+    const fieldsets = [...root.querySelectorAll<HTMLFieldSetElement>('fieldset.group')];
     expect(fieldsets.length).toBeGreaterThan(0);
     expect(fieldsets.every((f) => f.disabled)).toBe(true);
     expect(button('Schedule post').disabled).toBe(true);
@@ -1505,8 +1671,9 @@ describe('Wrap-up · Post-announcement', () => {
     expect(button('Publish').disabled).toBe(false);
     button('Set up post-announcement').click();
     await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/42/announce/post')
+      expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement')
     );
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
   });
 
   it('shows a set-up post with Edit and Cancel once the track is public', async () => {
@@ -1574,7 +1741,12 @@ describe('who sees what', () => {
         'https://instagram.com/p/abc'
       )
     );
-    expect(cardStatus('Social media')).toBe('1 of 3 sent');
+    expect(cardStatus('Social media')).toBe('1 sent · 1 scheduled');
+    // Only the sent post's picture; the armed story stays with its hosts.
+    expect(root.querySelector('.promotion .pre img')?.getAttribute('src')).toContain(
+      '/api/shows/42/announcements/pre/image.jpg?'
+    );
+    expect(root.querySelector('.promotion .onair img')).toBeNull();
     expect(text()).not.toContain('Secret caption');
     expect(requests.map((r) => r.url)).not.toContain('/api/shows/42/announcements');
     expect(requests.map((r) => r.url)).not.toContain('/api/shows/42/announcements/meta');

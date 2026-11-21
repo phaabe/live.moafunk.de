@@ -520,6 +520,134 @@ pub async fn api_announcement_preview(
     ))
 }
 
+/// Width of the Social media card's small picture: sharp at 48 px on a 3×
+/// screen.
+const THUMB_W: u32 = 160;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ImageQuery {
+    /// "thumb" for the card's small picture.
+    pub size: Option<String>,
+}
+
+/// The picture of a set-up slot, for the Social media card.
+/// GET /api/shows/:id/announcements/:slot/image.jpg?size=thumb
+///
+/// The episode's hosts see every set-up slot; other signed-in users only a
+/// sent post, like its link in `/status`. A sent post is the stored JPEG;
+/// otherwise the saved row is rendered. Sent through the backend, never as a
+/// presigned R2 link.
+pub async fn api_announcement_image(
+    State(state): State<Arc<AppState>>,
+    Path((id, slot)): Path<(i64, String)>,
+    Query(query): Query<ImageQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = crate::auth::get_session_from_headers(&headers);
+    crate::auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    let kind = AnnouncementKind::from_slot(&slot)
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown announcement slot: {slot}")))?;
+    let row: Option<crate::announcements::Announcement> = sqlx::query_as(
+        "SELECT * FROM announcements WHERE show_id = ? AND slot = ? AND channel = 'instagram'",
+    )
+    .bind(id)
+    .bind(kind.slot())
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row
+        .filter(|r| !matches!(r.state.as_str(), "draft" | "cancelled" | "rejected"))
+        .ok_or_else(|| AppError::NotFound("This slot has no post".to_string()))?;
+
+    let stored = if row.state == "sent" {
+        let key = format!("shows/{id}/announcements/{}.jpg", kind.slot());
+        storage::download_file(&state, &key)
+            .await
+            .ok()
+            .map(|(d, _)| d)
+    } else {
+        // Not sent yet: only the episode's hosts may see it.
+        require_show_editor(&state, &headers, id).await?;
+        None
+    };
+    let jpeg = match stored {
+        Some(jpeg) => jpeg,
+        None => {
+            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+            render_jpeg(row_render_input(&state, &show, &row).await?).await?
+        }
+    };
+    let jpeg = if query.size.as_deref() == Some("thumb") {
+        tokio::task::spawn_blocking(move || thumb_jpeg(&jpeg))
+            .await
+            .map_err(|e| AppError::Internal(format!("Resize task failed: {e}")))?
+            .map_err(|e| AppError::Internal(format!("Resize failed: {e:#}")))?
+    } else {
+        jpeg
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            // The card asks with ?v=<image_version>, so an edit gets a new URL.
+            (header::CACHE_CONTROL, "private, max-age=3600"),
+        ],
+        jpeg,
+    ))
+}
+
+/// A small copy of a JPEG, [`THUMB_W`] wide.
+fn thumb_jpeg(jpeg: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let image = image::load_from_memory(jpeg).context("read announcement JPEG")?;
+    let small = image
+        .resize(THUMB_W, THUMB_W * 4, FilterType::Triangle)
+        .to_rgb8();
+    let mut out = Vec::new();
+    JpegEncoder::new_with_quality(&mut out, 80)
+        .encode_image(&small)
+        .context("encode thumbnail")?;
+    Ok(out)
+}
+
+/// The render input of a saved announcement: its photo (the upload, else the
+/// current cover), headline and layout.
+pub async fn row_render_input(
+    state: &Arc<AppState>,
+    show: &models::Show,
+    row: &crate::announcements::Announcement,
+) -> Result<AnnouncementRender> {
+    let kind = AnnouncementKind::from_slot(&row.slot)
+        .ok_or_else(|| AppError::Internal(format!("Unknown slot {}", row.slot)))?;
+    let image_key = row
+        .image_key
+        .as_deref()
+        .filter(|_| row.image_source != "cover");
+    let image = load_announcement_image(state, row.show_id, image_key).await?;
+    let layout = if row.layout == "split" {
+        AnnouncementLayout::Split
+    } else {
+        AnnouncementLayout::Band
+    };
+    let query = PreviewQuery {
+        headline: row.headline.clone().unwrap_or_default(),
+        layout,
+    };
+    announcement_for_show(state, show, kind, query, image).await
+}
+
+/// Render off the async runtime.
+pub async fn render_jpeg(input: AnnouncementRender) -> Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
+        .await
+        .map_err(|e| AppError::Internal(format!("Render task failed: {e}")))?
+        .map_err(|e| AppError::Internal(format!("Render failed: {e:#}")))
+}
+
 /// The photo of an announcement: the uploaded `image_key`, else the episode
 /// cover. A show without a cover gets the default black cover.
 pub async fn load_announcement_image(

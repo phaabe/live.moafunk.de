@@ -518,6 +518,109 @@ async fn text_and_image_rules() {
 }
 
 #[tokio::test]
+async fn collaborators_and_tags_rules() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+
+    // "@" and case are dropped, duplicates removed; the list comes back as a list.
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["@Guest.One", "guest.one", "dj_two", "three"],
+                "user_tags": [" @Label ", ""] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(
+        row["extra_collaborators"],
+        json!(["guest.one", "dj_two", "three"])
+    );
+    assert_eq!(row["user_tags"], json!(["label"]));
+
+    // Instagram takes 3 collaborators and 20 tags at most.
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["a", "b", "c", "d"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let tags: Vec<String> = (0..21).map(|i| format!("tag{i}")).collect();
+    let (status, body) = put(&state, host, 1, "pre", json!({ "user_tags": tags })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["not a handle!"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The show's own account counts as one of the 3 when it is invited.
+    let (series, _) = crate::series::insert_series(&state.db, host, "Brunchtime", None, None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE show_templates SET instagram_handle = 'brunchtime' WHERE id = ?")
+        .bind(series)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shows SET template_id = ? WHERE id = 1")
+        .bind(series)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let (status, body) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["a", "b", "c"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "extra_collaborators": ["Brunchtime", "a", "b"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["extra_collaborators"], json!(["a", "b"]));
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "pre",
+        json!({ "collaborator": false, "extra_collaborators": ["a", "b", "c"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+
+    // A story takes neither.
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "onair",
+        json!({ "extra_collaborators": ["a"], "user_tags": ["b"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["extra_collaborators"], json!([]));
+    assert_eq!(row["user_tags"], json!([]));
+}
+
+#[tokio::test]
 async fn admin_settings_round_trip() {
     let (state, _t) = state().await;
     let admin = add_user(&state, "admin", "admin").await;
@@ -719,7 +822,7 @@ async fn rejected_frees_its_slot_and_can_be_recreated() {
 }
 
 #[tokio::test]
-async fn booking_arms_the_on_air_story() {
+async fn booking_sets_up_no_announcement() {
     let (_r2, endpoint) = crate::fake_r2::FakeR2::serve().await;
     let (state, _t) = crate::broadcast_tests::state_with(json!({ "r2_endpoint": endpoint })).await;
     let host = add_user(&state, "host", "host").await;
@@ -742,23 +845,13 @@ async fn booking_arms_the_on_air_story() {
     assert_eq!(status, StatusCode::CREATED, "{episode}");
     let id = episode["id"].as_i64().unwrap();
 
+    // Every slot waits until the host sets it up, the on-air story too.
     let (_, body) = list(&state, host, id).await;
-    let rows = body.as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["slot"], "onair");
-    assert_eq!(rows[0]["state"], "armed");
-    assert_eq!(rows[0]["scheduled_at"], "2030-06-05T18:00:00Z");
-    assert_eq!(rows[0]["anchor_offset_minutes"], 0);
-    assert_eq!(rows[0]["created_by"], host);
+    assert_eq!(body.as_array().unwrap().len(), 0, "{body}");
 
-    // An existing row is kept.
-    put(&state, host, id, "onair", json!({ "headline": "Live!" })).await;
-    let mut conn = state.db.acquire().await.unwrap();
-    announcements::arm_onair(&mut conn, id, "2030-06-05", "20:00", host)
-        .await
-        .unwrap();
-    let (_, body) = list(&state, host, id).await;
-    assert_eq!(body[0]["headline"], "Live!");
+    let (status, row) = put(&state, host, id, "onair", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["scheduled_at"], "2030-06-05T18:00:00Z");
 }
 
 /// The static `slots` route and the `:slot` route live side by side.
@@ -877,11 +970,15 @@ async fn every_host_reads_the_status_without_the_post_text() {
         json!([
             { "slot": "pre", "channel": "instagram", "state": "sent",
               "scheduled_at": rows[0]["scheduled_at"], "sent_at": "2030-06-03T16:00:00Z",
-              "permalink": "https://instagram.com/p/abc" },
+              "permalink": "https://instagram.com/p/abc",
+              "image_version": rows[0]["image_version"] },
             { "slot": "onair", "channel": "instagram", "state": "failed",
-              "scheduled_at": rows[1]["scheduled_at"], "sent_at": null, "permalink": null },
+              "scheduled_at": rows[1]["scheduled_at"], "sent_at": null, "permalink": null,
+              "image_version": null },
         ])
     );
+    // Only a sent post's picture may be loaded.
+    assert!(rows[0]["image_version"].is_string(), "{rows}");
     assert!(!rows.to_string().contains("Secret draft"));
     assert!(!rows.to_string().contains("Token expired"));
 

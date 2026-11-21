@@ -120,6 +120,7 @@ async fn feed_image_has_caption_alt_text_and_collaborator() {
             "Tonight on air",
             Some("Poster with the host photo"),
             &["@host_handle".to_string()],
+            &[],
         )
         .await
         .unwrap();
@@ -131,6 +132,38 @@ async fn feed_image_has_caption_alt_text_and_collaborator() {
     assert_eq!(media.param("caption"), Some("Tonight on air"));
     assert_eq!(media.param("alt_text"), Some("Poster with the host photo"));
     assert_eq!(media.json("collaborators"), json!(["host_handle"]));
+    assert_eq!(media.param("user_tags"), None);
+}
+
+#[tokio::test]
+async fn feed_image_tags_accounts_side_by_side() {
+    let (state, _temp, _tg, ig) = setup(dev_env(json!({}))).await;
+
+    client(&state)
+        .await
+        .publish_feed_image(
+            "https://r2.test/feed.jpg",
+            "Tonight on air",
+            None,
+            &[],
+            &[
+                "@guest".to_string(),
+                "label".to_string(),
+                "dj.three".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let media = ig.call("/ig-dev/media");
+    assert_eq!(
+        media.json("user_tags"),
+        json!([
+            { "username": "guest", "x": 0.25, "y": 0.5 },
+            { "username": "label", "x": 0.5, "y": 0.5 },
+            { "username": "dj.three", "x": 0.75, "y": 0.5 }
+        ])
+    );
 }
 
 #[tokio::test]
@@ -160,7 +193,7 @@ async fn used_up_quota_refuses_to_publish() {
         .unwrap_err();
     assert!(err.to_string().contains("quota used up"), "{err}");
     let err = client
-        .publish_feed_image("https://r2.test/feed.jpg", "x", None, &[])
+        .publish_feed_image("https://r2.test/feed.jpg", "x", None, &[], &[])
         .await
         .unwrap_err();
     assert!(err.to_string().contains("quota used up"), "{err}");

@@ -17,8 +17,7 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Europe::Berlin;
 
 use crate::announcement_image::{
-    announcement_for_show, load_announcement_image, render_announcement_jpeg,
-    store_announcement_jpeg, AnnouncementKind, AnnouncementLayout, PreviewQuery,
+    render_jpeg, row_render_input, store_announcement_jpeg, AnnouncementKind,
 };
 use crate::announcements::{
     self, to_db_time, Announcement, AnnouncementSettings, AnnouncementSlot, KEEP_REQUESTED_AT,
@@ -287,44 +286,18 @@ async fn publish(
     settings: &AnnouncementSettings,
     row: &Announcement,
 ) -> Result<PublishedMedia> {
-    let kind = AnnouncementKind::from_slot(&row.slot)
-        .ok_or_else(|| AppError::Internal(format!("Unknown slot {}", row.slot)))?;
     let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(row.show_id)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Show {} not found", row.show_id)))?;
-    let handle: Option<String> = sqlx::query_scalar(
-        "SELECT t.instagram_handle FROM shows s JOIN show_templates t ON t.id = s.template_id \
-         WHERE s.id = ?",
-    )
-    .bind(row.show_id)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten()
-    .filter(|h: &String| !h.is_empty());
+    let handle = announcements::show_handle(&state.db, row.show_id).await?;
 
-    let image_key = row
-        .image_key
-        .as_deref()
-        .filter(|_| row.image_source != "cover");
-    let image = load_announcement_image(state, row.show_id, image_key).await?;
-    let headline = row.headline.clone().unwrap_or_default();
-    let layout = if row.layout == "split" {
-        AnnouncementLayout::Split
-    } else {
-        AnnouncementLayout::Band
-    };
-    let query = PreviewQuery {
-        headline: headline.clone(),
-        layout,
-    };
-    let input = announcement_for_show(state, &show, kind, query, image).await?;
+    let input = row_render_input(state, &show, row).await?;
+    let kind = input.kind;
     let show_name = input.show_name.clone();
-    let jpeg = tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
-        .await
-        .map_err(|e| AppError::Internal(format!("Render task failed: {e}")))?
-        .map_err(|e| AppError::Internal(format!("Render failed: {e:#}")))?;
+    let headline = row.headline.clone().unwrap_or_default();
+    let jpeg = render_jpeg(input).await?;
     let key = store_announcement_jpeg(state, row.show_id, kind, jpeg).await?;
     let url = storage::get_presigned_url(state, &key, 3600).await?;
 
@@ -334,9 +307,10 @@ async fn publish(
     }
     let caption = feed_caption(row.caption.as_deref(), &settings.hashtags);
     let alt_text = format!("{headline} – {show_name}");
-    let collaborators: Vec<String> = handle.filter(|_| row.collaborator).into_iter().collect();
+    let collaborators = announcements::collaborators_of(row, handle.as_deref());
+    let tags = announcements::handles(&row.user_tags);
     client
-        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators)
+        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators, &tags)
         .await
 }
 

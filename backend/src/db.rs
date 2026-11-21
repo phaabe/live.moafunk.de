@@ -491,6 +491,21 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // The host's time before the backend moved the post (approve, unlock,
     // retry); NULL while the post goes out at the host's time.
     add_column_if_missing(pool, "announcements", "requested_at", "TEXT").await?;
+    // More collaborators and tagged accounts of a feed post (JSON lists).
+    add_column_if_missing(
+        pool,
+        "announcements",
+        "extra_collaborators",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "announcements",
+        "user_tags",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
     // The host chose "Post now" for the pre post.
     add_column_if_missing(
         pool,

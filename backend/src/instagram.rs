@@ -990,13 +990,15 @@ impl InstagramClient {
         self.publish_media(&params, "Story").await
     }
 
-    /// Publish a feed image with caption, alt text and collaborator accounts.
+    /// Publish a feed image with caption, alt text, collaborator accounts and
+    /// accounts tagged on the image.
     pub async fn publish_feed_image(
         &self,
         image_url: &str,
         caption: &str,
         alt_text: Option<&str>,
         collaborators: &[String],
+        user_tags: &[String],
     ) -> Result<PublishedMedia> {
         let collaborators: Vec<&str> = collaborators
             .iter()
@@ -1012,8 +1014,36 @@ impl InstagramClient {
         if let Some(c) = &collaborators {
             params.push(("collaborators", c));
         }
+        let tags = feed_user_tags(user_tags);
+        if let Some(t) = &tags {
+            params.push(("user_tags", t));
+        }
         self.publish_media(&params, "Feed image").await
     }
+}
+
+/// The `user_tags` of a feed image: Instagram needs a spot (0–1) for each tag.
+/// shortcut: the tags sit side by side across the middle of the image; let
+/// the host place them once the composer can show the spots.
+fn feed_user_tags(handles: &[String]) -> Option<String> {
+    let names: Vec<&str> = handles
+        .iter()
+        .map(|h| h.trim_start_matches('@'))
+        .filter(|h| !h.is_empty())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let step = 1.0 / (names.len() as f64 + 1.0);
+    let tags: Vec<serde_json::Value> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let x = ((i as f64 + 1.0) * step * 100.0).round() / 100.0;
+            serde_json::json!({ "username": name, "x": x, "y": 0.5 })
+        })
+        .collect();
+    Some(serde_json::Value::Array(tags).to_string())
 }
 
 /// Start of the error when the 24 h publishing quota is used up.
