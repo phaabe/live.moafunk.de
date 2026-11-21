@@ -32,6 +32,7 @@ const showsError = ref<string | null>(null);
 const episodesLoaded = ref(false);
 const showsLoaded = ref(false);
 const streamActive = ref(false);
+const listeners = ref<number | null>(null);
 const now = ref(Date.now());
 
 /** Cover of each Show, by slug, from the Shows grid. */
@@ -90,11 +91,23 @@ async function loadShows() {
   }
 }
 
+/** Listeners now, read only while the stream is live (null: unknown). */
+async function loadListeners() {
+  try {
+    const metrics = await streamApi.metrics();
+    listeners.value = metrics.online ? metrics.total_listeners : null;
+  } catch {
+    listeners.value = null;
+  }
+}
+
 /** A stream that starts or stops moves episodes between the lists: reload them. */
 async function loadStatus() {
   const active = (await streamApi.status()).active;
   const changed = active !== streamActive.value;
   streamActive.value = active;
+  if (active) await loadListeners();
+  else listeners.value = null;
   if (changed && episodesLoaded.value) await loadEpisodes();
 }
 
@@ -130,6 +143,7 @@ onUnmounted(() => {
             :cover-url="coverOf(onAir)"
             :username="username"
             :now="now"
+            :listeners="listeners"
           />
           <NextShowCard
             :episode="myNext"

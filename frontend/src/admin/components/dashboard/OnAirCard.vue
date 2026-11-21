@@ -6,7 +6,8 @@ import EpisodeHead from './EpisodeHead.vue';
 import { LISTEN_URL, dayAndTime, hostsOf, isMine, progressOf, timeRange } from './dashboard';
 
 // Dashboard card "On air" (#1049): the episode on air now, with its clock and
-// progress. The host's own episode opens On Air; any other one Listen live.
+// progress and listener count. The host's own episode opens On Air; any other
+// one Listen live.
 // With nothing on air it says so and names the next episode.
 const props = defineProps<{
   /** The stream is live. */
@@ -19,6 +20,8 @@ const props = defineProps<{
   username: string | undefined;
   /** The clock, in ms since the epoch. */
   now: number;
+  /** Listeners now, or null while the count cannot be read. */
+  listeners: number | null;
 }>();
 
 const hosts = computed(() => (props.episode ? hostsOf(props.episode) : []));
@@ -50,7 +53,10 @@ const nextLine = computed(() => {
           :time="timeRange(episode) ?? ''"
         />
         <template v-if="progress">
-          <p class="air-clock">{{ progress.elapsed }}</p>
+          <div class="air-clock-row">
+            <p class="air-clock">{{ progress.elapsed }}</p>
+            <span v-if="listeners !== null" class="air-listeners">{{ listeners }} listening</span>
+          </div>
           <div
             v-if="progress.percent !== null"
             class="air-progress"
@@ -129,6 +135,19 @@ const nextLine = computed(() => {
   font: 700 2.125rem/1 var(--font-family);
   font-variant-numeric: tabular-nums;
   color: #fff;
+}
+
+.air-clock-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.air-listeners {
+  color: #ffb3ab;
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .air-progress {

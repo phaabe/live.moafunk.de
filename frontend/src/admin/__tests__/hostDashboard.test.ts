@@ -119,6 +119,8 @@ class FakeSocket {
 let app: App | undefined;
 let root: HTMLDivElement;
 let streamActive: boolean;
+/** What /api/stream/metrics answers: listeners now, or null when Icecast is offline. */
+let listening: number | null;
 let upcoming: UpcomingEpisode[];
 let past: PastEpisode[];
 /** API paths that answer 500 in this test. */
@@ -126,6 +128,7 @@ let failing: string[];
 
 beforeEach(() => {
   streamActive = false;
+  listening = 37;
   upcoming = [...UPCOMING];
   past = [...PAST];
   failing = [];
@@ -142,6 +145,12 @@ beforeEach(() => {
       switch (url) {
         case '/api/stream/status':
           return Response.json({ active: streamActive, recording: false });
+        case '/api/stream/metrics':
+          return Response.json({
+            online: listening !== null,
+            total_listeners: listening ?? 0,
+            mounts: [],
+          });
         case '/api/upcoming-episodes':
           return Response.json({ episodes: upcoming });
         case '/api/past-episodes':
@@ -372,11 +381,36 @@ describe('Dashboard on air', () => {
     expect(text(air().querySelector('.head-line'))).toBe('mira · Pre-recorded');
     expect(text(air().querySelector('.head-time'))).toBe('18:00–20:00');
     expect(text(air().querySelector('.air-clock'))).toBe('00:42:10');
+    await vi.waitFor(() =>
+      expect(text(air().querySelector('.air-listeners'))).toBe('37 listening')
+    );
     expect(air().querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('35');
     const listen = air().querySelector('a');
     expect(text(listen)).toBe('Listen live');
     expect(listen?.getAttribute('href')).toBe('https://live.moafunk.de');
     expect(air().textContent).not.toContain('Back to On Air');
+  });
+
+  it('leaves the listener count out while Icecast cannot be read', async () => {
+    streamActive = true;
+    listening = null;
+    upcoming = [DUB_ON_AIR, ...UPCOMING];
+    await mount();
+    const air = () => card('.on-air-card');
+    await vi.waitFor(() => expect(air().textContent).toContain('Dub Kitchen'));
+    await vi.waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/stream/metrics')).toBe(true)
+    );
+    expect(air().querySelector('.air-listeners')).toBeNull();
+    expect(air().textContent).not.toContain('listening');
+  });
+
+  it('does not read the listener count while nothing is on air', async () => {
+    await mount();
+    await vi.waitFor(() =>
+      expect(card('.on-air-card').textContent).toContain('Nothing on air right now.')
+    );
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => url === '/api/stream/metrics')).toBe(false);
   });
 
   it('offers Back to On Air when the show on air is the host’s own', async () => {
