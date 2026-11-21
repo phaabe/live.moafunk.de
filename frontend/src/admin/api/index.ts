@@ -852,9 +852,21 @@ export interface AnnouncementMeta {
   services: ServiceSettings;
 }
 
+/**
+ * Where an announcement is, without its text, image or error: what every host
+ * may see on another host's episode (GET …/announcements/status). Drafts are left out.
+ */
+export type AnnouncementStatus = Pick<
+  Announcement,
+  'slot' | 'channel' | 'state' | 'scheduled_at' | 'sent_at' | 'permalink'
+>;
+
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
 
 export const announcementsApi = {
+  /** Read-only status of the slots, for every signed-in user. */
+  status: (showId: number) => api.get<AnnouncementStatus[]>(`${announcementsPath(showId)}/status`),
+
   list: async (showId: number): Promise<Announcement[]> => {
     const r = await api.get<Announcement[] | { announcements: Announcement[] }>(
       announcementsPath(showId)
@@ -979,9 +991,21 @@ export interface SeriesEpisode {
   mode_label: string;
   status: EpisodeStatus;
   status_label: string;
+  /** A pre-recorded episode has its set file. */
+  has_file?: boolean;
+  /** Set once the recording is on SoundCloud. */
+  soundcloud?: 'public' | 'private' | null;
+}
+
+/** A host of a Show. Today that is its owner; a Show may get more later. */
+export interface SeriesHost {
+  username: string;
 }
 
 export interface SeriesDetail extends Series {
+  /** The caller may book and manage its episodes: its owner or an admin. */
+  can_edit?: boolean;
+  hosts?: SeriesHost[];
   /** Newest first. */
   episodes: SeriesEpisode[];
 }
@@ -989,13 +1013,35 @@ export interface SeriesDetail extends Series {
 /** A row of the host Dashboard: an upcoming episode of any host. */
 export interface UpcomingEpisode {
   id: number;
+  /** The episode's own title, e.g. "Brunchtime #31". */
+  title: string;
   date: string;
   start_time: string | null;
   end_time: string | null;
   show_name: string;
+  /** The Show's slug: its page and its cover in the Shows grid. */
+  series_slug: string;
   host_username: string;
   mode: 'live' | 'prerecorded';
   mode_label: string;
+}
+
+/** A past row of the host Dashboard: an episode of any host whose broadcast is over. */
+export interface PastEpisode extends UpcomingEpisode {
+  status: Exclude<EpisodeStatus, 'upcoming'>;
+  /** "Finished · wrap-up open" | "Finished" */
+  status_label: string;
+}
+
+/** A tile of the host Dashboard's Shows grid: a Show of any host. */
+export interface SeriesOverviewItem {
+  id: number;
+  slug: string;
+  name: string;
+  cover_url: string | null;
+  host_username: string;
+  /** Episodes whose broadcast is over (wrap-up open or finished). */
+  finished_episodes: number;
 }
 
 export interface NewSeries {
@@ -1046,7 +1092,7 @@ export const seriesApi = {
   /** All hosts' upcoming episodes, by date and start time. */
   upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
 
-  /** One of the caller's series, or null when it is not theirs (404). */
+  /** A series with its episodes, any host's (read-only unless `can_edit`); null when unknown (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
     const resp = await apiFetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;
@@ -1109,6 +1155,12 @@ export const seriesApi = {
 
   /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
   update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
+
+  /** All hosts' past episodes (wrap-up open or finished), newest first, at most 50. */
+  past: () => api.get<{ episodes: PastEpisode[] }>('/api/past-episodes'),
+
+  /** All hosts' Shows with cover, host and finished episodes, most episodes first. */
+  overview: () => api.get<{ series: SeriesOverviewItem[] }>('/api/series-overview'),
 };
 
 async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {

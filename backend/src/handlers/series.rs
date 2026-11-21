@@ -1,5 +1,7 @@
-//! Host API for show series ("Shows" in the host flow). Every route only sees
-//! the caller's own series; another user's slug is a 404.
+//! Host API for show series ("Shows" in the host flow). Every host may view a
+//! series and its episodes (GET /api/series/:slug); only its owner edits it,
+//! and only the owner or an admin books its episodes. The list and the edit
+//! route only see the caller's own series; another user's slug is a 404 there.
 
 use std::sync::Arc;
 
@@ -34,6 +36,22 @@ pub(super) struct SeriesRow {
 const SERIES_COLUMNS: &str = "id, slug, name, description, cover_key, owner_user_id, \
                               repeat_rule, weekday, start_time, end_time, instagram_handle";
 
+/// A series by slug, whoever owns it. An unknown slug is 404.
+async fn load_series_by_slug(state: &Arc<AppState>, slug: &str) -> Result<SeriesRow> {
+    sqlx::query_as(&format!(
+        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
+    ))
+    .bind(slug)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Show not found".to_string()))
+}
+
+/// The owner or an admin may book and manage the episodes of a series.
+fn may_book(row: &SeriesRow, user: &crate::models::User) -> bool {
+    row.owner_user_id == user.id || user.role_enum().can_access_admin()
+}
+
 /// A series by slug for its owner or an admin (booking endpoints). Another
 /// host gets 403; an unknown slug is 404.
 pub(super) async fn load_series_for_editor(
@@ -41,14 +59,8 @@ pub(super) async fn load_series_for_editor(
     user: &crate::models::User,
     slug: &str,
 ) -> Result<SeriesRow> {
-    let row: SeriesRow = sqlx::query_as(&format!(
-        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
-    ))
-    .bind(slug)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
-    if row.owner_user_id != user.id && !user.role_enum().can_access_admin() {
+    let row = load_series_by_slug(state, slug).await?;
+    if !may_book(&row, user) {
         return Err(AppError::Forbidden(
             "You can only book episodes of your own shows".to_string(),
         ));
@@ -380,6 +392,9 @@ struct EpisodeRow {
     stream_mode: Option<String>,
     wrapup_published_at: Option<String>,
     live_ended_at: Option<String>,
+    has_file: bool,
+    on_soundcloud: bool,
+    soundcloud_public: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -396,29 +411,55 @@ pub struct EpisodeItem {
     status: EpisodeStatus,
     /// "Upcoming" | "Finished · wrap-up open" | "Finished"
     status_label: &'static str,
+    /// A pre-recorded episode has its set file.
+    has_file: bool,
+    /// "public" | "private" once the recording is on SoundCloud, else null.
+    soundcloud: Option<&'static str>,
+}
+
+/// A host of a series. Today that is its owner; a series may get more later.
+#[derive(Debug, Serialize)]
+pub struct SeriesHost {
+    username: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SeriesDetail {
     #[serde(flatten)]
     series: SeriesItem,
+    /// The caller may book and manage its episodes (its owner or an admin).
+    /// Editing the series itself (PUT) stays with its owner.
+    can_edit: bool,
+    hosts: Vec<SeriesHost>,
     /// Newest first.
     episodes: Vec<EpisodeItem>,
 }
 
-/// GET /api/series/:slug — one of the caller's series with its episodes.
+/// GET /api/series/:slug — a series with its episodes. Every host may view
+/// it; `can_edit` says whether the caller may manage it.
 pub async fn api_get_series(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
-    let row = load_own_series(&state, user.id, &slug).await?;
+    let row = load_series_by_slug(&state, &slug).await?;
+    let can_edit = may_book(&row, &user);
     let rhythm_end = row.rhythm().map(|r| r.end_time);
+
+    let hosts: Vec<SeriesHost> = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
+        .bind(row.owner_user_id)
+        .fetch_all(&state.db)
+        .await?
+        .into_iter()
+        .map(|username| SeriesHost { username })
+        .collect();
 
     let rows: Vec<EpisodeRow> = sqlx::query_as(
         "SELECT id, title, date, start_time, end_time, stream_mode, wrapup_published_at, \
-                live_ended_at \
+                live_ended_at, prerecorded_filename IS NOT NULL AS has_file, \
+                soundcloud_url IS NOT NULL AS on_soundcloud, \
+                COALESCE(soundcloud_public, 0) != 0 AS soundcloud_public \
          FROM shows WHERE template_id = ? \
          ORDER BY date DESC, start_time DESC, id DESC",
     )
@@ -457,12 +498,20 @@ pub async fn api_get_series(
                 mode_label,
                 status,
                 status_label: status.label(),
+                has_file: e.has_file,
+                soundcloud: match (e.on_soundcloud, e.soundcloud_public) {
+                    (false, _) => None,
+                    (true, true) => Some("public"),
+                    (true, false) => Some("private"),
+                },
             }
         })
         .collect();
 
     Ok(Json(SeriesDetail {
         series: series_item(&state, row).await,
+        can_edit,
+        hosts,
         episodes,
     }))
 }
@@ -470,6 +519,7 @@ pub async fn api_get_series(
 #[derive(sqlx::FromRow)]
 struct UpcomingRow {
     id: i64,
+    title: String,
     date: String,
     start_time: Option<String>,
     end_time: Option<String>,
@@ -477,17 +527,71 @@ struct UpcomingRow {
     wrapup_published_at: Option<String>,
     live_ended_at: Option<String>,
     show_name: String,
+    series_slug: String,
     host_username: String,
 }
+
+impl UpcomingRow {
+    /// Upcoming until its end (or while on air), then wrap-up open or finished.
+    fn status(&self, on_air: Option<i64>, now: chrono::DateTime<Utc>) -> EpisodeStatus {
+        let end = series::ended_by_host(
+            series::episode_end_utc(
+                &self.date,
+                self.start_time.as_deref(),
+                self.end_time.as_deref(),
+                None,
+            ),
+            self.live_ended_at.as_deref(),
+        );
+        series::episode_status(
+            end,
+            self.wrapup_published_at.is_some(),
+            on_air == Some(self.id),
+            now,
+        )
+    }
+
+    fn into_item(self) -> UpcomingEpisode {
+        let (mode, mode_label) = series::mode_of(self.stream_mode.as_deref());
+        UpcomingEpisode {
+            id: self.id,
+            title: self.title,
+            date: self.date,
+            start_time: self.start_time,
+            end_time: self.end_time,
+            show_name: self.show_name,
+            series_slug: self.series_slug,
+            host_username: self.host_username,
+            mode,
+            mode_label,
+        }
+    }
+}
+
+/// The episodes of all hosts' series, for `AND …` date filters and an
+/// `ORDER BY`. Start and end fall back to the series rhythm.
+const HOST_EPISODES_SQL: &str = "SELECT s.id, s.title, s.date, \
+            COALESCE(s.start_time, t.start_time) AS start_time, \
+            COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
+            s.wrapup_published_at, s.live_ended_at, t.name AS show_name, \
+            t.slug AS series_slug, u.username AS host_username \
+     FROM shows s \
+     JOIN show_templates t ON t.id = s.template_id \
+     JOIN users u ON u.id = t.owner_user_id \
+     WHERE t.slug IS NOT NULL";
 
 /// One row of the host Dashboard.
 #[derive(Debug, Serialize)]
 pub struct UpcomingEpisode {
     id: i64,
+    /// The episode's own title, e.g. "Brunchtime #31".
+    title: String,
     date: String,
     start_time: Option<String>,
     end_time: Option<String>,
     show_name: String,
+    /// The Show's slug: its page and its cover on the Dashboard.
+    series_slug: String,
     host_username: String,
     /// "live" | "prerecorded"
     mode: &'static str,
@@ -503,17 +607,10 @@ pub async fn api_upcoming_episodes(
 ) -> Result<impl IntoResponse> {
     require_show_creator(&state, &headers).await?;
     // An episode ends at most a day after its date, so older dates are over.
-    let rows: Vec<UpcomingRow> = sqlx::query_as(
-        "SELECT s.id, s.date, COALESCE(s.start_time, t.start_time) AS start_time, \
-                COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
-                s.wrapup_published_at, s.live_ended_at, t.name AS show_name, \
-                u.username AS host_username \
-         FROM shows s \
-         JOIN show_templates t ON t.id = s.template_id \
-         JOIN users u ON u.id = t.owner_user_id \
-         WHERE t.slug IS NOT NULL AND s.date >= date('now', '-2 days') \
-         ORDER BY s.date, start_time, s.id",
-    )
+    let rows: Vec<UpcomingRow> = sqlx::query_as(&format!(
+        "{HOST_EPISODES_SQL} AND s.date >= date('now', '-2 days') \
+         ORDER BY s.date, start_time, s.id"
+    ))
     .fetch_all(&state.db)
     .await?;
 
@@ -521,37 +618,127 @@ pub async fn api_upcoming_episodes(
     let now = Utc::now();
     let episodes: Vec<UpcomingEpisode> = rows
         .into_iter()
-        .filter(|e| {
-            let end = series::ended_by_host(
-                series::episode_end_utc(
-                    &e.date,
-                    e.start_time.as_deref(),
-                    e.end_time.as_deref(),
-                    None,
-                ),
-                e.live_ended_at.as_deref(),
-            );
-            series::episode_status(
-                end,
-                e.wrapup_published_at.is_some(),
-                on_air == Some(e.id),
-                now,
-            ) == EpisodeStatus::Upcoming
-        })
-        .map(|e| {
-            let (mode, mode_label) = series::mode_of(e.stream_mode.as_deref());
-            UpcomingEpisode {
-                id: e.id,
-                date: e.date,
-                start_time: e.start_time,
-                end_time: e.end_time,
-                show_name: e.show_name,
-                host_username: e.host_username,
-                mode,
-                mode_label,
-            }
-        })
+        .filter(|e| e.status(on_air, now) == EpisodeStatus::Upcoming)
+        .map(UpcomingRow::into_item)
         .collect();
 
     Ok(Json(serde_json::json!({ "episodes": episodes })))
+}
+
+/// How many past episodes the Dashboard lists. Each Show's page has them all.
+const PAST_EPISODES_LIMIT: usize = 50;
+
+/// One past row of the host Dashboard: an upcoming row plus its status.
+#[derive(Debug, Serialize)]
+pub struct PastEpisode {
+    #[serde(flatten)]
+    episode: UpcomingEpisode,
+    /// "wrapup_open" | "finished"
+    status: EpisodeStatus,
+    /// "Finished · wrap-up open" | "Finished"
+    status_label: &'static str,
+}
+
+/// All hosts' episodes whose broadcast is over (wrap-up open or finished),
+/// newest first.
+async fn past_host_episodes(state: &Arc<AppState>) -> Result<Vec<(UpcomingRow, EpisodeStatus)>> {
+    // An episode starts on its date (Berlin), so later dates are not over.
+    let rows: Vec<UpcomingRow> = sqlx::query_as(&format!(
+        "{HOST_EPISODES_SQL} AND s.date <= date('now', '+1 day') \
+         ORDER BY s.date DESC, start_time DESC, s.id DESC"
+    ))
+    .fetch_all(&state.db)
+    .await?;
+
+    let on_air = on_air_show_id(state).await;
+    let now = Utc::now();
+    Ok(rows
+        .into_iter()
+        .map(|e| {
+            let status = e.status(on_air, now);
+            (e, status)
+        })
+        .filter(|(_, status)| *status != EpisodeStatus::Upcoming)
+        .collect())
+}
+
+/// GET /api/past-episodes — the Dashboard's Past tab: the latest past
+/// episodes of all hosts' series, newest first.
+pub async fn api_past_episodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let episodes: Vec<PastEpisode> = past_host_episodes(&state)
+        .await?
+        .into_iter()
+        .take(PAST_EPISODES_LIMIT)
+        .map(|(e, status)| PastEpisode {
+            episode: e.into_item(),
+            status,
+            status_label: status.label(),
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "episodes": episodes })))
+}
+
+#[derive(sqlx::FromRow)]
+struct OverviewRow {
+    id: i64,
+    slug: String,
+    name: String,
+    cover_key: Option<String>,
+    host_username: String,
+}
+
+/// One tile of the Dashboard's Shows grid.
+#[derive(Debug, Serialize)]
+pub struct SeriesOverviewItem {
+    id: i64,
+    slug: String,
+    name: String,
+    cover_url: Option<String>,
+    host_username: String,
+    /// Episodes whose broadcast is over (wrap-up open or finished).
+    finished_episodes: usize,
+}
+
+/// GET /api/series-overview — every host's Show with its cover, host and
+/// number of finished episodes: most episodes first, then by name.
+pub async fn api_series_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let rows: Vec<OverviewRow> = sqlx::query_as(
+        "SELECT t.id, t.slug, t.name, t.cover_key, u.username AS host_username \
+         FROM show_templates t JOIN users u ON u.id = t.owner_user_id \
+         WHERE t.slug IS NOT NULL ORDER BY t.name COLLATE NOCASE, t.id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut finished = std::collections::HashMap::<String, usize>::new();
+    for (episode, _) in past_host_episodes(&state).await? {
+        *finished.entry(episode.series_slug).or_default() += 1;
+    }
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        let cover_url = match &row.cover_key {
+            Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
+            None => None,
+        };
+        items.push(SeriesOverviewItem {
+            finished_episodes: finished.get(&row.slug).copied().unwrap_or(0),
+            id: row.id,
+            slug: row.slug,
+            name: row.name,
+            cover_url,
+            host_username: row.host_username,
+        });
+    }
+    // A stable sort: equal counts keep the name order of the query.
+    items.sort_by_key(|item| std::cmp::Reverse(item.finished_episodes));
+    Ok(Json(serde_json::json!({ "series": items })))
 }

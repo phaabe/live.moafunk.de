@@ -1,37 +1,131 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { seriesApi, type UpcomingEpisode } from '../api';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
+import {
+  seriesApi,
+  streamApi,
+  type PastEpisode,
+  type SeriesOverviewItem,
+  type UpcomingEpisode,
+} from '../api';
 import { useAuthStore } from '../stores/auth';
-import BoardIcon from '../components/BoardIcon.vue';
-import DateChip from '../components/DateChip.vue';
+import ChatCard from '../components/dashboard/ChatCard.vue';
+import EpisodesCard from '../components/dashboard/EpisodesCard.vue';
+import NextShowCard from '../components/dashboard/NextShowCard.vue';
+import OnAirCard from '../components/dashboard/OnAirCard.vue';
+import ShowsCard from '../components/dashboard/ShowsCard.vue';
+import { airsAt, hostsOf, isMine } from '../components/dashboard/dashboard';
 
-// Flow screen `dashboard` (host at /dashboard): the upcoming episodes of all
-// hosts. The episode page shows the owner's screen or a read-only view.
+// Flow screen `dashboard` (host at /dashboard), redesign #1049: On air and My
+// next show on top, all hosts' episodes (Past first, then Upcoming), the
+// hosts' group chat, and every Show as a tile. The episode page shows the
+// owner's screen or a read-only view.
 
 const auth = useAuthStore();
-const episodes = ref<UpcomingEpisode[]>([]);
-const loaded = ref(false);
-const error = ref<string | null>(null);
+const username = computed(() => auth.user?.username);
 
-/** "12:00–14:00" */
-function time(e: UpcomingEpisode): string | null {
-  return e.start_time && e.end_time ? `${e.start_time}–${e.end_time}` : e.start_time;
+const upcoming = ref<UpcomingEpisode[]>([]);
+const past = ref<PastEpisode[]>([]);
+const shows = ref<SeriesOverviewItem[]>([]);
+const upcomingError = ref<string | null>(null);
+const pastError = ref<string | null>(null);
+const showsError = ref<string | null>(null);
+const episodesLoaded = ref(false);
+const showsLoaded = ref(false);
+const streamActive = ref(false);
+const listeners = ref<number | null>(null);
+const now = ref(Date.now());
+
+/** Cover of each Show, by slug, from the Shows grid. */
+const covers = computed(() => new Map(shows.value.map((s) => [s.slug, s.cover_url])));
+const coverOf = (e: UpcomingEpisode | null) =>
+  e ? (covers.value.get(e.series_slug) ?? null) : null;
+
+/** The episode on air: the stream is live and its time is now. */
+const onAir = computed(
+  () => (streamActive.value && upcoming.value.find((e) => airsAt(e, now.value))) || null
+);
+const notOnAir = computed(() => upcoming.value.filter((e) => e.id !== onAir.value?.id));
+const nextEpisode = computed(() => notOnAir.value[0] ?? null);
+const myNext = computed(
+  () => notOnAir.value.find((e) => isMine(hostsOf(e), username.value)) ?? null
+);
+
+function logError(what: string) {
+  return (e: unknown) => console.error(`Failed to load ${what}:`, e);
 }
 
-/** The host's own rows open the episode; other hosts' rows open it read-only. */
-function mine(e: UpcomingEpisode): boolean {
-  return !!auth.user && e.host_username === auth.user.username;
+async function loadEpisodes() {
+  await Promise.all([
+    seriesApi
+      .upcoming()
+      .then((r) => {
+        upcoming.value = r.episodes;
+        upcomingError.value = null;
+      })
+      .catch((e) => {
+        logError('upcoming episodes')(e);
+        upcomingError.value = 'Could not load the upcoming episodes.';
+      }),
+    seriesApi
+      .past()
+      .then((r) => {
+        past.value = r.episodes;
+        pastError.value = null;
+      })
+      .catch((e) => {
+        logError('past episodes')(e);
+        pastError.value = 'Could not load the past episodes.';
+      }),
+  ]);
+  episodesLoaded.value = true;
 }
 
-onMounted(async () => {
+async function loadShows() {
   try {
-    episodes.value = (await seriesApi.upcoming()).episodes;
+    shows.value = (await seriesApi.overview()).series;
   } catch (e) {
-    console.error('Failed to load upcoming shows:', e);
-    error.value = 'Could not load the upcoming shows.';
+    logError('shows')(e);
+    showsError.value = 'Could not load the shows.';
   } finally {
-    loaded.value = true;
+    showsLoaded.value = true;
   }
+}
+
+/** Listeners now, read only while the stream is live (null: unknown). */
+async function loadListeners() {
+  try {
+    const metrics = await streamApi.metrics();
+    listeners.value = metrics.online ? metrics.total_listeners : null;
+  } catch {
+    listeners.value = null;
+  }
+}
+
+/** A stream that starts or stops moves episodes between the lists: reload them. */
+async function loadStatus() {
+  const active = (await streamApi.status()).active;
+  const changed = active !== streamActive.value;
+  streamActive.value = active;
+  if (active) await loadListeners();
+  else listeners.value = null;
+  if (changed && episodesLoaded.value) await loadEpisodes();
+}
+
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+onMounted(() => {
+  void loadEpisodes();
+  void loadShows();
+  loadStatus().catch(logError('stream status'));
+  clockTimer = setInterval(() => (now.value = Date.now()), 1000);
+  pollTimer = setInterval(() => loadStatus().catch(logError('stream status')), 10000);
+});
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer);
+  if (pollTimer) clearInterval(pollTimer);
+  clockTimer = pollTimer = null;
 });
 </script>
 
@@ -39,47 +133,81 @@ onMounted(async () => {
   <div class="dashboard-page host-page">
     <h1 class="page-title">Dashboard</h1>
 
-    <section class="board-card">
-      <div class="board-card-head">
-        <h2 class="board-card-title"><BoardIcon name="calendar" />Upcoming shows</h2>
+    <div class="dash-cols">
+      <div class="dash-main">
+        <div class="dash-duo">
+          <OnAirCard
+            :active="streamActive"
+            :episode="onAir"
+            :next="nextEpisode"
+            :cover-url="coverOf(onAir)"
+            :username="username"
+            :now="now"
+            :listeners="listeners"
+          />
+          <NextShowCard
+            :episode="myNext"
+            :cover-url="coverOf(myNext)"
+            :error="upcomingError"
+            :loaded="episodesLoaded"
+            :now="now"
+          />
+        </div>
+        <EpisodesCard
+          :past="past"
+          :upcoming="upcoming"
+          :past-error="pastError"
+          :upcoming-error="upcomingError"
+          :loaded="episodesLoaded"
+          :username="username"
+        />
       </div>
-      <p v-if="error" class="empty field-error" role="alert">{{ error }}</p>
-      <p v-else-if="loaded && !episodes.length" class="empty">No upcoming shows.</p>
-      <!-- Row text stays "So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live". -->
-      <ul class="episodes board-rows">
-        <li v-for="e in episodes" :key="e.id">
-          <router-link :to="`/shows/${e.id}`" class="board-row">
-            <span class="row-main">
-              <DateChip :date="e.date" :tone="mine(e) ? 'mine' : ''" />
-              <span class="row-body">
-                <template v-if="time(e)">
-                  <span class="sep"> · </span>
-                  <span class="row-time">{{ time(e) }}</span>
-                </template>
-                <span class="sep"> · </span>
-                <span class="row-title">{{ e.show_name }}</span>
-                <span class="sep"> · </span>
-                <span :class="['row-host', { mine: mine(e) }]">{{ e.host_username }}</span>
-              </span>
-            </span>
-            <span class="row-tags">
-              <span class="tag tag-upcoming">Upcoming</span>
-              <span class="sep"> · </span>
-              <span class="tag">{{ e.mode_label }}</span>
-            </span>
-            <BoardIcon
-              :name="mine(e) ? 'chevron' : 'eye'"
-              :class="['row-icon', { 'read-only': !mine(e) }]"
-            />
-          </router-link>
-        </li>
-      </ul>
-    </section>
+      <aside class="dash-side">
+        <ChatCard :username="username" />
+      </aside>
+    </div>
+
+    <ShowsCard :shows="shows" :error="showsError" :loaded="showsLoaded" :username="username" />
   </div>
 </template>
 
 <style scoped>
 .dashboard-page {
-  max-width: 1040px;
+  max-width: 1200px;
+}
+
+.dash-cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--spacing-lg);
+}
+
+.dash-main {
+  flex: 999 1 600px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.dash-side {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+}
+
+.dash-duo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: var(--spacing-lg);
+}
+
+@media (max-width: 640px) {
+  .dash-cols,
+  .dash-main,
+  .dash-duo {
+    gap: var(--spacing-md);
+  }
 }
 </style>

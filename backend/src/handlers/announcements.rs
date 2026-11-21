@@ -144,6 +144,50 @@ pub async fn api_list_announcements(
     Ok(Json(rows))
 }
 
+/// Where one announcement is, without its text, image or error: what every
+/// host may see on another host's episode page (the Social media card).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AnnouncementStatus {
+    pub slot: String,
+    pub channel: String,
+    pub state: String,
+    pub scheduled_at: Option<String>,
+    pub sent_at: Option<String>,
+    /// The public link of a sent post.
+    pub permalink: Option<String>,
+}
+
+/// GET /api/shows/:id/announcements/status — read-only, for every signed-in
+/// user (like the episode itself). Drafts, captions, images and errors stay
+/// with the episode's hosts.
+pub async fn api_announcement_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = crate::auth::get_session_from_headers(&headers);
+    crate::auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM shows WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound("Show not found".to_string()));
+    }
+    let rows: Vec<AnnouncementStatus> = sqlx::query_as(
+        "SELECT slot, channel, state, scheduled_at, sent_at, \
+                CASE WHEN state = 'sent' THEN permalink END AS permalink \
+         FROM announcements WHERE show_id = ? AND state <> 'draft' \
+         ORDER BY CASE slot WHEN 'pre' THEN 0 WHEN 'onair' THEN 1 ELSE 2 END, channel",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(rows))
+}
+
 #[derive(Debug, Serialize)]
 pub struct AnnouncementMeta {
     pub paused: bool,

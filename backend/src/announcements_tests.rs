@@ -829,6 +829,84 @@ async fn meta_tells_paused_and_needs_approval() {
     );
 }
 
+async fn status(state: &Arc<AppState>, user: i64, show: i64) -> (StatusCode, Value) {
+    outcome(
+        ann::api_announcement_status(State(state.clone()), Path(show), headers(state, user).await)
+            .await,
+    )
+    .await
+}
+
+/// Another host sees where each slot is and the link of a sent post, but no
+/// caption, image, error or draft.
+#[tokio::test]
+async fn every_host_reads_the_status_without_the_post_text() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    put(&state, host, 1, "pre", json!({ "caption": "Secret draft" })).await;
+    put(&state, host, 1, "onair", json!({})).await;
+    sqlx::query(
+        "UPDATE announcements SET state = 'sent', sent_at = '2030-06-03T16:00:00Z', \
+         permalink = 'https://instagram.com/p/abc', error = 'old' WHERE show_id = 1 AND slot = 'pre'",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    // A failed story keeps its permalink column empty and its error to the host.
+    sqlx::query(
+        "UPDATE announcements SET state = 'failed', error = 'Token expired', \
+         permalink = 'https://instagram.com/stories/x' WHERE show_id = 1 AND slot = 'onair'",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO announcements (show_id, slot, state, caption) \
+         VALUES (1, 'post', 'draft', 'Secret draft')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let (code, rows) = status(&state, other, 1).await;
+    assert_eq!(code, StatusCode::OK, "{rows}");
+    assert_eq!(
+        rows,
+        json!([
+            { "slot": "pre", "channel": "instagram", "state": "sent",
+              "scheduled_at": rows[0]["scheduled_at"], "sent_at": "2030-06-03T16:00:00Z",
+              "permalink": "https://instagram.com/p/abc" },
+            { "slot": "onair", "channel": "instagram", "state": "failed",
+              "scheduled_at": rows[1]["scheduled_at"], "sent_at": null, "permalink": null },
+        ])
+    );
+    assert!(!rows.to_string().contains("Secret draft"));
+    assert!(!rows.to_string().contains("Token expired"));
+
+    assert_eq!(status(&state, host, 1).await.0, StatusCode::OK);
+    assert_eq!(status(&state, other, 99).await.0, StatusCode::NOT_FOUND);
+    let anonymous =
+        ann::api_announcement_status(State(state.clone()), Path(1), axum::http::HeaderMap::new())
+            .await;
+    assert_eq!(outcome(anonymous).await.0, StatusCode::UNAUTHORIZED);
+}
+
+/// The static `status` route lives next to the `:slot` route.
+#[test]
+fn status_route_does_not_clash_with_slot_param() {
+    let _: axum::Router<Arc<AppState>> = axum::Router::new()
+        .route(
+            "/api/shows/:id/announcements/status",
+            axum::routing::get(ann::api_announcement_status),
+        )
+        .route(
+            "/api/shows/:id/announcements/:slot",
+            axum::routing::put(ann::api_put_announcement).delete(ann::api_cancel_announcement),
+        );
+}
+
 #[tokio::test]
 async fn approve_move_keeps_the_host_time_until_the_host_saves() {
     let (state, _t) = state().await;

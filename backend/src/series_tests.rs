@@ -195,8 +195,10 @@ async fn host_creates_a_series_and_sees_its_episodes_by_slug() {
     );
 }
 
+/// Every host may view a series (read-only); only its owner lists it, and
+/// only the owner or an admin may manage it.
 #[tokio::test]
-async fn series_are_only_visible_to_their_owner() {
+async fn every_host_views_a_series_and_only_its_owner_lists_it() {
     let (state, _temp) = state().await;
     let alice = add_user(&state, "alice", "host").await;
     let bob = add_user(&state, "bob", "host").await;
@@ -204,13 +206,19 @@ async fn series_are_only_visible_to_their_owner() {
     let guest = add_user(&state, "guest", "guest").await;
     create(&state, alice, BRUNCHTIME).await.unwrap();
 
+    for (user, can_edit) in [(alice, true), (bob, false), (admin, true)] {
+        let detail = get(&state, user, "brunchtime").await.unwrap();
+        assert_eq!(detail["name"], "Brunchtime");
+        assert_eq!(detail["can_edit"], can_edit);
+        assert_eq!(detail["hosts"], json!([{ "username": "alice" }]));
+    }
     for user in [bob, admin] {
-        assert!(matches!(
-            get(&state, user, "brunchtime").await,
-            Err(AppError::NotFound(_))
-        ));
         assert_eq!(list(&state, user).await["series"], json!([]));
     }
+    assert!(matches!(
+        get(&state, bob, "no-such-show").await,
+        Err(AppError::NotFound(_))
+    ));
     assert!(matches!(
         get(&state, guest, "brunchtime").await,
         Err(AppError::Forbidden(_))
@@ -327,6 +335,68 @@ async fn a_failed_cover_upload_leaves_no_series() {
     assert_eq!(count, 0);
 }
 
+/// Episode rows carry the set file and the SoundCloud state, so the Show page
+/// can show the recording state of past episodes.
+#[tokio::test]
+async fn episodes_carry_their_file_and_soundcloud_state() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    let series_id = create(&state, host, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let set = episode(&state, series_id, "2099-01-11", "prerecorded").await;
+    let no_set = episode(&state, series_id, "2099-01-04", "prerecorded").await;
+    let public = episode(&state, series_id, "2020-01-12", "live").await;
+    let private = episode(&state, series_id, "2020-01-05", "live").await;
+    let none = episode(&state, series_id, "2019-12-29", "live").await;
+    for (sql, id) in [
+        (
+            "UPDATE shows SET prerecorded_filename = 'set.mp3' WHERE id = ?",
+            set,
+        ),
+        (
+            "UPDATE shows SET soundcloud_url = 'https://soundcloud.com/x/1', \
+             soundcloud_public = 1 WHERE id = ?",
+            public,
+        ),
+        (
+            "UPDATE shows SET soundcloud_url = 'https://soundcloud.com/x/2', \
+             soundcloud_public = 0 WHERE id = ?",
+            private,
+        ),
+    ] {
+        sqlx::query(sql).bind(id).execute(&state.db).await.unwrap();
+    }
+
+    // Another host sees the same rows.
+    for user in [host, other] {
+        let detail = get(&state, user, "brunchtime").await.unwrap();
+        let rows: Vec<(i64, bool, Value)> = detail["episodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e["id"].as_i64().unwrap(),
+                    e["has_file"].as_bool().unwrap(),
+                    e["soundcloud"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (set, true, Value::Null),
+                (no_set, false, Value::Null),
+                (public, false, json!("public")),
+                (private, false, json!("private")),
+                (none, false, Value::Null),
+            ]
+        );
+    }
+}
+
 /// The end time never cuts a show: the episode on air stays open past it.
 #[tokio::test]
 async fn an_episode_on_air_is_not_over_at_its_end_time() {
@@ -405,21 +475,199 @@ async fn dashboard_lists_all_hosts_upcoming_episodes() {
         json!([
             {
                 "date": "2099-01-01", "start_time": "12:00", "end_time": "14:00",
-                "show_name": "Brunchtime", "host_username": "lena",
-                "mode": "live", "mode_label": "Live", "id": sooner
+                "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
+                "host_username": "lena", "mode": "live", "mode_label": "Live", "id": sooner
             },
             {
                 "date": "2099-01-02", "start_time": "12:00", "end_time": null,
-                "show_name": "Night Shift", "host_username": "jonas",
-                "mode": "live", "mode_label": "Live", "id": night_episode
+                "title": "Brunchtime", "show_name": "Night Shift", "series_slug": "night-shift",
+                "host_username": "jonas", "mode": "live", "mode_label": "Live",
+                "id": night_episode
             },
             {
                 "date": "2099-01-04", "start_time": "12:00", "end_time": "14:00",
-                "show_name": "Brunchtime", "host_username": "lena",
-                "mode": "prerecorded", "mode_label": "Pre-recorded", "id": later
+                "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
+                "host_username": "lena", "mode": "prerecorded", "mode_label": "Pre-recorded",
+                "id": later
             },
         ])
     );
+}
+
+/// Publish an episode's wrap-up, so it is Finished.
+async fn publish_wrapup(state: &Arc<AppState>, id: i64) {
+    sqlx::query("UPDATE shows SET wrapup_published_at = '2020-01-06T12:00:00Z' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+/// The Dashboard's Past tab lists every host's past episodes, newest first,
+/// with their status; upcoming and on-air episodes stay out.
+#[tokio::test]
+async fn dashboard_lists_all_hosts_past_episodes() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let brunch = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let night = create(
+        &state,
+        jonas,
+        &[("name", "Night Shift"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+
+    let older = episode(&state, brunch, "2020-01-05", "prerecorded").await;
+    publish_wrapup(&state, older).await;
+    let newer = episode(&state, night, "2020-01-07", "live").await;
+    let on_air = episode(&state, brunch, "2020-01-12", "live").await;
+    state
+        .recording_manager
+        .lock()
+        .await
+        .start(on_air)
+        .await
+        .unwrap();
+    episode(&state, brunch, "2099-01-04", "live").await;
+    // A date outside any series is not a host episode.
+    sqlx::query(
+        "INSERT INTO shows (title, date, show_type) VALUES ('UNHEARD', '2020-01-06', 'unheard')",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    let response =
+        handlers::series::api_past_episodes(State(state.clone()), headers(&state, lena).await)
+            .await
+            .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["episodes"],
+        json!([
+            {
+                "date": "2020-01-07", "start_time": "12:00", "end_time": null,
+                "title": "Brunchtime", "show_name": "Night Shift", "series_slug": "night-shift",
+                "host_username": "jonas", "mode": "live", "mode_label": "Live", "id": newer,
+                "status": "wrapup_open", "status_label": "Finished · wrap-up open"
+            },
+            {
+                "date": "2020-01-05", "start_time": "12:00", "end_time": "14:00",
+                "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
+                "host_username": "lena", "mode": "prerecorded", "mode_label": "Pre-recorded",
+                "id": older, "status": "finished", "status_label": "Finished"
+            },
+        ])
+    );
+}
+
+/// The Dashboard's Shows grid: every host's Show with its host and its
+/// finished episodes (wrap-up open or finished), most first, then by name.
+#[tokio::test]
+async fn dashboard_lists_all_shows_by_finished_episodes() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let jonas = add_user(&state, "jonas", "host").await;
+    let brunch = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let night = create(
+        &state,
+        jonas,
+        &[("name", "Night Shift"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let dub = create(
+        &state,
+        jonas,
+        &[("name", "Dub Kitchen"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    create(
+        &state,
+        lena,
+        &[("name", "Ambient"), ("repeat_rule", "none")],
+    )
+    .await
+    .unwrap();
+
+    // Night Shift: two over (one still in wrap-up) and one upcoming.
+    let done = episode(&state, night, "2020-01-01", "live").await;
+    publish_wrapup(&state, done).await;
+    episode(&state, night, "2020-01-08", "live").await;
+    episode(&state, night, "2099-01-01", "live").await;
+    // Brunchtime: one over; the one on air and the upcoming one do not count.
+    episode(&state, brunch, "2020-01-05", "live").await;
+    let on_air = episode(&state, brunch, "2020-01-12", "live").await;
+    state
+        .recording_manager
+        .lock()
+        .await
+        .start(on_air)
+        .await
+        .unwrap();
+    episode(&state, brunch, "2099-01-04", "live").await;
+    // Dub Kitchen: one over, the same count as Brunchtime, so the name decides.
+    episode(&state, dub, "2020-01-03", "prerecorded").await;
+
+    let response =
+        handlers::series::api_series_overview(State(state.clone()), headers(&state, lena).await)
+            .await
+            .unwrap();
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    let tiles: Vec<(String, String, i64)> = body["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap().to_string(),
+                s["host_username"].as_str().unwrap().to_string(),
+                s["finished_episodes"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    let tile = |name: &str, host: &str, n: i64| (name.to_string(), host.to_string(), n);
+    assert_eq!(
+        tiles,
+        vec![
+            tile("Night Shift", "jonas", 2),
+            tile("Brunchtime", "lena", 1),
+            tile("Dub Kitchen", "jonas", 1),
+            tile("Ambient", "lena", 0),
+        ]
+    );
+    assert_eq!(body["series"][0]["slug"], "night-shift");
+    assert_eq!(body["series"][0]["cover_url"], Value::Null);
+}
+
+/// Guests do not see the Dashboard's lists.
+#[tokio::test]
+async fn dashboard_lists_need_a_host() {
+    let (state, _temp) = state().await;
+    let guest = add_user(&state, "guest", "guest").await;
+    let past =
+        handlers::series::api_past_episodes(State(state.clone()), headers(&state, guest).await)
+            .await;
+    assert!(matches!(past, Err(AppError::Forbidden(_))));
+    let shows =
+        handlers::series::api_series_overview(State(state.clone()), headers(&state, guest).await)
+            .await;
+    assert!(matches!(shows, Err(AppError::Forbidden(_))));
 }
 
 /// Another host may view an episode: it carries the Show's name and

@@ -608,6 +608,15 @@ async fn main() -> anyhow::Result<()> {
             "/api/upcoming-episodes",
             get(handlers::series::api_upcoming_episodes),
         )
+        // Host Dashboard: all hosts' past episodes and all Shows
+        .route(
+            "/api/past-episodes",
+            get(handlers::series::api_past_episodes),
+        )
+        .route(
+            "/api/series-overview",
+            get(handlers::series::api_series_overview),
+        )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",
@@ -659,6 +668,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/announcements/meta",
             get(handlers::announcements::api_announcement_meta),
+        )
+        .route(
+            "/api/shows/:id/announcements/status",
+            get(handlers::announcements::api_announcement_status),
         )
         .route(
             "/api/shows/:id/announcements/uploads",

@@ -12,15 +12,16 @@ import {
 } from '../api';
 import { useAuthStore } from '../stores/auth';
 import { useHostFlow } from '../composables';
-import AudioPlayer from '../components/AudioPlayer.vue';
-import EpisodeDetailsCard from '../components/EpisodeDetailsCard.vue';
 import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
 import PromotionCard from '../components/PromotionCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
-import { episodeDay, setLength } from '../episodeRow';
+import EpisodeHeading from '../components/episode/EpisodeHeading.vue';
+import ShowTimeCard from '../components/episode/ShowTimeCard.vue';
+import SoundcheckCard from '../components/episode/SoundcheckCard.vue';
+import { episodeTimes } from '../components/episode/phase';
+import { useEpisode } from '../components/episode/useEpisode';
 import { openReplaceFile } from '../replaceFile';
-import { berlinToUtcDate, isShowEnded } from '../showTime';
 import {
   defaultPostTime,
   editable,
@@ -30,15 +31,11 @@ import {
   slotState,
 } from '../promotion';
 
-// Flow screens `episode`, `episode-pre`, `wrapup` and `done` on one path
-// (/shows/<id>) for the host's own episodes. Another host's episode gets the
-// read-only `episode-view`.
-
-/** The Studio opens this long before the start. */
-const STUDIO_OPENS_MS = 30 * 60 * 1000;
-/** How long after the end a missing recording still counts as processing
- * (the backend's own "no recording" alert waits as long). */
-const RECORDING_GRACE_MS = 15 * 60 * 1000;
+// The host's own episode on one path (/shows/<id>), #1052: a heading box and
+// four status cards (Soundcheck, Show time, Recording & SoundCloud, Social
+// media) in one layout for pre-show, on air and post-show. The flow screens
+// `wrapup` and `done` stay their own screens on the same path. Another host's
+// episode gets the same page read-only (HostEpisodeView).
 
 const route = useRoute();
 const router = useRouter();
@@ -55,8 +52,6 @@ const paused = ref(false);
 const services = ref<ServiceSettings>({ soundcloud: true, instagram: true });
 /** The Show's Instagram handle (collaborator), without "@". */
 const handle = ref<string | null>(null);
-const now = ref(Date.now());
-const clock = setInterval(() => (now.value = Date.now()), 15000);
 let poll: ReturnType<typeof setTimeout> | null = null;
 
 const id = computed(() => Number(route.params.id));
@@ -65,87 +60,20 @@ const isMine = computed(
     !!show.value &&
     (show.value.host_user_id === auth.user?.id || show.value.created_by === auth.user?.id)
 );
-const isPrerecorded = computed(() => show.value?.stream_mode === 'prerecorded');
 const showName = computed(() => show.value?.series_name ?? show.value?.title ?? '');
 const backTo = computed(() =>
   show.value?.series_slug ? `/shows/${show.value.series_slug}` : '/shows'
 );
-const heading = computed(() =>
-  show.value ? `${episodeDay(show.value.date)} · ${showName.value}` : ''
+/** The Studio soundcheck passed in this tab for this episode (the Studio does not save it). */
+const tested = computed(
+  () => !!show.value && hostFlow.showId.value === show.value.id && hostFlow.liveTestPassed.value
 );
-const slot = computed(() =>
-  show.value?.start_time && show.value.end_time
-    ? `${show.value.start_time}–${show.value.end_time}`
-    : (show.value?.start_time ?? '')
-);
+const { now, phase, recording, segments } = useEpisode(show, announcements, tested);
 
-const startMs = computed(() =>
-  show.value?.start_time ? berlinToUtcDate(show.value.date, show.value.start_time).getTime() : null
-);
-const studioOpen = computed(
-  () =>
-    !!show.value?.on_air || (startMs.value !== null && now.value >= startMs.value - STUDIO_OPENS_MS)
-);
-const ended = computed(() => {
-  void now.value; // re-evaluate on the clock tick
-  return (
-    !!show.value &&
-    !show.value.on_air &&
-    (show.value.episode_status !== 'upcoming' || isShowEnded(show.value))
-  );
-});
-
-/** The booked set as the flow writes it: "brunchtime-0811.mp3 · 1:58:40". */
-const setFile = computed(() => {
-  const name = show.value?.prerecorded_filename;
-  const length = show.value?.prerecorded_duration_secs;
-  if (!name) return '';
-  return length ? `${name} · ${setLength(length)}` : name;
-});
-
-type Pill = { state: 'ok' | 'processing' | 'failed'; text: string };
-const pill = computed<Pill>(() => {
-  const s = show.value;
-  if (!s) return { state: 'processing', text: 'Recording processing…' };
-  if (isPrerecorded.value) {
-    const length = s.prerecorded_duration_secs;
-    return {
-      state: 'ok',
-      text: length ? `Recording ready · ${setLength(length)}` : 'Recording ready',
-    };
-  }
-  // While on air (or still saving) an older version is not the final one, and
-  // the server refuses Publish.
-  if (s.on_air) return { state: 'processing', text: 'Recording processing…' };
-  const r = s.latest_recording;
-  if (r?.status === 'failed') {
-    return {
-      state: 'failed',
-      text: `No usable recording · ${r.error_message || 'The recording failed.'}`,
-    };
-  }
-  if (r?.download_url) {
-    return {
-      state: 'ok',
-      text: r.duration_ms
-        ? `Recording ready · ${setLength(r.duration_ms / 1000)}`
-        : 'Recording ready',
-    };
-  }
-  if (r) return { state: 'processing', text: 'Recording processing…' };
-  if (s.live_recorded === false) {
-    return { state: 'failed', text: 'No usable recording · Record this show was off.' };
-  }
-  // An End Episode before the scheduled end starts the wait at that moment.
-  const ends = [
-    s.end_time ? berlinToUtcDate(s.date, s.end_time).getTime() : NaN,
-    s.live_ended_at ? Date.parse(s.live_ended_at) : NaN,
-  ].filter((ms) => !Number.isNaN(ms));
-  const endMs = ends.length ? Math.min(...ends) : null;
-  if (endMs !== null && now.value < endMs + RECORDING_GRACE_MS) {
-    return { state: 'processing', text: 'Recording processing…' };
-  }
-  return { state: 'failed', text: 'No usable recording · Nothing was recorded.' };
+const studioOpen = computed(() => {
+  if (!show.value) return false;
+  const { openMs } = episodeTimes(show.value);
+  return !!show.value.on_air || (openMs !== null && now.value >= openMs);
 });
 
 /** End Episode on On Air opens the Wrap-up, also while the recording is
@@ -232,11 +160,12 @@ async function cancelPost() {
   }
 }
 
-/** While the recording is processing, look again every 10 s. */
+/** While the recording is processing after the show, look again every 10 s. */
 function schedulePoll() {
   if (poll) clearTimeout(poll);
   poll = null;
-  if (view.value === 'wrapup' && pill.value.state === 'processing') {
+  const waiting = view.value === 'wrapup' || (view.value === 'episode' && phase.value === 'post');
+  if (waiting && recording.value.state === 'processing') {
     poll = setTimeout(() => load(false), 10000);
   }
 }
@@ -244,7 +173,6 @@ function schedulePoll() {
 watch(id, () => load(true), { immediate: true });
 watch(view, schedulePoll);
 onUnmounted(() => {
-  clearInterval(clock);
   if (poll) clearTimeout(poll);
 });
 
@@ -296,7 +224,7 @@ function replaceFile() {
 }
 
 async function publish() {
-  if (!show.value || pill.value.state === 'processing') return;
+  if (!show.value || recording.value.state === 'processing') return;
   busy.value = true;
   error.value = null;
   try {
@@ -320,7 +248,7 @@ async function publish() {
         <span class="dot" aria-hidden="true"></span>{{ instagramPill }}
       </p>
       <div>
-        <BaseButton @click="router.push('/schedule')">Back to Schedule</BaseButton>
+        <BaseButton @click="router.push(backTo)">Back to Show</BaseButton>
       </div>
     </template>
 
@@ -330,8 +258,8 @@ async function publish() {
         <BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode
       </button>
       <h1 class="page-title">Wrap-up</h1>
-      <p :class="['pill', 'status-banner', pill.state]">
-        <span class="dot" aria-hidden="true"></span>{{ pill.text }}
+      <p :class="['pill', 'status-banner', recording.state]">
+        <span class="dot" aria-hidden="true"></span>{{ recording.text }}
       </p>
       <section class="board-card post-announcement">
         <div class="board-card-head">
@@ -374,7 +302,7 @@ async function publish() {
       <div>
         <BaseButton
           class="xl"
-          :disabled="pill.state === 'processing'"
+          :disabled="recording.state === 'processing'"
           :loading="busy"
           @click="publish"
         >
@@ -383,142 +311,56 @@ async function publish() {
       </div>
     </template>
 
+    <!-- Episode: heading box and the four status cards -->
     <template v-else>
       <router-link :to="backTo" class="back-link"
         ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span
         >{{ showName }}</router-link
       >
-      <h1 class="page-title">{{ heading }}</h1>
-
-      <!-- Episode · Pre-recorded, no file yet -->
-      <template v-if="isPrerecorded && !show.prerecorded_filename">
-        <p class="pill status-banner warn">
-          <span class="dot" aria-hidden="true"></span>Pre-recorded · no file yet · plays at
-          {{ show.start_time }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step needs-file main">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-            </div>
-            <div class="board-card-body">
-              <div class="lead">
-                <span class="lead-icon"><BoardIcon name="music" :size="20" /></span>
-                <p class="text">Upload your set before air time. Without a file nothing plays.</p>
-              </div>
-              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-              <BaseButton class="block xl" :disabled="!show.series_slug" @click="replaceFile">
-                <BoardIcon name="upload" />Upload your set
-              </BaseButton>
-            </div>
-          </section>
-          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
-        </div>
-      </template>
-
-      <!-- Episode · Pre-recorded -->
-      <template v-else-if="isPrerecorded">
-        <p class="pill status-banner ok">
-          <span class="dot" aria-hidden="true"></span>Pre-recorded &amp; confirmed · plays at
-          {{ show.start_time }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step main">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-            </div>
-            <div class="board-card-body">
-              <p class="lead-text">
-                Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
-              </p>
-              <!-- The player shows no file name, and 0:00 until its first Play. -->
-              <div v-if="setFile || show.prerecorded_url" class="set">
-                <p v-if="setFile" class="set-file">
-                  <BoardIcon name="music" :size="16" />{{ setFile }}
-                </p>
-                <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
-              </div>
-              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-              <div class="actions">
-                <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
-                  <BoardIcon name="upload" :size="16" />Replace file
-                </BaseButton>
-                <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
-              </div>
-            </div>
-          </section>
-          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
-        </div>
-      </template>
-
-      <!-- Episode (live) -->
-      <template v-else>
-        <p v-if="show.on_air" class="pill status-banner live">
-          <span class="dot" aria-hidden="true"></span>On air · until {{ show.end_time }}
-        </p>
-        <p v-else class="pill status-banner">
-          <span class="dot" aria-hidden="true"></span>Upcoming · Live · {{ slot }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step side">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-            </div>
-            <div class="board-card-body">
-              <div class="lead">
-                <span class="lead-icon"><BoardIcon name="headphones" :size="20" /></span>
-                <p class="text">
-                  Test your audio before air time. The Studio opens 30 min before the start.
-                </p>
-              </div>
-              <BaseButton
-                v-if="show.on_air"
-                class="block xl"
-                :loading="busy"
-                @click="openStudio('/stream/on-air')"
-              >
-                <BoardIcon name="broadcast" />Back to On Air
-              </BaseButton>
-              <BaseButton
-                v-else
-                class="block xl"
-                :disabled="!studioOpen"
-                :loading="busy"
-                @click="openStudio()"
-              >
-                Open Studio<BoardIcon name="next" />
-              </BaseButton>
-            </div>
-          </section>
-          <EpisodeDetailsCard class="main" :show="show" @saved="load(true)">
-            <BaseButton
-              variant="danger"
-              class="quiet-danger"
-              :disabled="busy"
-              @click="cancelBooking"
-            >
-              <BoardIcon name="close" :size="16" />Cancel booking
-            </BaseButton>
-          </EpisodeDetailsCard>
-          <PromotionCard
-            class="main"
-            :show="show"
-            :announcements="announcements"
-            :handle="handle"
-            :paused="paused"
-            :instagram-off="!services.instagram"
-            @changed="reloadPromotion"
-          />
-          <EpisodeRecordingCard
-            class="side"
-            :show="show"
-            :soundcloud-off="!services.soundcloud"
-            @uploaded="load(false)"
-            @changed="load(false)"
-          />
-        </div>
-        <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      </template>
+      <EpisodeHeading :show="show" :phase="phase" :segments="segments" can-edit @saved="load(true)">
+        <template #danger>
+          <BaseButton variant="danger" class="quiet-danger" :disabled="busy" @click="cancelBooking">
+            <BoardIcon name="close" :size="16" />Cancel booking
+          </BaseButton>
+        </template>
+      </EpisodeHeading>
+      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+      <div class="ep-cards">
+        <SoundcheckCard
+          :show="show"
+          :phase="phase"
+          :now="now"
+          :tested="tested"
+          :busy="busy"
+          @open-studio="openStudio()"
+          @replace-file="replaceFile"
+        />
+        <ShowTimeCard
+          :show="show"
+          :phase="phase"
+          :now="now"
+          :busy="busy"
+          @open-studio="openStudio"
+        />
+        <EpisodeRecordingCard
+          :show="show"
+          :phase="phase"
+          :recording="recording"
+          :soundcloud-off="!services.soundcloud"
+          @uploaded="load(false)"
+          @changed="load(false)"
+          @open-wrapup="view = 'wrapup'"
+        />
+        <PromotionCard
+          :show="show"
+          :phase="phase"
+          :announcements="announcements"
+          :handle="handle"
+          :paused="paused"
+          :instagram-off="!services.instagram"
+          @changed="reloadPromotion"
+        />
+      </div>
     </template>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
@@ -526,37 +368,13 @@ async function publish() {
 
 <style scoped>
 .episode-page {
-  max-width: 1120px;
+  max-width: 1180px;
 }
 
-.lead-text {
-  margin: 0;
-  color: #dcdce6;
-  line-height: 1.5;
-}
-
-.set {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #2a2a42;
-  border-radius: var(--radius-lg);
-  background: #07071a;
-}
-
-.set-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  overflow-wrap: anywhere;
-  font: 700 var(--font-size-sm) var(--font-family);
-}
-
-.set-file svg {
-  flex: none;
-  color: var(--color-primary);
+.ep-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
+  gap: var(--spacing-lg);
 }
 
 .post-slot {
@@ -595,5 +413,11 @@ async function publish() {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--spacing-md);
+}
+
+@media (max-width: 640px) {
+  .ep-cards {
+    gap: 14px;
+  }
 }
 </style>

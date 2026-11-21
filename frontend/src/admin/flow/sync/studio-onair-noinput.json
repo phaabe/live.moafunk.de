@@ -4,14 +4,6 @@
   "status": "drift",
   "leftOut": [
     {
-      "item": "h2: Moments",
-      "release": "R4"
-    },
-    {
-      "item": "button: Mark moment",
-      "release": "R4"
-    },
-    {
       "item": "row: 00:12:30 | Opening track",
       "release": "R4"
     },
@@ -21,7 +13,27 @@
     }
   ],
   "missing": [
-    "row: Listeners now | 37"
+    "row: Connection | stable"
   ],
-  "extra": []
+  "extra": [
+    "h2: Audio",
+    "h2: Connection",
+    "h2: Listeners",
+    "h2: Live chat",
+    "button: Listen",
+    "button: Auto · 128",
+    "button: 320",
+    "button: 192",
+    "button: 128",
+    "button: 96",
+    "button: Send",
+    "field: Input gain",
+    "field: Monitor volume",
+    "field: Reply as host",
+    "row: Upload | 150 kbps",
+    "row: Buffer | 0.2 seconds",
+    "row: Round trip | 48 ms",
+    "row: Chunks | 2531 confirmed · all arrived",
+    "row: Peak | 37"
+  ]
 }

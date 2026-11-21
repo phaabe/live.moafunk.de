@@ -86,28 +86,28 @@ describe('expired session', () => {
   });
 
   it('navigates once when parallel calls all get a 401', async () => {
-    await openAsHost('/schedule');
+    await openAsHost('/dashboard');
     const push = vi.spyOn(router, 'push');
     fetchMock.mockImplementation(async () => expired());
     await Promise.allSettled([api.get('/api/a'), api.get('/api/b'), api.post('/api/c')]);
-    await vi.waitFor(() => expect(route()).toBe('/login?redirect=/schedule'));
+    await vi.waitFor(() => expect(route()).toBe('/login?redirect=/dashboard'));
     expect(push).toHaveBeenCalledTimes(1);
   });
 
   it('sends a 401 on the auth check at page load to login, with the page', async () => {
     auth.initialized = false;
     fetchMock.mockImplementation(async () => expired());
-    await router.push('/schedule');
-    expect(route()).toBe('/login?redirect=/schedule');
+    await router.push('/dashboard');
+    expect(route()).toBe('/login?redirect=/dashboard');
     expect(auth.user).toBeNull();
   });
 
   it('shows a wrong password and stays on the login page', async () => {
-    await router.replace('/login?redirect=/schedule');
+    await router.replace('/login?redirect=/dashboard');
     const push = vi.spyOn(router, 'push');
     await logIn(json({ error: 'Invalid username or password' }, 401));
     await vi.waitFor(() => expect(root.textContent).toContain('Invalid username or password'));
-    expect(route()).toBe('/login?redirect=/schedule');
+    expect(route()).toBe('/login?redirect=/dashboard');
     expect(push).not.toHaveBeenCalled();
   });
 
@@ -115,7 +115,7 @@ describe('expired session', () => {
     ['logout works', json({ success: true })],
     ['logout works when the session already expired', expired()],
   ])('%s', async (_name, response) => {
-    await openAsHost('/schedule');
+    await openAsHost('/dashboard');
     fetchMock.mockResolvedValueOnce(response);
     await auth.logout();
     await vi.waitFor(() => expect(route()).toBe('/login'));

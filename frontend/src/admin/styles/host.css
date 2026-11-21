@@ -523,3 +523,124 @@
   color: #c8c8d4;
   font-family: var(--font-family);
 }
+
+/* #1052 episode */
+/* Shared by the episode page's status cards (components/episode). */
+.host-page .ep-lead {
+  margin: 0;
+  color: #d4d4de;
+  line-height: 1.5;
+}
+
+.host-page .ep-kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  margin: 0;
+}
+
+.host-page .ep-kv:empty {
+  display: none;
+}
+
+.host-page .ep-kv > div {
+  display: contents;
+}
+
+.host-page .ep-kv dt {
+  align-self: center;
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8bc;
+}
+
+.host-page .ep-kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  color: #fff;
+}
+
+.host-page .ep-kv dd.ok {
+  color: #6ee79a;
+}
+
+.host-page .ep-kv dd.bad {
+  color: #ffb3ab;
+}
+
+.host-page .ep-kv dd.mut {
+  color: #a0a0b4;
+  font-weight: 500;
+}
+
+.host-page .ep-kv a,
+.host-page .ep-card a.lnk {
+  color: var(--color-primary);
+}
+
+.host-page .ep-kv a:hover,
+.host-page .ep-card a.lnk:hover {
+  color: #fff;
+}
+
+/* A card's or a slot's status chip. */
+.host-page .ep-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #55556a;
+  border-radius: 999px;
+  background: rgba(142, 142, 147, 0.14);
+  color: #c4c4cc;
+  font: 700 11px/1.2 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.host-page .ep-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.host-page .ep-status.blue {
+  border-color: #3478f6;
+  background: rgba(52, 120, 246, 0.18);
+  color: #a3c4ff;
+}
+
+.host-page .ep-status.amber {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+}
+
+.host-page .ep-status.green {
+  border-color: #34c759;
+  background: rgba(52, 199, 89, 0.16);
+  color: #6ee79a;
+}
+
+.host-page .ep-status.orange {
+  border-color: #ff7a2f;
+  background: rgba(255, 122, 47, 0.14);
+  color: #ffb38a;
+}
+
+.host-page .ep-status.red {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.18);
+  color: #ffb3ab;
+}
+
+@media (max-width: 640px) {
+  .host-page .ep-status {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+}

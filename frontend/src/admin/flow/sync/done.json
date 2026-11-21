@@ -1,13 +1,17 @@
 {
   "screen": "done",
   "hash": "bed29c37",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [
     {
       "item": "pill: SoundCloud · private track uploaded",
       "release": "R2"
     }
   ],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "button: Back to Schedule"
+  ],
+  "extra": [
+    "button: Back to Show"
+  ]
 }
