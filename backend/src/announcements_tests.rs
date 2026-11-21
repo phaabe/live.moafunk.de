@@ -719,7 +719,7 @@ async fn rejected_frees_its_slot_and_can_be_recreated() {
 }
 
 #[tokio::test]
-async fn booking_arms_the_on_air_story() {
+async fn booking_sets_up_no_announcement() {
     let (_r2, endpoint) = crate::fake_r2::FakeR2::serve().await;
     let (state, _t) = crate::broadcast_tests::state_with(json!({ "r2_endpoint": endpoint })).await;
     let host = add_user(&state, "host", "host").await;
@@ -742,23 +742,13 @@ async fn booking_arms_the_on_air_story() {
     assert_eq!(status, StatusCode::CREATED, "{episode}");
     let id = episode["id"].as_i64().unwrap();
 
+    // Every slot waits until the host sets it up, the on-air story too.
     let (_, body) = list(&state, host, id).await;
-    let rows = body.as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["slot"], "onair");
-    assert_eq!(rows[0]["state"], "armed");
-    assert_eq!(rows[0]["scheduled_at"], "2030-06-05T18:00:00Z");
-    assert_eq!(rows[0]["anchor_offset_minutes"], 0);
-    assert_eq!(rows[0]["created_by"], host);
+    assert_eq!(body.as_array().unwrap().len(), 0, "{body}");
 
-    // An existing row is kept.
-    put(&state, host, id, "onair", json!({ "headline": "Live!" })).await;
-    let mut conn = state.db.acquire().await.unwrap();
-    announcements::arm_onair(&mut conn, id, "2030-06-05", "20:00", host)
-        .await
-        .unwrap();
-    let (_, body) = list(&state, host, id).await;
-    assert_eq!(body[0]["headline"], "Live!");
+    let (status, row) = put(&state, host, id, "onair", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["scheduled_at"], "2030-06-05T18:00:00Z");
 }
 
 /// The static `slots` route and the `:slot` route live side by side.

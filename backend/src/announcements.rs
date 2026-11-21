@@ -243,35 +243,6 @@ pub async fn needs_approval(
     })
 }
 
-/// Arms the on-air story of a newly booked episode at its start. Keeps an
-/// existing row; does nothing when the start can't be computed.
-pub async fn arm_onair(
-    conn: &mut sqlx::SqliteConnection,
-    show_id: i64,
-    date: &str,
-    start_time: &str,
-    created_by: i64,
-) -> Result<(), sqlx::Error> {
-    let start = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .ok()
-        .zip(crate::series::parse_hhmm(start_time))
-        .and_then(|(day, time)| crate::series::berlin_to_utc(day.and_time(time)));
-    let Some(start) = start else {
-        return Ok(());
-    };
-    sqlx::query(
-        "INSERT OR IGNORE INTO announcements (show_id, slot, channel, state, \
-           anchor_offset_minutes, scheduled_at, created_by) \
-         VALUES (?, 'onair', 'instagram', 'armed', 0, ?, ?)",
-    )
-    .bind(show_id)
-    .bind(to_db_time(start))
-    .bind(created_by)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
 /// One announcement with a send time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Booked {
