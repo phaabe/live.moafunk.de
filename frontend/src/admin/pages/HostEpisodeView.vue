@@ -17,7 +17,7 @@ const props = defineProps<{ show: ShowDetail }>();
 const show = toRef(props, 'show');
 /** Where each announcement slot is; no text, image or error. */
 const slots = ref<AnnouncementStatus[]>([]);
-const { now, phase, recording, segments } = useEpisode(show, slots);
+const { now, phase, recording, segments, step } = useEpisode(show, slots);
 
 watch(
   () => props.show.id,
@@ -40,10 +40,22 @@ watch(
     >
     <EpisodeHeading :show="show" :phase="phase" :segments="segments" />
     <div class="ep-cards">
-      <SoundcheckCard :show="show" :phase="phase" :now="now" read-only />
-      <ShowTimeCard :show="show" :phase="phase" :now="now" read-only />
-      <EpisodeRecordingCard :show="show" :phase="phase" :recording="recording" read-only />
-      <PromotionCard :show="show" :phase="phase" :announcements="slots" read-only />
+      <PromotionCard
+        :show="show"
+        :phase="phase"
+        :state="step(0)"
+        :announcements="slots"
+        read-only
+      />
+      <SoundcheckCard :show="show" :phase="phase" :state="step(1)" :now="now" read-only />
+      <ShowTimeCard :show="show" :phase="phase" :state="step(2)" :now="now" read-only />
+      <EpisodeRecordingCard
+        :show="show"
+        :phase="phase"
+        :state="step(3)"
+        :recording="recording"
+        read-only
+      />
     </div>
   </div>
 </template>

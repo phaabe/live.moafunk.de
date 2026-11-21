@@ -13,17 +13,20 @@ import {
   untilStart,
   type EpisodePhase,
   type Status,
+  type StepState,
 } from './phase';
 
-// Show time card (during the show): the countdown, then On air with its clock
-// and Back to On Air, then the aired time. A pre-recorded set reads "Plays at
-// 12:00".
+// Show time card (step 3, during the show): the countdown, then On air with
+// its clock and Back to On Air, then the aired time. A pre-recorded set reads
+// "Plays at 12:00".
 
 const LISTEN = 'https://live.moafunk.de';
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
+  /** Where the Show time step is. */
+  state: StepState;
   now: number;
   /** Another host's episode: status and the public stream link only. */
   readOnly?: boolean;
@@ -53,12 +56,7 @@ const status = computed<Status>(() => {
 </script>
 
 <template>
-  <EpisodeCard
-    title="Show time"
-    phase="During the show"
-    :status="status"
-    :current="phase === 'live'"
-  >
+  <EpisodeCard title="Show time" :step="3" :state="state" :status="status">
     <template #icon><BoardIcon name="broadcast" :size="16" /></template>
 
     <!-- On air (or playing): the clock since the start. -->

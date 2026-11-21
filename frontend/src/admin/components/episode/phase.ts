@@ -6,8 +6,8 @@ import { berlinToUtcDate, nextDayDateStr } from '../../showTime';
 
 /**
  * The episode page's three phases (#1052): Pre-show › Show time › Post-show.
- * One layout for all of them; the phase decides which card is current and
- * how far the progress bar is filled.
+ * One layout for all of them. The phase (and, before the show, the social
+ * media setup) decides which of the four steps is current.
  */
 export type EpisodePhase = 'pre' | 'live' | 'post';
 
@@ -116,10 +116,20 @@ export interface PostSteps {
   postSent: boolean;
 }
 
+/** Set-up and sent slots of the two posts before the show (pre-announcement, on-air story). */
+export interface SocialSetup {
+  ready: number;
+  sent: number;
+}
+
+export type StepState = 'done' | 'now' | 'next';
+
 export interface Segment {
-  name: 'Pre-show' | 'Show time' | 'Post-show';
-  state: 'done' | 'now' | 'next';
-  /** 0–100: how much of the part is filled. */
+  name: 'Set up social media' | 'Soundcheck' | 'Show time' | 'Publish recording';
+  /** The name on phones. */
+  short: string;
+  state: StepState;
+  /** 0–100: how far the step is. */
   fill: number;
   label: string;
 }
@@ -130,34 +140,59 @@ export interface ProgressInput {
   phase: EpisodePhase;
   /** The Studio soundcheck passed in this browser tab (it is not saved). */
   tested: boolean;
+  social: SocialSetup;
   steps: PostSteps;
 }
 
 const clamp = (n: number) => Math.round(Math.min(Math.max(n, 0), 100));
 
 /**
- * Progress bar option A: three equal parts. Done parts are full and green,
- * the current part fills: Pre-show by the time from Studio open to the start,
- * Show time by the time on air of the show length, Post-show by its done steps.
+ * The four steps of an episode, in the order of its cards: Set up social
+ * media › Soundcheck › Show time › Publish recording. Steps before the
+ * current one are done, the ones after it are next. Before the show, Set up
+ * social media is current until both posts are set up or the Studio opens.
+ * The current step fills: social media by its set-up posts, Soundcheck by the
+ * time from Studio open to the start, Show time by the time on air of the
+ * show length, Publish recording by its done steps.
  */
-export function progress({ show, now, phase, tested, steps }: ProgressInput): Segment[] {
+export function progress({ show, now, phase, tested, social, steps }: ProgressInput): Segment[] {
   const { openMs } = episodeTimes(show);
   const prerecorded = show.stream_mode === 'prerecorded';
-  const order: EpisodePhase[] = ['pre', 'live', 'post'];
-  const at = order.indexOf(phase);
-  const state = (p: EpisodePhase): Segment['state'] =>
-    order.indexOf(p) < at ? 'done' : p === phase ? 'now' : 'next';
+  const studioOpen = openMs !== null && now >= openMs;
+  let at: number;
+  if (phase === 'live') at = 2;
+  else if (phase === 'post') at = 3;
+  else at = social.ready >= 2 || studioOpen ? 1 : 0;
+  const state = (i: number): StepState => (i < at ? 'done' : i === at ? 'now' : 'next');
+
+  const setup: Segment = {
+    name: 'Set up social media',
+    short: 'Social',
+    state: state(0),
+    fill: at > 0 ? 100 : clamp((social.ready / 2) * 100),
+    label:
+      social.sent >= 2
+        ? '2 posts sent'
+        : social.ready >= 2
+          ? '2 posts ready'
+          : `${social.ready} of 2 posts ready`,
+  };
 
   let preLabel: string;
-  if (phase === 'pre') preLabel = `starts ${untilStart(show, now)}`;
+  if (at === 1) preLabel = `starts ${untilStart(show, now)}`;
   else if (prerecorded) preLabel = show.prerecorded_filename ? 'set uploaded' : 'no set';
   else if (tested) preLabel = 'tested';
   else preLabel = openMs === null ? 'done' : `Studio from ${berlinTime(openMs)}`;
   const pre: Segment = {
-    name: 'Pre-show',
-    state: state('pre'),
+    name: 'Soundcheck',
+    short: 'Soundcheck',
+    state: state(1),
     fill:
-      phase !== 'pre' ? 100 : openMs === null ? 0 : clamp(((now - openMs) / STUDIO_OPENS_MS) * 100),
+      at > 1
+        ? 100
+        : at < 1 || openMs === null
+          ? 0
+          : clamp(((now - openMs) / STUDIO_OPENS_MS) * 100),
     label: preLabel,
   };
 
@@ -165,7 +200,8 @@ export function progress({ show, now, phase, tested, steps }: ProgressInput): Se
   const aired = airedSecs(show);
   const live: Segment = {
     name: 'Show time',
-    state: state('live'),
+    short: 'Show time',
+    state: state(2),
     fill: phase === 'pre' ? 0 : phase === 'post' ? 100 : air.fill,
     label:
       phase === 'live'
@@ -190,10 +226,11 @@ export function progress({ show, now, phase, tested, steps }: ProgressInput): Se
       : `${done.length} of 3${done.length ? ` · ${done[done.length - 1]}` : ''}`;
   }
   const post: Segment = {
-    name: 'Post-show',
-    state: phase === 'post' && finished ? 'done' : state('post'),
+    name: 'Publish recording',
+    short: 'Publish',
+    state: phase === 'post' && finished ? 'done' : state(3),
     fill: phase !== 'post' ? 0 : finished ? 100 : clamp((done.length / 3) * 100),
     label: postLabel,
   };
-  return [pre, live, post];
+  return [setup, pre, live, post];
 }

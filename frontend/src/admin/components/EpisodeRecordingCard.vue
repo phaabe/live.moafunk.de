@@ -5,10 +5,11 @@ import { showsApi, type ShowDetail } from '../api';
 import AudioPlayer from './AudioPlayer.vue';
 import EpisodeCard from './episode/EpisodeCard.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
-import type { EpisodePhase, Status } from './episode/phase';
+import type { EpisodePhase, Status, StepState } from './episode/phase';
 import type { RecordingPill } from './episode/useEpisode';
 
-// Recording & SoundCloud card of the episode page (post-show, #1052): where the
+// Recording & SoundCloud card of the episode page (step 4 Publish recording,
+// post-show, #1052): where the
 // recording is, its player, the SoundCloud track and its link. A picked file
 // uploads at once and becomes the episode recording; Upload to SoundCloud
 // sends it as a private track. Only an admin upload starts SoundCloud on its
@@ -18,6 +19,8 @@ import type { RecordingPill } from './episode/useEpisode';
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
+  /** Where the Publish recording step is. */
+  state: StepState;
   /** Where the recording is, as the Wrap-up says it. */
   recording: RecordingPill;
   /** An admin turned SoundCloud off. */
@@ -155,9 +158,9 @@ async function switchPublic() {
   <EpisodeCard
     title="Recording & SoundCloud"
     short="Recording"
-    phase="Post-show"
+    :step="4"
+    :state="state"
     :status="status"
-    :current="phase === 'post' && show.episode_status !== 'finished'"
     class="recording"
   >
     <template #icon><EpisodeIcon name="cloud" /></template>

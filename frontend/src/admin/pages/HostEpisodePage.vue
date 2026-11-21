@@ -34,9 +34,10 @@ import {
   slotState,
 } from '../promotion';
 
-// The host's own episode on one path (/shows/<id>), #1052: a heading box and
-// four status cards (Soundcheck, Show time, Recording & SoundCloud, Social
-// media) in one layout for pre-show, on air and post-show. The flow screens
+// The host's own episode on one path (/shows/<id>), #1052: a heading box with
+// the four steps and one status card per step (Social media, Soundcheck, Show
+// time, Recording & SoundCloud) in one layout for pre-show, on air and
+// post-show. The flow screens
 // `wrapup` and `done` stay their own screens on the same path. Another host's
 // episode gets the same page read-only (HostEpisodeView).
 
@@ -71,7 +72,7 @@ const backTo = computed(() =>
 const tested = computed(
   () => !!show.value && hostFlow.showId.value === show.value.id && hostFlow.liveTestPassed.value
 );
-const { now, phase, recording, segments } = useEpisode(show, announcements, tested);
+const { now, phase, recording, segments, step } = useEpisode(show, announcements, tested);
 
 const studioOpen = computed(() => {
   if (!show.value) return false;
@@ -332,9 +333,20 @@ async function publish() {
       </EpisodeHeading>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
       <div class="ep-cards">
+        <PromotionCard
+          :show="show"
+          :phase="phase"
+          :state="step(0)"
+          :announcements="announcements"
+          :paused="paused"
+          :instagram-off="!services.instagram"
+          @changed="reloadPromotion"
+          @compose="openComposer"
+        />
         <SoundcheckCard
           :show="show"
           :phase="phase"
+          :state="step(1)"
           :now="now"
           :tested="tested"
           :busy="busy"
@@ -344,6 +356,7 @@ async function publish() {
         <ShowTimeCard
           :show="show"
           :phase="phase"
+          :state="step(2)"
           :now="now"
           :busy="busy"
           @open-studio="openStudio"
@@ -351,20 +364,12 @@ async function publish() {
         <EpisodeRecordingCard
           :show="show"
           :phase="phase"
+          :state="step(3)"
           :recording="recording"
           :soundcloud-off="!services.soundcloud"
           @uploaded="load(false)"
           @changed="load(false)"
           @open-wrapup="view = 'wrapup'"
-        />
-        <PromotionCard
-          :show="show"
-          :phase="phase"
-          :announcements="announcements"
-          :paused="paused"
-          :instagram-off="!services.instagram"
-          @changed="reloadPromotion"
-          @compose="openComposer"
         />
       </div>
     </template>

@@ -6,16 +6,19 @@ import { episodeDay, setLength } from '../../episodeRow';
 import AudioPlayer from '../AudioPlayer.vue';
 import BoardIcon from '../BoardIcon.vue';
 import EpisodeCard from './EpisodeCard.vue';
-import { berlinTime, episodeTimes, type EpisodePhase, type Status } from './phase';
+import { berlinTime, episodeTimes, type EpisodePhase, type Status, type StepState } from './phase';
 
-// Soundcheck card (pre-show). Live: the Studio and Open Studio. Pre-recorded:
-// the uploaded set with Replace file, or Upload your set. The Studio does not
-// save the test result, so the card says "tested" only for a soundcheck passed
-// in this browser tab.
+// Soundcheck card (step 2, pre-show). Live: the Studio and Open Studio.
+// Pre-recorded: the uploaded set with Replace file, or Upload your set. The
+// Studio does not save the test result, so the card says "tested" only for a
+// soundcheck passed in this browser tab. Its main button is yellow only while
+// Soundcheck is the current step.
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
+  /** Where the Soundcheck step is. */
+  state: StepState;
   now: number;
   /** The soundcheck passed in this tab. */
   tested?: boolean;
@@ -31,7 +34,7 @@ const openMs = computed(() => episodeTimes(props.show).openMs);
 const studioOpen = computed(
   () => !!props.show.on_air || (openMs.value !== null && props.now >= openMs.value)
 );
-const current = computed(() => props.phase === 'pre');
+const variant = computed(() => (props.state === 'now' ? 'primary' : 'secondary'));
 
 /** "brunchtime-0811.mp3 · 1:58:40" */
 const setFile = computed(() => {
@@ -65,7 +68,7 @@ const status = computed<Status>(() => {
 </script>
 
 <template>
-  <EpisodeCard title="Soundcheck" phase="Pre-show" :status="status" :current="current">
+  <EpisodeCard title="Soundcheck" :step="2" :state="state" :status="status">
     <template #icon><BoardIcon name="headphones" :size="16" /></template>
 
     <template v-if="prerecorded">
@@ -118,6 +121,7 @@ const status = computed<Status>(() => {
         <BaseButton
           v-else
           class="xl"
+          :variant="variant"
           :disabled="busy || !show.series_slug"
           @click="emit('replaceFile')"
         >
@@ -127,6 +131,7 @@ const status = computed<Status>(() => {
       <BaseButton
         v-else
         class="xl"
+        :variant="variant"
         :disabled="!studioOpen"
         :loading="busy"
         @click="emit('openStudio')"

@@ -10,8 +10,8 @@ import EpisodeProgress from './EpisodeProgress.vue';
 import { timeRange, type EpisodePhase, type Segment } from './phase';
 
 // Heading box of the episode page (#1052): cover, date and time, title,
-// description, status, mode and hosts as read-only text, then the progress
-// bar. Edit (the episode's hosts, before the start) turns it into the form.
+// description, status, mode and hosts as read-only text, then the four step
+// icons. Edit (the episode's hosts, before the start) turns it into the form.
 
 const props = defineProps<{
   show: ShowDetail;

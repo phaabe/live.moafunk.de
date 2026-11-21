@@ -20,10 +20,10 @@ import {
 import BoardIcon from './BoardIcon.vue';
 import EpisodeCard from './episode/EpisodeCard.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
-import type { EpisodePhase, Status, Tone } from './episode/phase';
+import type { EpisodePhase, Status, StepState, Tone } from './episode/phase';
 
-// Social media card of the episode page (all phases, #1052): the three
-// Instagram slots on a timeline. Each starts as "Not set up"; nothing goes
+// Social media card of the episode page (step 1 Set up social media, #1052):
+// the three Instagram slots on a timeline. Each starts as "Not set up"; nothing goes
 // out until a host sets it up in the post widget (`compose`). A set-up slot
 // shows a small picture of the post, a sent one its link. Other hosts see the
 // status, links and the pictures of sent posts, without buttons.
@@ -33,6 +33,8 @@ type Row = Announcement | AnnouncementStatus;
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
+  /** Where the Set up social media step is. */
+  state: StepState;
   announcements: Row[];
   /** An admin has paused all posting. */
   paused?: boolean;
@@ -251,7 +253,8 @@ function dotOf(tone: Tone, todo: boolean, canSetUp: boolean): { tone: string; ic
   <EpisodeCard
     title="Social media"
     short="Social"
-    phase="All phases"
+    :step="1"
+    :state="state"
     :status="summary"
     class="promotion"
   >
