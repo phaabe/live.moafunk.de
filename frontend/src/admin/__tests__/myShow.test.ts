@@ -4,7 +4,8 @@ import { createPinia } from 'pinia';
 import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
-import { showFacts } from '../components/my-show/showFacts';
+import { coverCountdown, showFacts } from '../components/my-show/showFacts';
+import { getBerlinNowISO } from '../showTime';
 import type { Series, UpcomingEpisode } from '../api';
 
 // My Show (#1050): read mode, edit mode, the discard prompt and ?edit=<slug>.
@@ -193,6 +194,21 @@ describe('My Show read mode', () => {
     await mount();
     expect(facts(card('Brunchtime'))[0]).toBe('Next episode | So 04.01. · 12:00–14:00');
     expect(facts(card('UNHEARD'))[0]).toBe('Next episode | None booked');
+  });
+
+  it('puts "in n days" on the cover when the next episode is a week away or less', async () => {
+    const today = getBerlinNowISO().slice(0, 10);
+    const inDays = (n: number) =>
+      new Date(Date.parse(today) + n * 86_400_000).toISOString().slice(0, 10);
+    mySeries = [BRUNCHTIME, UNHEARD, { ...UNHEARD, id: 5, slug: 'later', name: 'Later' }];
+    upcoming = [
+      { ...BRUNCH_31, date: inDays(3) },
+      { ...BRUNCH_31, id: 40, series_slug: 'later', date: inDays(8) },
+    ];
+    await mount();
+    expect(card('Brunchtime').querySelector('.cover .soon')?.textContent).toBe('in 3 days');
+    expect(card('UNHEARD').querySelector('.soon')).toBeNull();
+    expect(card('Later').querySelector('.soon')).toBeNull();
   });
 
   it('still shows the cards when the episodes cannot load', async () => {
@@ -384,14 +400,14 @@ describe('My Show grid', () => {
 describe('showFacts', () => {
   it('keeps the same three facts in the same order for every Show', () => {
     expect(showFacts(BRUNCHTIME, BRUNCH_31)).toEqual([
-      { label: 'Next episode', value: 'So 04.01. · 12:00–14:00' },
+      { label: 'Next episode', value: 'So 04.01. · 12:00–14:00', tone: 'accent' },
       { label: 'Rhythm', value: 'Every week · Sundays · 12:00–14:00' },
       { label: 'Instagram', value: '@brunchtime' },
     ]);
     expect(showFacts(UNHEARD, null)).toEqual([
-      { label: 'Next episode', value: 'None booked' },
+      { label: 'Next episode', value: 'None booked', tone: 'muted' },
       { label: 'Rhythm', value: 'No fixed rhythm' },
-      { label: 'Instagram', value: 'Not set' },
+      { label: 'Instagram', value: 'Not set', tone: 'muted' },
     ]);
   });
 
@@ -399,6 +415,28 @@ describe('showFacts', () => {
     expect(showFacts(BRUNCHTIME, undefined)[0]).toEqual({
       label: 'Next episode',
       value: 'Could not load',
+      tone: 'muted',
     });
+  });
+});
+
+describe('coverCountdown', () => {
+  const on = (date: string) => ({ ...BRUNCH_31, date });
+
+  it('counts calendar days up to a week, with Today and Tomorrow', () => {
+    expect(coverCountdown(on('2026-11-22'), '2026-11-22')).toBe('Today');
+    expect(coverCountdown(on('2026-11-23'), '2026-11-22')).toBe('Tomorrow');
+    expect(coverCountdown(on('2026-11-25'), '2026-11-22')).toBe('in 3 days');
+    expect(coverCountdown(on('2026-11-29'), '2026-11-22')).toBe('in 7 days');
+    // Across the switch to winter time and the turn of the year.
+    expect(coverCountdown(on('2026-10-27'), '2026-10-24')).toBe('in 3 days');
+    expect(coverCountdown(on('2027-01-02'), '2026-12-30')).toBe('in 3 days');
+  });
+
+  it('has no label beyond a week, in the past or without an episode', () => {
+    expect(coverCountdown(on('2026-11-30'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(on('2026-11-21'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(null, '2026-11-22')).toBeNull();
+    expect(coverCountdown(undefined, '2026-11-22')).toBeNull();
   });
 });

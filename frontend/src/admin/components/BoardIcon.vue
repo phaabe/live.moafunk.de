@@ -37,6 +37,9 @@ const PATHS = {
   chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
   grid: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
   send: 'M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z',
+  // #1050 My Show
+  instagram:
+    'M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5zM16 11.4A4 4 0 1 1 12.6 8a4 4 0 0 1 3.4 3.4zM17.5 6.5h.01',
 } as const;
 
 withDefaults(defineProps<{ name: keyof typeof PATHS; size?: number }>(), { size: 18 });
