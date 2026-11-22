@@ -1,4 +1,4 @@
-import type { Series, SeriesEpisode, SeriesHost } from '../../api';
+import type { Series, SeriesEpisode, SeriesHost, SeriesSlot } from '../../api';
 import { berlinToUtcDate, nextDayDateStr } from '../../showTime';
 
 // Pure helpers of the show detail page (#/shows/<slug>, issue 1051).
@@ -91,4 +91,55 @@ export function soundcloudLabel(state: SeriesEpisode['soundcloud']): string | nu
   if (state === 'public') return 'Public on SoundCloud';
   if (state === 'private') return 'Private on SoundCloud';
   return null;
+}
+
+/** One date of the Schedule card: a booked episode or a free slot. */
+export type ScheduleItem =
+  | { kind: 'episode'; key: string; date: string; episode: SeriesEpisode }
+  | { kind: 'free'; key: string; date: string; slot: SeriesSlot };
+
+/** Upcoming episodes and free slots in one list, soonest first. */
+export function scheduleItems(
+  upcoming: readonly SeriesEpisode[],
+  slots: readonly SeriesSlot[]
+): ScheduleItem[] {
+  const items: ScheduleItem[] = [
+    ...upcoming.map((episode) => ({
+      kind: 'episode' as const,
+      key: `e${episode.id}`,
+      date: episode.date,
+      episode,
+    })),
+    ...slots.map((slot) => ({
+      kind: 'free' as const,
+      key: `f${slot.date} ${slot.start_time}`,
+      date: slot.date,
+      slot,
+    })),
+  ];
+  const at = (i: ScheduleItem) =>
+    `${i.date} ${(i.kind === 'episode' ? i.episode.start_time : i.slot.start_time) ?? ''}`;
+  return items.sort((a, b) => at(a).localeCompare(at(b)));
+}
+
+/** The countdown split for the card: "Starts in" + "2 days 4 h", "On air now" + "until 14:00". */
+export function countdownParts(
+  e: SeriesEpisode,
+  now: number
+): { label: string; value: string } | null {
+  const text = countdown(e, now);
+  if (!text) return null;
+  if (text.startsWith('Starts in ')) return { label: 'Starts in', value: text.slice(10) };
+  const [label, value = ''] = text.split(' · ');
+  return { label, value };
+}
+
+/** "AT" for "Antons Test Show": the cover tile of a Show without a cover. */
+export function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join('');
 }

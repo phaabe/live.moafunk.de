@@ -35,6 +35,21 @@ export type Badge =
   | 'wait' // not yet
   | 'rec'; // recording
 
+/** Badge glyphs (24 px grid); `fill` draws a dot instead of a line. */
+export const BADGE: Record<Badge, { d: string; fill?: boolean }> = {
+  todo: { d: 'M12 6v12M6 12h12' },
+  sched: { d: 'M12 6v6l4 2' },
+  approve: { d: 'M7 4h10l-5 8 5 8H7l5-8z' },
+  lock: { d: 'M7 11h10v9H7zM9 11V8a3 3 0 0 1 6 0v3' },
+  ok: { d: 'M20 6L9 17l-5-5' },
+  fail: { d: 'M7 7l10 10M17 7L7 17' },
+  off: { d: 'M7 17L17 7' },
+  run: { d: 'M12 4a8 8 0 1 1-8 8' },
+  warn: { d: 'M12 6v7M12 17.5v.5' },
+  wait: { d: '' },
+  rec: { d: 'M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8z', fill: true },
+};
+
 export type TabIcon =
   | 'megaphone'
   | 'story'

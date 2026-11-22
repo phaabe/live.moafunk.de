@@ -9,9 +9,12 @@ import ShowCreatePage from '../pages/ShowCreatePage.vue';
 import ShowSeriesPage from '../pages/ShowSeriesPage.vue';
 import {
   countdown,
+  countdownParts,
   hostsLine,
+  initials,
   nextStep,
   rhythmText,
+  scheduleItems,
   splitEpisodes,
   timeLeft,
 } from '../components/show-page/showPage';
@@ -239,7 +242,7 @@ const rowParts = (row: Element | null) =>
 
 /** Rows of an episodes card: text, link and the chevron (mine) or eye (read-only). */
 const rows = (kind: 'upcoming' | 'past') =>
-  [...root.querySelectorAll(`.${kind}-episodes li`)].map((li) => ({
+  [...root.querySelectorAll(`.${kind}-episodes > li`)].map((li) => ({
     text: rowParts(li.querySelector('.board-row')),
     href: li.querySelector('a')?.getAttribute('href') ?? null,
   }));
@@ -389,6 +392,37 @@ describe('Show page helpers', () => {
     expect(nextStep(live, Date.parse(ON_AIR))).toBe('The Studio is open.');
   });
 
+  it('put episodes and free slots in one schedule, soonest first', () => {
+    const { upcoming } = splitEpisodes(BRUNCHTIME.episodes);
+    const items = scheduleItems(upcoming, [slot('2026-11-15'), slot('2026-11-01')]);
+    expect(items.map((i) => `${i.kind} ${i.date}`)).toEqual([
+      'episode 2026-10-25',
+      'free 2026-11-01',
+      'episode 2026-11-08',
+      'free 2026-11-15',
+    ]);
+    expect(scheduleItems([], [])).toEqual([]);
+  });
+
+  it('split the countdown for the Schedule card', () => {
+    const next = BRUNCHTIME.episodes[1];
+    expect(countdownParts(next, Date.parse(FRIDAY))).toEqual({
+      label: 'Starts in',
+      value: '2 days 4 h',
+    });
+    expect(countdownParts(next, Date.parse(ON_AIR))).toEqual({
+      label: 'On air now',
+      value: 'until 14:00',
+    });
+    expect(countdownParts({ ...next, start_time: null }, Date.parse(FRIDAY))).toBeNull();
+  });
+
+  it('take the initials of a Show without a cover', () => {
+    expect(initials('Antons Test Show')).toBe('AT');
+    expect(initials('brunchtime')).toBe('B');
+    expect(initials('  ')).toBe('');
+  });
+
   it('write the rhythm and the hosts', () => {
     expect(rhythmText(BRUNCHTIME)).toBe('Every week · Sundays · 12:00–14:00');
     expect(rhythmText(NIGHT)).toBe('Every other Tuesday · 20:00–22:00');
@@ -399,20 +433,46 @@ describe('Show page helpers', () => {
   });
 });
 
+/** The Schedule card's tiles as the flow check reads them: "So 25.10. · Next". */
+const tiles = () =>
+  [...root.querySelectorAll('.schedule .tile')].map((t) =>
+    (t.textContent ?? '').replace(/\s+/g, ' ').trim()
+  );
+
+/** A part of the selected date in the Schedule card. */
+const shown = (selector: string) =>
+  root.querySelector(`.schedule .detail ${selector}`)?.textContent?.trim() ?? null;
+
+/** The Instagram icons of a card part: label and badge. */
+const posts = (scope: Element | null) =>
+  [...(scope?.querySelectorAll('.post-icons .post') ?? [])].map(
+    (p) => `${p.getAttribute('aria-label')} [${p.querySelector('.bdg')?.classList[1]}]`
+  );
+
+function tile(text: string): HTMLButtonElement {
+  const found = [...root.querySelectorAll('.schedule .tile')].find(
+    (t) => (t.textContent ?? '').replace(/\s+/g, ' ').trim() === text
+  );
+  if (!found) throw new Error(`No tile "${text}"`);
+  return found as HTMLButtonElement;
+}
+
 describe('Show page (owner)', () => {
   it('shows the Show card read-only, with Edit opening My Show in edit mode', async () => {
     const router = await mount('host', '/shows/brunchtime');
     const card = root.querySelector('.show-card');
     expect(card?.querySelector('h1')?.textContent).toBe('Brunchtime');
-    const text = card?.textContent ?? '';
+    const text = (card?.textContent ?? '').replace(/\s+/g, ' ');
     for (const part of [
       'Sunday brunch sounds, every week from 12:00.',
-      'Every week · Sundays · 12:00–14:00',
-      '@brunchtime',
+      'Rhythm: Every week · Sundays · 12:00–14:00',
       'Host: lena',
+      'Instagram: @brunchtime',
     ]) {
       expect(text).toContain(part);
     }
+    // No cover yet: its initials stand in.
+    expect(card?.querySelector('.cover-initials')?.textContent).toBe('B');
     // Read-only: no form fields on this page.
     expect(root.querySelectorAll('input, textarea, select')).toHaveLength(0);
     expect(root.querySelector('.back-link')?.textContent).toBe('< My Show');
@@ -423,27 +483,75 @@ describe('Show page (owner)', () => {
     );
   });
 
-  it('counts down to the next episode and opens it', async () => {
+  it('puts episodes and free slots in one strip and selects the next episode', async () => {
     const router = await mount('host', '/shows/brunchtime');
-    const next = root.querySelector('.next-episode');
-    expect(next?.querySelector('.next-day')?.textContent).toBe('So 25.10.');
-    expect(next?.querySelector('.next-slot')?.textContent).toBe('12:00–14:00 · Live');
-    expect(next?.querySelector('.next-count')?.textContent).toBe('Starts in 2 days 4 h');
-    expect(next?.querySelector('.next-hint')?.textContent).toBe(
-      'Test your audio in the Studio before air time.'
-    );
+    expect(tiles()).toEqual([
+      'So 25.10. · Next',
+      'So 01.11. · Free',
+      'So 08.11. · Pre-rec',
+      'So 15.11. · Free',
+    ]);
+    expect(root.querySelector('.schedule .tile.sel')?.textContent).toContain('25.10.');
+    expect(shown('.eyebrow')).toBe('Next episode');
+    expect(shown('.day')).toBe('So 25.10.');
+    expect(shown('.meta')).toBe('12:00–14:00 · Live');
+    expect(shown('.hint')).toBe('Test your audio in the Studio before air time.');
+    expect(shown('.count-label')).toBe('Starts in');
+    expect(shown('.count-value')).toBe('2 days 4 h');
     // The page's one yellow button.
     expect(root.querySelectorAll('button.variant-primary')).toHaveLength(1);
     button('Open episode').click();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
   });
 
-  it('lists upcoming and past episodes with their recording state', async () => {
+  it('shows another episode of the strip without countdown or next step', async () => {
+    const router = await mount('host', '/shows/brunchtime');
+    tile('So 08.11. · Pre-rec').click();
+    await nextTick();
+    expect(shown('.eyebrow')).toBe('Upcoming episode');
+    expect(shown('.meta')).toBe('12:00–14:00 · Pre-recorded');
+    expect(shown('.count-value')).toBeNull();
+    expect(shown('.hint')).toBeNull();
+    button('Open episode').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/43'));
+  });
+
+  it('books a free slot from the strip, or any date', async () => {
+    const router = await mount('host', '/shows/brunchtime');
+    tile('So 01.11. · Free').click();
+    await nextTick();
+    expect(shown('.eyebrow')).toBe('Free slot');
+    expect(shown('.meta')).toBe('12:00–14:00 · not booked yet');
+    button('Book this date').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book?date=2026-11-01')
+    );
+    await router.push('/shows/brunchtime');
+    await settle();
+    button('Book another date').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book')
+    );
+  });
+
+  it("shows the selected episode's Instagram posts as on the episode page", async () => {
+    brunchtime.episodes[1].instagram = [
+      { slot: 'pre', state: 'scheduled', scheduled_at: '2026-10-23T16:00:00Z', sent_at: null },
+    ];
     await mount('host', '/shows/brunchtime');
-    expect(rows('upcoming')).toEqual([
-      { text: 'So 25.10. · 12:00–14:00 · Live | Upcoming', href: '/shows/42' },
-      { text: 'So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming', href: '/shows/43' },
+    expect(posts(root.querySelector('.schedule .detail'))).toEqual([
+      'Pre-announcement: Scheduled · Fr 23.10. · 18:00 [sched]',
+      'On-air story: Not set up [todo]',
+      'Post-announcement: Not set up [todo]',
     ]);
+  });
+
+  it('lists past episodes with their recording state and Instagram posts', async () => {
+    brunchtime.episodes[3].instagram = [
+      { slot: 'pre', state: 'sent', scheduled_at: null, sent_at: '2026-10-09T16:00:00Z' },
+      { slot: 'onair', state: 'failed', scheduled_at: null, sent_at: null },
+    ];
+    await mount('host', '/shows/brunchtime');
     expect(rows('past')).toEqual([
       {
         text: 'So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open',
@@ -454,63 +562,70 @@ describe('Show page (owner)', () => {
         href: '/shows/40',
       },
     ]);
-    expect(chips('upcoming')).toEqual(['mine', 'mine']);
     expect(chips('past')).toEqual(['wrapup', '']);
-    expect(root.querySelectorAll('.upcoming-episodes .row-icon.read-only')).toHaveLength(0);
-  });
-
-  it('lists the free slots of the rhythm; Book and Book Slot open Book Slot', async () => {
-    const router = await mount('host', '/shows/brunchtime');
-    const free = [...root.querySelectorAll('.free-slots li')].map((li) =>
-      rowParts(li.querySelector('.board-row')).replace(/ \| Book$/, '')
-    );
-    expect(free).toEqual(['So 01.11. | · 12:00–14:00 Free', 'So 15.11. | · 12:00–14:00 Free']);
-
-    (root.querySelector('.free-slots li button') as HTMLButtonElement).click();
-    await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book?date=2026-11-01')
-    );
-    await router.push('/shows/brunchtime');
-    await settle();
-    button('Book Slot').click();
-    await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book')
-    );
+    const rowsEl = root.querySelectorAll('.past-episodes > li');
+    expect(posts(rowsEl[1])).toEqual([
+      'Pre-announcement: Sent · Fr 09.10. · 18:00 [ok]',
+      'On-air story: Failed · Instagram did not take the post. [fail]',
+      'Post-announcement: Not set up [todo]',
+    ]);
   });
 
   it('shows at most three free slots', async () => {
     slots = ['2026-11-01', '2026-11-15', '2026-11-22', '2026-11-29'].map(slot);
     await mount('host', '/shows/brunchtime');
-    expect(root.querySelectorAll('.free-slots li')).toHaveLength(3);
+    expect(tiles().filter((t) => t.endsWith('Free'))).toHaveLength(3);
   });
 
   it('says so when the free slots cannot load', async () => {
     slotsFail = true;
     await mount('host', '/shows/brunchtime');
-    expect(root.querySelector('.free-slots [role="alert"]')?.textContent).toBe(
+    expect(root.querySelector('.schedule [role="alert"]')?.textContent).toBe(
       'Could not load the free slots.'
     );
-    // The rest of the page still works.
-    expect(rows('upcoming')).toHaveLength(2);
+    // The episodes still show.
+    expect(tiles()).toEqual(['So 25.10. · Next', 'So 08.11. · Pre-rec']);
   });
 
-  it('has no next episode and says so when nothing is booked', async () => {
+  it('selects the first free slot when nothing is booked', async () => {
     brunchtime.episodes = brunchtime.episodes.filter((e) => e.status !== 'upcoming');
     await mount('host', '/shows/brunchtime');
-    expect(root.querySelector('.next-episode')).toBeNull();
-    expect(root.querySelector('.episodes-card.upcoming')?.textContent).toContain(
-      'No upcoming episodes.'
-    );
+    expect(tiles()).toEqual(['So 01.11. · Free', 'So 15.11. · Free']);
+    expect(shown('.eyebrow')).toBe('Free slot');
+    expect(shown('.day')).toBe('So 01.11.');
     expect(rows('past')).toHaveLength(2);
   });
 
-  it('offers Book Slot without slots for a Show with no fixed rhythm', async () => {
+  it('shows one date without a strip', async () => {
     brunchtime.rhythm = null;
     brunchtime.rhythm_line = null;
+    brunchtime.episodes = brunchtime.episodes.filter((e) => e.id !== 43);
     await mount('host', '/shows/brunchtime');
-    expect(root.textContent).toContain('No fixed rhythm. Book Slot picks any free date.');
-    expect(buttons()).toContain('Book Slot');
+    expect(tiles()).toEqual([]);
+    expect(shown('.day')).toBe('So 25.10.');
+    expect(root.querySelector('.show-card')?.textContent).toContain('No fixed rhythm');
+  });
+
+  it('offers any date for a Show with no fixed rhythm and nothing booked', async () => {
+    brunchtime.rhythm = null;
+    brunchtime.rhythm_line = null;
+    brunchtime.episodes = brunchtime.episodes.filter((e) => e.status !== 'upcoming');
+    await mount('host', '/shows/brunchtime');
+    expect(root.querySelector('.schedule')?.textContent).toContain(
+      'No fixed rhythm. Book another date picks any free date.'
+    );
+    expect(buttons()).toContain('Book another date');
     expect(requests).not.toContain('/api/series/brunchtime/slots');
+  });
+
+  it('shows the next episode on air', async () => {
+    vi.setSystemTime(new Date(ON_AIR));
+    await mount('host', '/shows/brunchtime');
+    expect(tiles()[0]).toBe('So 25.10. · On air');
+    expect(shown('.eyebrow')).toBe('On air now');
+    expect(shown('.hint')).toBe('The Studio is open.');
+    expect(shown('.count-label')).toBe('On air now');
+    expect(shown('.count-value')).toBe('until 14:00');
   });
 
   it('sends a host away from a Show that does not exist', async () => {
@@ -520,36 +635,33 @@ describe('Show page (owner)', () => {
 });
 
 describe('Show page (another host)', () => {
-  it('is read-only: no Edit, no free slots, rows open the episode read-only', async () => {
+  it('is read-only: no Edit, no free slots, episodes open read-only', async () => {
     const router = await mount('host', '/shows/night-shift');
     expect(root.querySelector('h1')?.textContent).toBe('Night Shift');
-    expect(root.querySelector('.show-card')?.textContent).toContain('Host: jonas');
+    const card = (root.querySelector('.show-card')?.textContent ?? '').replace(/\s+/g, ' ');
+    expect(card).toContain('Host: jonas');
+    expect(card).toContain('Instagram: Not linked');
+    expect(root.querySelector('.cover-initials')?.textContent).toBe('NS');
     expect(root.querySelector('.back-link')?.textContent).toBe('< Dashboard');
     const offered = buttons();
-    for (const absent of ['Edit', 'Book Slot', 'Book', 'Open episode']) {
+    for (const absent of ['Edit', 'Book another date', 'Book this date', 'Open episode']) {
       expect(offered).not.toContain(absent);
     }
-    expect(root.querySelector('.free-slots')).toBeNull();
     expect(requests).not.toContain('/api/series/night-shift/slots');
 
-    // Next episode: date and countdown, no next step.
-    const next = root.querySelector('.next-episode');
-    expect(next?.querySelector('.next-day')?.textContent).toBe('Di 27.10.');
-    expect(next?.querySelector('.next-count')?.textContent).toBe('Starts in 4 days 12 h');
-    expect(next?.querySelector('.next-hint')).toBeNull();
+    // One date: no strip. Date and countdown, no next step.
+    expect(tiles()).toEqual([]);
+    expect(shown('.day')).toBe('Di 27.10.');
+    expect(shown('.count-value')).toBe('4 days 12 h');
+    expect(shown('.hint')).toBeNull();
     expect(root.querySelectorAll('button.variant-primary')).toHaveLength(0);
 
-    expect(rows('upcoming')).toEqual([
-      { text: 'Di 27.10. · 20:00–22:00 · Live | Upcoming', href: '/shows/44' },
-    ]);
     expect(rows('past')).toEqual([
       {
         text: 'Di 13.10. · 20:00–22:00 · Live | Finished · Private on SoundCloud',
         href: '/shows/39',
       },
     ]);
-    expect(chips('upcoming')).toEqual(['']);
-    expect(root.querySelectorAll('.upcoming-episodes .row-icon.read-only')).toHaveLength(1);
     expect(root.querySelectorAll('.past-episodes .row-icon.read-only')).toHaveLength(1);
 
     button('View episode').click();
@@ -559,7 +671,7 @@ describe('Show page (another host)', () => {
   it('lets an admin book but not edit (Edit lives on the host page My Show)', async () => {
     await mount('admin', '/shows/brunchtime');
     const offered = buttons();
-    expect(offered).toContain('Book Slot');
+    expect(offered).toContain('Book another date');
     expect(offered).not.toContain('Edit');
     expect(root.querySelector('.back-link')?.textContent).toBe('< Shows');
   });
@@ -624,7 +736,7 @@ describe('flow', () => {
 
   it('Show matches the flow (owner, nothing on air)', async () => {
     await mount('host', '/shows/brunchtime');
-    await vi.waitFor(() => expect(root.querySelectorAll('.free-slots li')).toHaveLength(2));
+    await vi.waitFor(() => expect(tiles()).toHaveLength(4));
     await expectFlow('show', root);
   });
 
@@ -634,7 +746,7 @@ describe('flow', () => {
     streamActive = true;
     await mount('host', '/shows/brunchtime');
     await vi.waitFor(() => expect(root.querySelector('a.on-air-strip')).not.toBeNull());
-    await vi.waitFor(() => expect(root.querySelectorAll('.free-slots li')).toHaveLength(2));
+    await vi.waitFor(() => expect(tiles()).toHaveLength(4));
     await expectFlow('schedule', root);
   });
 });

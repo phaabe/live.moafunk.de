@@ -222,10 +222,7 @@
         "row: So 25.10. · Live | Upcoming",
         "row: So 18.10. · Live | Finished · wrap-up open",
         "row: So 11.10. · Pre-recorded | Finished",
-        "h2: Upcoming episodes",
         "h2: Past episodes",
-        "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
-        "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
         "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
         "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
       ],
@@ -234,14 +231,19 @@
     {
       "screen": "show",
       "items": [
-        "h2: Next episode",
         "button: Open episode",
-        "h2: Free slots",
-        "button: Book",
-        "row: So 01.11. | · 12:00–14:00 Free",
-        "row: So 15.11. | · 12:00–14:00 Free"
+        "button: Book Slot",
+        "h2: Schedule",
+        "button: Book another date",
+        "button: So 25.10. · Next",
+        "button: So 01.11. · Free",
+        "button: So 08.11. · Pre-rec",
+        "button: So 15.11. · Free",
+        "row: Rhythm: | Every week · Sundays · 12:00–14:00",
+        "row: Host: | lena",
+        "row: Instagram: | @brunchtime"
       ],
-      "why": "Redesign #1051 (approved in the issue): new Next episode card (countdown, next step, Open episode) and, from Schedule, Free slots with Book for the owner. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1051 (design D1, approved in the issue): one Schedule card replaces Next episode, Upcoming episodes and Free slots: a strip of dates (booked, free) and the selected date below with Open episode or Book this date; Book Slot reads Book another date; the Show card lists Rhythm, Host(s) and Instagram. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "schedule",
@@ -251,14 +253,10 @@
         "row: So 25.10. · Brunchtime | Upcoming · Live",
         "row: So 08.11. · Brunchtime | Upcoming · Pre-recorded",
         "h1: Brunchtime",
-        "h2: Next episode",
-        "h2: Upcoming episodes",
         "h2: Past episodes",
         "button: Edit",
         "button: Open episode",
         "link: < My Show",
-        "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
-        "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
         "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
         "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
       ],
@@ -275,10 +273,20 @@
     {
       "screen": "schedule",
       "items": [
-        "button: Book Slot",
-        "button: Book"
+        "h2: Free slots",
+        "row: So 01.11. · 12:00–14:00 | Free",
+        "row: So 15.11. · 12:00–14:00 | Free",
+        "h2: Schedule",
+        "button: Book another date",
+        "button: So 25.10. · On air",
+        "button: So 01.11. · Free",
+        "button: So 08.11. · Pre-rec",
+        "button: So 15.11. · Free",
+        "row: Rhythm: | Every week · Sundays · 12:00–14:00",
+        "row: Host: | lena",
+        "row: Instagram: | @brunchtime"
       ],
-      "why": "Redesign #1051 (approved in the issue): each free slot has Book; Book Slot in the Free slots header books other dates (owner only). Update the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1051 (design D1, approved in the issue): one Schedule card replaces Next episode, Upcoming episodes and Free slots: a strip of dates (booked, free) and the selected date below with Open episode or Book this date; Book Slot reads Book another date; the Show card lists Rhythm, Host(s) and Instagram. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "schedule",
