@@ -635,7 +635,7 @@
         "button: 3 · Show time · in 5 days · until 12:00",
         "button: 4 · Recording"
       ],
-      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "episode-pre",
@@ -646,7 +646,7 @@
         "button: 3 · Show time · in 7 days · until 12:00",
         "button: 4 · Recording"
       ],
-      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "episode-pre-nofile",
@@ -657,7 +657,7 @@
         "button: 3 · Show time · in 7 days · until 12:00",
         "button: 4 · Recording"
       ],
-      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

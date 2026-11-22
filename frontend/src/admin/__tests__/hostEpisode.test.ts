@@ -537,10 +537,15 @@ describe('Episode', () => {
     const { useHostFlow } = await import('../composables');
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      // 12:01 in Berlin: the start passed, so Show time is current and holds the Studio.
+      // 12:01 in Berlin: the start passed, so Show time is current; its card leads to the Studio.
       vi.setSystemTime(new Date(`${FUTURE}T11:01:00Z`));
       await mount();
       expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
+      expect(shownCards()).toEqual(['Show time']);
+      expect(root.querySelector('.studio-stub')).toBeNull();
+      button('Open Studio').click();
+      await settle();
+      expect(tabs()[1].selected).toBe(true);
       await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
       // Go Live: this browser tab streams the episode now.
       live.showId = 42;
@@ -548,6 +553,7 @@ describe('Episode', () => {
       await settle();
       expect(shown('.onair-stub')).toBe(true);
       expect(root.querySelector('.onair-stub')?.textContent).toContain('Live panel · embedded');
+      expect(tabs()[2].selected).toBe(true);
       expect(root.querySelector('.studio-stub')).toBeNull();
       expect(tabClock()).toEqual({ clock: '00:01:00', sub: 'of 2:00:00' });
       expect(badges(3)[0]).toBe('Recording: on air');
@@ -583,7 +589,7 @@ describe('Episode', () => {
     }
   });
 
-  it('while on air without audio from this tab, opens the Studio in Show time to go back on air', async () => {
+  it('while on air without audio from this tab, leads from Show time to the Studio to go back on air', async () => {
     const { useHostFlow } = await import('../composables');
     current = episode({ on_air: true });
     try {
@@ -594,6 +600,12 @@ describe('Episode', () => {
       expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
       expect(cardStatus('Show time')).toBe('On air');
       expect(cardStatus('Recording & SoundCloud')).toBe('Rec');
+      // No soundcheck Studio in Show time: Back to On Air opens it in the Soundcheck tab.
+      expect(shownCards()).toEqual(['Show time']);
+      expect(root.querySelector('.studio-stub')).toBeNull();
+      button('Back to On Air').click();
+      await settle();
+      expect(tabs()[1].selected).toBe(true);
       await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
       expect(root.querySelector('.onair-stub')).toBeNull();
     } finally {
@@ -601,7 +613,7 @@ describe('Episode', () => {
     }
   });
 
-  it('opens the Studio in the Show time tab when the start passed and nobody is live', async () => {
+  it('keeps the Studio out of Show time when the start passed and nobody is live', async () => {
     const { useHostFlow } = await import('../composables');
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -611,9 +623,15 @@ describe('Episode', () => {
       expect(currentCards()).toEqual(['Show time']);
       expect(cardStatus('Show time')).toBe('Not on air yet');
       expect(text()).toContain('Show time · until 14:00');
-      expect(tabClock()).toEqual({ clock: '00:00:00', sub: 'not on air yet' });
+      expect(tabClock()).toEqual({ clock: '00:10:00', sub: 'not on air yet' });
+      expect(shownCards()).toEqual(['Show time']);
+      expect(card('Show time').querySelector('button')?.textContent?.trim()).toBe('Open Studio');
+      expect(root.querySelector('.studio-stub')).toBeNull();
+      // The Soundcheck tab holds the Studio, also after the start.
+      tab(1).click();
+      await settle();
       await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
-      expect(card('Soundcheck').querySelector('button')).toBeNull();
+      expect(shownCards()).toEqual([]);
     } finally {
       vi.useRealTimers();
       useHostFlow().reset();
@@ -912,7 +930,8 @@ describe('Episode · phone', () => {
     try {
       await mount();
       expect(tabs()[2].selected).toBe(true);
-      await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
+      expect(shownCards()).toEqual(['Show time']);
+      expect(root.querySelector('.studio-stub')).toBeNull();
     } finally {
       useHostFlow().reset();
     }

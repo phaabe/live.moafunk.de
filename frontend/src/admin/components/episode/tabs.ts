@@ -174,7 +174,9 @@ export function showClock(
   }
   const { startMs } = episodeTimes(show);
   if (startMs === null) return { kind: 'pre', clock: '', sub: '' };
-  if (phase === 'live') return { kind: 'pre', clock: fmtClock(0), sub: 'not on air yet' };
+  // The start passed, nobody is live: the time since the start, as the Show time card says it.
+  if (phase === 'live')
+    return { kind: 'pre', clock: elapsed(show, now).clock, sub: 'not on air yet' };
   const left = startMs - now;
   const clock = left < 24 * 60 * 60 * 1000 ? fmtClock(left) : untilStart(show, now);
   return { kind: 'pre', clock, sub: show.start_time ? `until ${show.start_time}` : '' };

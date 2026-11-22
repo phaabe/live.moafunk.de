@@ -45,9 +45,10 @@ import {
 // The host's own episode on one path (/shows/<id>), #1052: a heading box, then
 // the four steps as tab tiles (Social media, Soundcheck, Show time, Recording)
 // above one main card, in one layout for pre-show, on air and post-show. The
-// Studio and the live panel open inside the page as the Soundcheck or Show
-// time tab. The flow screens `wrapup` and `done` stay their own screens on the
-// same path. Another host's episode gets the cards read-only (HostEpisodeView).
+// Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab;
+// the live panel is the Show time tab while this browser tab is live. The flow
+// screens `wrapup` and `done` stay their own screens on the same path. Another
+// host's episode gets the cards read-only (HostEpisodeView).
 
 const FlowLive = defineAsyncComponent(() => import('./flow/FlowLive.vue'));
 const StudioOnAir = defineAsyncComponent(() => import('./flow/StudioOnAir.vue'));
@@ -234,10 +235,9 @@ const studioAllowed = computed(() => {
     !otherLive.value
   );
 });
-/** The Studio is the selected tab's page: Soundcheck before the start, Show time from it. */
-const studioTab = computed(
-  () => studioAllowed.value && tab.value === (phase.value === 'pre' ? 1 : 2)
-);
+/** The Studio (soundcheck, input, Go Live) is the Soundcheck tab's page, also after the start.
+ * Show time shows only the live panel; until then its card leads here. */
+const studioTab = computed(() => studioAllowed.value && tab.value === 1);
 /** The live panel is the Show time page while this browser tab is live. */
 const onAirHere = computed(() => liveHere.value && hostFlow.showId.value === show.value?.id);
 
@@ -472,13 +472,13 @@ async function publish() {
           @replace-file="replaceFile"
         />
         <ShowTimeCard
-          v-show="tab === 2 && !studioTab && !onAirHere"
+          v-show="tab === 2 && !onAirHere"
           :show="show"
           :phase="phase"
           :state="step(2)"
           :now="now"
           :busy="busy"
-          @open-studio="picked = 2"
+          @open-studio="picked = 1"
         />
         <EpisodeRecordingCard
           v-show="tab === 3"

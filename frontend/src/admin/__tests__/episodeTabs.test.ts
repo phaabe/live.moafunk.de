@@ -119,7 +119,11 @@ describe('showClock', () => {
       clock: '00:42:00',
       sub: 'of 2:00:00',
     });
-    expect(showClock(show(), 'live', berlin(25, 12, 10), false).sub).toBe('not on air yet');
+    expect(showClock(show(), 'live', berlin(25, 12, 10), false)).toEqual({
+      kind: 'pre',
+      clock: '00:10:00',
+      sub: 'not on air yet',
+    });
     const aired = show({
       latest_recording: { id: 1, version: 'v1', status: 'raw', duration_ms: 7120000 },
     } as Partial<ShowDetail>);
