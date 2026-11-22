@@ -104,7 +104,8 @@ describe('Studio gate', () => {
     });
     const next = await gate(studioGate, '2026-11-15T11:30:00Z', { show: '7' });
     expect(stub.selectShow).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }));
-    expect(stub.setLiveTestPassed).toHaveBeenCalledWith(false);
+    // The soundcheck tests this browser's setup: another episode keeps it.
+    expect(stub.setLiveTestPassed).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith();
   });
 

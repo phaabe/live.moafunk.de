@@ -290,7 +290,6 @@ async function selectForStudio(): Promise<boolean> {
       mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     }
     if (!mine) throw new Error('This episode is not assigned to you');
-    if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
     return true;

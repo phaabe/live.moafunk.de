@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import {
   useHostFlow,
   useAudioCapture,
@@ -7,6 +7,7 @@ import {
   useUploadHealth,
   useDbMeter,
   useSoundcheck,
+  studioSoundcheckResult,
   createReturnFeed,
   getStreamSocketStats,
   STREAM_AUDIO_BITS_PER_SECOND,
@@ -69,13 +70,20 @@ function onDeviceChange() {
   audioCapture.listDevices();
 }
 
+/** The captured input still sends: not unplugged, its screen share not stopped. */
+const inputLive = () =>
+  audioCapture.isCapturing.value &&
+  !!audioCapture.mediaStream.value?.getAudioTracks().some((t) => t.readyState === 'live');
+
 onMounted(async () => {
+  // A soundcheck result from an earlier visit counts only while its input still sends.
+  if (props.studio && !props.inputOnly) forgetLostInput();
   // First refresh prompts for permission so device labels are populated.
   await audioCapture.refreshDevices();
   // The capture singleton persists across navigations; mirror a still-active
   // device in the dropdown instead of showing "no input selected".
   const activeId = audioCapture.selectedDeviceId.value;
-  if (audioCapture.isCapturing.value && activeId && (props.studio || activeId !== 'screen')) {
+  if (inputLive() && activeId && (props.studio || activeId !== 'screen')) {
     selectedDevice.value = activeId;
   }
   navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
@@ -279,25 +287,47 @@ const noReturn: ReturnFeed = {
   close: () => {},
 };
 
-const soundcheck = useSoundcheck({
-  inputLevel: () =>
-    audioCapture.isCapturing.value && sentStream.value
-      ? { rmsDb: sentMeter.db.value, peakDb: sentMeter.peakDb.value }
-      : null,
-  inputLabel: () => capturedLabel.value,
-  startBroadcast,
-  stopBroadcast: stopTestBroadcast,
-  broadcastError: () => (testPhase.value === 'error' ? testError.value : null),
-  sentChunks: () => sentChunks.value,
-  // Counted by the server and sent back with each pong: proof that audio arrived.
-  serverChunks: () => getStreamSocketStats().serverChunks,
-  openReturn: () => {
-    if (!previewUrl) return noReturn;
-    returnContext ??= new AudioContext();
-    return createReturnFeed(previewUrl, returnContext);
+const soundcheck = useSoundcheck(
+  {
+    inputLevel: () =>
+      audioCapture.isCapturing.value && sentStream.value
+        ? { rmsDb: sentMeter.db.value, peakDb: sentMeter.peakDb.value }
+        : null,
+    inputLabel: () => capturedLabel.value,
+    startBroadcast,
+    stopBroadcast: stopTestBroadcast,
+    broadcastError: () => (testPhase.value === 'error' ? testError.value : null),
+    sentChunks: () => sentChunks.value,
+    // Counted by the server and sent back with each pong: proof that audio arrived.
+    serverChunks: () => getStreamSocketStats().serverChunks,
+    openReturn: () => {
+      if (!previewUrl) return noReturn;
+      returnContext ??= new AudioContext();
+      return createReturnFeed(previewUrl, returnContext);
+    },
+    setPassed: (passed) => flow.setLiveTestPassed(passed),
   },
-  setPassed: (passed) => flow.setLiveTestPassed(passed),
-});
+  // The Studio's result stays for this browser tab, also when the host leaves the page.
+  props.studio ? studioSoundcheckResult : undefined
+);
+
+// The input is lost (unplugged, screen share stopped): the result goes, and
+// Audio input reads "Select audio input", so the same input can be picked again.
+function forgetLostInput() {
+  if (inputLive()) return;
+  selectedDevice.value = '';
+  soundcheck.reset();
+  flow.setLiveTestPassed(false);
+}
+let inputTracks: MediaStreamTrack[] = [];
+function watchInput(stream: MediaStream | null) {
+  for (const t of inputTracks) t.removeEventListener('ended', forgetLostInput);
+  inputTracks = stream?.getAudioTracks() ?? [];
+  for (const t of inputTracks) t.addEventListener('ended', forgetLostInput);
+}
+if (props.studio && !props.inputOnly) {
+  watch(() => audioCapture.mediaStream.value, watchInput, { immediate: true });
+}
 
 const STATE_LABELS: Record<SoundcheckStepState, string> = {
   pending: 'Waiting',
@@ -330,6 +360,7 @@ const isDev = import.meta.env.DEV;
 
 onUnmounted(() => {
   navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+  watchInput(null);
   if (deviceRefreshInterval) {
     clearInterval(deviceRefreshInterval);
     deviceRefreshInterval = null;

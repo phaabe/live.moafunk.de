@@ -25,6 +25,7 @@ export { useAudioMeter } from './useAudioMeter';
 export { useDbMeter, dbToLevel, DB_FLOOR, DB_CEIL } from './useDbMeter';
 export {
   useSoundcheck,
+  studioSoundcheckResult,
   createReturnFeed,
   formatDb,
   type ReturnFeed,

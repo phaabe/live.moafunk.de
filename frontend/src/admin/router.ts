@@ -98,7 +98,7 @@ async function selectFlowShow(query: LocationQuery): Promise<string | null> {
       mine = flow.shows.value.find((s) => s.id === wanted);
     }
     if (!mine) return `/shows/${wanted}`;
-    flow.setLiveTestPassed(false);
+    // The soundcheck result stays: it tests this browser's setup, not the episode.
     // The flow hands out readonly copies; selectShow only stores it.
     flow.selectShow(mine as MyShowInfo);
   }
