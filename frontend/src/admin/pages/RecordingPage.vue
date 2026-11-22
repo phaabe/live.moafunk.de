@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { streamApi } from '../api';
 import { BaseButton } from '@shared/components';
 import AudioPlayer from '../components/AudioPlayer.vue';
-import { useFlash, useStreamSocket, useAudioCapture, useAudioMeter, useRecordingSession, useFinalizeProgress } from '../composables';
+import { useFlash, useStreamSocket, useAudioCapture, useAudioMeter, useRecordingSession, useFinalizeProgress, liveStreamShowId } from '../composables';
 
 const flash = useFlash();
 
@@ -40,28 +40,40 @@ const lastRecordingVersion = ref<string | null>(null);
 // Stream status
 const streamActive = ref(false);
 
-// Composables for audio capture (reused from StreamPage)
-const streamSocket = useStreamSocket({
-  onLive: () => {
-    audioCapture.startRecording();
-    flash.success('Stream connected');
-  },
-  onDisconnected: () => {
-    audioCapture.stopRecording();
-  },
-  onError: (err) => {
-    flash.error(err);
-  },
-});
+// This tab may already be live from the On Air or episode page. Then this page
+// leaves that broadcast alone: it takes neither the socket's nor the recorder's
+// callbacks (any useStreamSocket() call replaces them), and starts or stops nothing.
+// shortcut: decided once on open; if that broadcast ends meanwhile, reopen the page to stream from here.
+const liveElsewhere = liveStreamShowId() !== null;
 
-const audioCapture = useAudioCapture({
-  onData: (data) => {
-    streamSocket.send(data);
-  },
-  onError: (err) => {
-    flash.error(err);
-  },
-});
+// Composables for audio capture (reused from StreamPage)
+const streamSocket = liveElsewhere
+  ? null
+  : useStreamSocket({
+      onLive: () => {
+        audioCapture.startRecording();
+        flash.success('Stream connected');
+      },
+      onDisconnected: () => {
+        audioCapture.stopRecording();
+      },
+      onError: (err) => {
+        flash.error(err);
+      },
+    });
+
+const audioCapture = useAudioCapture(
+  liveElsewhere
+    ? {}
+    : {
+        onData: (data) => {
+          streamSocket?.send(data);
+        },
+        onError: (err) => {
+          flash.error(err);
+        },
+      }
+);
 
 // Use processedStream so the meter reflects the volume slider setting
 const audioMeter = useAudioMeter(audioCapture.processedStream);
@@ -69,7 +81,7 @@ const audioMeter = useAudioMeter(audioCapture.processedStream);
 // Computed
 const canStartRecording = computed(() =>
   recording.selectedShow.value !== null &&
-  streamSocket.state.value === 'live' &&
+  streamSocket?.state.value === 'live' &&
   !recording.isRecording.value
 );
 
@@ -166,6 +178,7 @@ async function handleDeviceSelect() {
 }
 
 async function handleStartStream() {
+  if (!streamSocket) return;
   if (!audioCapture.isCapturing.value) {
     flash.error('No audio source selected');
     return;
@@ -174,6 +187,7 @@ async function handleStartStream() {
 }
 
 function handleStopStream() {
+  if (!streamSocket) return;
   if (recording.isRecording.value) {
     flash.error('Stop recording first before stopping the stream');
     return;
@@ -187,7 +201,8 @@ let statusInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(async () => {
   await Promise.all([
     recording.loadShows(),
-    audioCapture.refreshDevices(),
+    // Its errors would go to the live broadcast's recorder callback.
+    liveElsewhere ? null : audioCapture.refreshDevices(),
     checkStreamStatus(),
     recording.checkRecordingStatus(),
   ]);
@@ -196,6 +211,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (statusInterval) clearInterval(statusInterval);
+  // A broadcast from another page goes on.
+  if (!streamSocket) return;
   // Explicitly stop stream on page unmount (standalone page, not part of multi-step flow)
   streamSocket.stopStream();
   audioCapture.stopCapture();
@@ -213,59 +230,65 @@ onUnmounted(() => {
       <div class="control-panel card">
         <h2>Stream Controls</h2>
 
-        <!-- Stream Status -->
-        <div class="status-indicator">
-          <div :class="['status-dot', streamSocket.state.value]"></div>
-          <span class="status-text">
-            {{ streamSocket.state.value === 'live' ? 'Live' :
-              streamSocket.state.value === 'connecting' ? 'Connecting...' :
-                'Disconnected' }}
-          </span>
-        </div>
+        <template v-if="streamSocket">
+          <!-- Stream Status -->
+          <div class="status-indicator">
+            <div :class="['status-dot', streamSocket.state.value]"></div>
+            <span class="status-text">
+              {{ streamSocket.state.value === 'live' ? 'Live' :
+                streamSocket.state.value === 'connecting' ? 'Connecting...' :
+                  'Disconnected' }}
+            </span>
+          </div>
 
-        <!-- Audio Level Meter -->
-        <div v-if="audioCapture.isCapturing.value" class="audio-level">
-          <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
-        </div>
+          <!-- Audio Level Meter -->
+          <div v-if="audioCapture.isCapturing.value" class="audio-level">
+            <div class="audio-level-bar" :style="{ width: `${audioMeter.level.value}%` }"></div>
+          </div>
 
-        <!-- Input Volume Control -->
-        <div v-if="audioCapture.isCapturing.value" class="volume-control">
-          <label class="volume-label">
-            <span class="volume-icon">🔊</span>
-            <span>Input: {{ Math.round(audioCapture.inputVolume.value * 100) }}%</span>
-          </label>
-          <input type="range" min="0" max="200" :value="audioCapture.inputVolume.value * 100"
-            @input="audioCapture.setInputVolume(Number(($event.target as HTMLInputElement).value) / 100)"
-            class="volume-slider" />
-        </div>
-        <!-- Device Selection -->
-        <div v-if="!audioCapture.isCapturing.value && streamSocket.state.value !== 'live'" class="device-section">
-          <label for="device-select">Audio Source:</label>
-          <select id="device-select" v-model="selectedDevice" class="device-select">
-            <option value="">-- Select device --</option>
-            <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
-              {{ device.label }}
-            </option>
-          </select>
-          <BaseButton variant="ghost" size="sm" @click="audioCapture.refreshDevices()">
-            🔄
-          </BaseButton>
-          <BaseButton variant="primary" size="sm" @click="handleDeviceSelect">
-            Use Device
-          </BaseButton>
-        </div>
+          <!-- Input Volume Control -->
+          <div v-if="audioCapture.isCapturing.value" class="volume-control">
+            <label class="volume-label">
+              <span class="volume-icon">🔊</span>
+              <span>Input: {{ Math.round(audioCapture.inputVolume.value * 100) }}%</span>
+            </label>
+            <input type="range" min="0" max="200" :value="audioCapture.inputVolume.value * 100"
+              @input="audioCapture.setInputVolume(Number(($event.target as HTMLInputElement).value) / 100)"
+              class="volume-slider" />
+          </div>
+          <!-- Device Selection -->
+          <div v-if="!audioCapture.isCapturing.value && streamSocket.state.value !== 'live'" class="device-section">
+            <label for="device-select">Audio Source:</label>
+            <select id="device-select" v-model="selectedDevice" class="device-select">
+              <option value="">-- Select device --</option>
+              <option v-for="device in audioCapture.devices.value" :key="device.deviceId" :value="device.deviceId">
+                {{ device.label }}
+              </option>
+            </select>
+            <BaseButton variant="ghost" size="sm" @click="audioCapture.refreshDevices()">
+              🔄
+            </BaseButton>
+            <BaseButton variant="primary" size="sm" @click="handleDeviceSelect">
+              Use Device
+            </BaseButton>
+          </div>
 
-        <!-- Stream Buttons -->
-        <div class="stream-buttons">
-          <BaseButton v-if="audioCapture.isCapturing.value && streamSocket.state.value === 'disconnected'"
-            variant="primary" @click="handleStartStream">
-            ▶️ Start Stream
-          </BaseButton>
-          <BaseButton v-if="streamSocket.state.value === 'live'" variant="secondary" @click="handleStopStream"
-            :disabled="recording.isRecording.value">
-            ⏹️ Stop Stream
-          </BaseButton>
-        </div>
+          <!-- Stream Buttons -->
+          <div class="stream-buttons">
+            <BaseButton v-if="audioCapture.isCapturing.value && streamSocket.state.value === 'disconnected'"
+              variant="primary" @click="handleStartStream">
+              ▶️ Start Stream
+            </BaseButton>
+            <BaseButton v-if="streamSocket.state.value === 'live'" variant="secondary" @click="handleStopStream"
+              :disabled="recording.isRecording.value">
+              ⏹️ Stop Stream
+            </BaseButton>
+          </div>
+        </template>
+        <p v-else class="help-text">
+          This tab is already live from another page. This page leaves that broadcast alone:
+          change or end it on its live panel.
+        </p>
 
         <hr class="divider" />
 
@@ -326,7 +349,7 @@ onUnmounted(() => {
 
         <p v-if="!canStartRecording && !recording.isRecording.value" class="help-text">
           <template v-if="!recording.selectedShow.value">Select a show to record.</template>
-          <template v-else-if="streamSocket.state.value !== 'live'">Connect to stream first.</template>
+          <template v-else-if="streamSocket && streamSocket.state.value !== 'live'">Connect to stream first.</template>
         </p>
       </div>
 
