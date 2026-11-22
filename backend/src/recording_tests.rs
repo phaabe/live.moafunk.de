@@ -26,7 +26,7 @@ const TRACK_KEY: &str = "artists/1/track1/song.mp3";
 
 /// A 440 Hz tone of `secs` seconds from ffmpeg, encoded with `codec` into
 /// the container `format`.
-async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
+pub(crate) async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
     let output = tokio::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
         .arg(format!(
@@ -47,7 +47,7 @@ async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
 }
 
 /// The length of `data` in seconds, as ffprobe reads it.
-async fn seconds(data: &[u8]) -> f64 {
+pub(crate) async fn seconds(data: &[u8]) -> f64 {
     let file = tempfile::NamedTempFile::new().unwrap();
     tokio::fs::write(file.path(), data).await.unwrap();
     audio::get_duration(file.path()).await.unwrap() as f64 / 1000.0

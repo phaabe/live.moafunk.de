@@ -808,6 +808,33 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Recording editor: one edit per show. `edited_key` is the last good render
+    // (default bucket); it stays while a new render runs or fails. `source_key`
+    // is the original it was made from, so a new recording makes it stale.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recording_edits (
+            show_id INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+            edit_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            error_message TEXT,
+            edited_key TEXT,
+            source_key TEXT,
+            edited_seconds REAL,
+            rendered_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    // A render does not survive a restart; free its lock so Apply works again.
+    sqlx::query(
+        "UPDATE recording_edits SET status = 'failed', \
+             error_message = 'The server restarted during the render. Apply the edit again.' \
+         WHERE status = 'rendering'",
+    )
+    .execute(pool)
+    .await?;
+
     crate::recovery::migrate(pool).await?;
 
     tracing::info!("Database migrations completed");

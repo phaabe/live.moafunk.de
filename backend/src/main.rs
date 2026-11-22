@@ -15,6 +15,7 @@ mod metrics;
 mod models;
 mod pdf;
 mod recording;
+mod recording_edit;
 mod recording_finalizer;
 mod recovery;
 mod recovery_mail;
@@ -119,6 +120,8 @@ pub struct AppState {
     pub telegram_edit_sessions: TelegramEditSessions,
     /// Live-chat bridge hub: Telegram discussion group ⇄ panel WS (#278)
     pub chat_hub: Arc<chat_bridge::ChatHub>,
+    /// Running and failed waveform jobs of the recording editor, by show.
+    pub peaks_jobs: recording_edit::PeaksJobs,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -363,6 +366,7 @@ async fn main() -> anyhow::Result<()> {
         pending_show_notifications,
         telegram_edit_sessions,
         chat_hub: Arc::new(chat_bridge::ChatHub::new()),
+        peaks_jobs: Default::default(),
     });
 
     // One-shot admin subcommands: run against the same config/db/R2 as the server,
@@ -772,6 +776,19 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/recording",
             axum::routing::delete(handlers::api::api_delete_show_recording),
+        )
+        // Recording editor: cut, volume and snippets; renders a new mp3
+        .route(
+            "/api/shows/:id/recording/edit",
+            get(recording_edit::api_get_recording_edit).put(recording_edit::api_put_recording_edit),
+        )
+        .route(
+            "/api/shows/:id/recording/edit/apply",
+            post(recording_edit::api_apply_recording_edit),
+        )
+        .route(
+            "/api/shows/:id/recording/peaks",
+            get(recording_edit::api_get_recording_peaks),
         )
         .route(
             "/api/shows/:id/instagram",

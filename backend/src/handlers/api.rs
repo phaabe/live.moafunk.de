@@ -2061,6 +2061,14 @@ pub struct ShowDetailResponse {
     studio_log: Option<serde_json::Value>,
     /// Listener counts the server took while this episode was on air, oldest first.
     listener_samples: Vec<crate::studio_log::ListenerSample>,
+    /// Recording editor: `draft` | `rendering` | `done` | `failed`; None without an edit.
+    recording_edit_status: Option<String>,
+    /// When the current edited file was rendered.
+    recording_edited_at: Option<String>,
+    /// Presigned edited file, what "Upload to SoundCloud" sends.
+    edited_recording_url: Option<String>,
+    /// Length of the current edited file in seconds (end − start of its edit).
+    recording_edited_seconds: Option<f64>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2876,6 +2884,16 @@ pub async fn api_show_detail(
         }
     };
 
+    // The recording editor's state. A load failure must not break the page.
+    let edit = match crate::recording_edit::view(&state, &show).await {
+        Ok(edit) if edit.status != "none" => Some(edit),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::error!("Failed to load the recording edit for show {}: {e}", id);
+            None
+        }
+    };
+
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
@@ -2965,6 +2983,10 @@ pub async fn api_show_detail(
         live_recorded: view.live_recorded,
         studio_log: crate::studio_log::parse(view.studio_log.as_deref()),
         listener_samples: crate::studio_log::listener_samples(&state.db, id).await?,
+        recording_edited_at: edit.as_ref().and_then(|e| e.rendered_at.clone()),
+        edited_recording_url: edit.as_ref().and_then(|e| e.edited_url.clone()),
+        recording_edited_seconds: edit.as_ref().and_then(|e| e.edited_seconds),
+        recording_edit_status: edit.map(|e| e.status),
     }))
 }
 

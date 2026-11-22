@@ -52,6 +52,7 @@ pub(crate) async fn state_with(overrides: Value) -> (Arc<AppState>, tempfile::Te
         pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         chat_hub: Arc::new(chat_bridge::ChatHub::new()),
+        peaks_jobs: Default::default(),
     });
     (state, temp)
 }
