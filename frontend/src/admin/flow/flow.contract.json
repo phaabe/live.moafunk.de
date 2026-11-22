@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 21,
+  "rev": 22,
   "screens": [
     {
       "id": "dashboard",
@@ -1440,7 +1440,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
       "hash": "06b0ad1a",
-      "notesHash": "22c11896",
+      "notesHash": "92c1aca0",
       "elements": [
         {
           "k": "h1",
@@ -1826,6 +1826,120 @@
           "k": "button",
           "text": "Go back on air",
           "to": "studio-onair",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "onair-bar",
+      "title": "On-air bar",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "38437603",
+      "notesHash": "81863d4a",
+      "elements": [
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10"
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
+        },
+        {
+          "k": "button",
+          "text": "Back to On Air",
+          "to": "studio-onair",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "onair-bar-end",
+          "primary": true
+        },
+        {
+          "k": "media",
+          "text": "The admin page the host opened",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "onair-bar-warn",
+      "title": "On-air bar, warning",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "45c3f7b2",
+      "notesHash": "a0558705",
+      "elements": [
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10"
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
+        },
+        {
+          "k": "notice",
+          "text": "Audio device is no longer active. Re-select your device."
+        },
+        {
+          "k": "button",
+          "text": "Back to On Air",
+          "to": "studio-onair-noinput",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "onair-bar-end",
+          "primary": false
+        },
+        {
+          "k": "media",
+          "text": "The admin page the host opened",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "onair-bar-end",
+      "title": "On-air bar, ending",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "3be5b037",
+      "notesHash": "18daec00",
+      "elements": [
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10"
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
+        },
+        {
+          "k": "text",
+          "text": "End the episode?"
+        },
+        {
+          "k": "button",
+          "text": "Keep on air",
+          "to": "onair-bar",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "wrapup",
           "primary": true
         }
       ]

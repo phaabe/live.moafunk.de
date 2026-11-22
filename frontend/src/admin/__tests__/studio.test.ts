@@ -379,6 +379,33 @@ describe('On Air', () => {
     expect(root.querySelector('select')).toBeNull();
   });
 
+  it('hides the on-air bar while it is on screen (#1063)', async () => {
+    await mountOnAir();
+    const { useLiveSession } = await import('../liveSession');
+    const { panelShown, session } = useLiveSession();
+    expect(session.value?.showId).toBe(7);
+    expect(panelShown.value).toBe(true);
+    // Leaving On Air keeps the session: the bar shows on the next page.
+    app!.unmount();
+    app = null;
+    expect(panelShown.value).toBe(false);
+    expect(session.value?.showId).toBe(7);
+  });
+
+  it('lets the on-air bar show while the episode page shows another tab', async () => {
+    vi.setSystemTime(new Date('2026-11-15T12:42:10Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    const shown = ref(false);
+    await mountPage(
+      defineComponent(() => () => h(StudioOnAir, { embedded: true, shown: shown.value }))
+    );
+    const { panelShown } = (await import('../liveSession')).useLiveSession();
+    expect(panelShown.value).toBe(false);
+    shown.value = true;
+    await nextTick();
+    expect(panelShown.value).toBe(true);
+  });
+
   it('shows REC only while this episode records', async () => {
     mocks.recording = { is_recording: false, show_id: 7 };
     await mountOnAir();

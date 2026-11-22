@@ -5,6 +5,7 @@ import { useAuthStore } from './stores/auth';
 import { NavBar } from '@shared/components';
 import FlashToast from './components/FlashToast.vue';
 import BrowserWarning from './components/BrowserWarning.vue';
+import OnAirBar from './components/live-panel/OnAirBar.vue';
 
 const route = useRoute();
 const authStore = useAuthStore();
@@ -14,7 +15,11 @@ const showNav = computed(() => authStore.isAuthenticated && route.name !== 'logi
 
 <template>
   <div class="admin-app">
-    <NavBar v-if="showNav" />
+    <!-- The on-air bar sticks with the nav bar: a warning stays in sight on a long page. -->
+    <div v-if="showNav" class="shell-top">
+      <NavBar />
+      <OnAirBar />
+    </div>
     <BrowserWarning v-if="showNav" />
     <main class="main-content">
       <router-view v-slot="{ Component, route }">
@@ -28,6 +33,12 @@ const showNav = computed(() => authStore.isAuthenticated && route.name !== 'logi
 </template>
 
 <style scoped>
+.shell-top {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-dropdown);
+}
+
 .main-content {
   max-width: 1400px;
   margin: 0 auto;

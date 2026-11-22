@@ -505,7 +505,7 @@ async function publish() {
           <FlowLive ref="studio" embedded @live="wentLive" />
         </section>
         <section v-if="onAirHere" v-show="tab === 2" class="ep-embed now" aria-label="Live Panel">
-          <StudioOnAir embedded />
+          <StudioOnAir embedded :shown="tab === 2" />
         </section>
       </div>
     </template>

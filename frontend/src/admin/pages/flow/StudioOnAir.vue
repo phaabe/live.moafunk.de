@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue';
+import { computed, onUnmounted, ref, watchEffect } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { useHostFlow, useAudioCapture, DEVICE_ENDED_MESSAGE } from '@admin/composables';
 import { useListeners } from '@admin/composables/useListeners';
 import { recordingApi } from '@admin/api';
 import { config } from '@/config';
-import { AUDIO_DROPPED_MESSAGE, startLiveSession } from '@admin/liveSession';
+import { AUDIO_DROPPED_MESSAGE, startLiveSession, useLiveSession } from '@admin/liveSession';
 import LiveChatCard from '@admin/components/LiveChatCard.vue';
 import LiveAudioCard from '@admin/components/live-panel/LiveAudioCard.vue';
 import LiveConnectionCard from '@admin/components/live-panel/LiveConnectionCard.vue';
@@ -34,8 +34,11 @@ import {
  * `embedded`: the live panel as the Show time tab of the host's episode page
  * (#1052). It has no title. After End Episode the page shows the Wrap-up (it
  * watches the session's end; the page is already on the episode's path).
+ * `shown`: false while the page shows another tab; the on-air bar then shows.
  */
-const props = defineProps<{ embedded?: boolean }>();
+const props = withDefaults(defineProps<{ embedded?: boolean; shown?: boolean }>(), {
+  shown: true,
+});
 const router = useRouter();
 const flow = useHostFlow();
 const audioCapture = useAudioCapture();
@@ -48,6 +51,12 @@ const live = startLiveSession(
 );
 const { now, elapsed, error, inputGone, screenOn, audioDropped } = live;
 const { health, quality, targetKbps, lastStep, setQuality, connection, downFor } = live;
+
+// The on-air bar hides while this panel is on screen.
+const { panelShown } = useLiveSession();
+watchEffect(() => {
+  panelShown.value = props.shown;
+});
 
 const ending = ref(false);
 
@@ -182,6 +191,7 @@ async function endEpisode() {
 }
 
 onUnmounted(() => {
+  panelShown.value = false;
   if (recordingPoll) clearInterval(recordingPoll);
   navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 });
