@@ -72,16 +72,18 @@ vi.mock('../pages/flow/FlowLive.vue', async () => {
 });
 vi.mock('../pages/flow/StudioOnAir.vue', async () => {
   const { defineComponent, h } = await import('vue');
+  const { useLiveSession } = await import('../liveSession');
   return {
     __esModule: true,
     default: defineComponent({
-      props: { embedded: Boolean },
-      emits: ['ended'],
-      setup(props, { emit }) {
+      props: { embedded: Boolean, shown: { type: Boolean, default: true } },
+      setup(props) {
+        // End Episode ends the live session; the page watches that (episode 42).
+        const end = () => (useLiveSession().ended.value = { showId: 42 });
         return () =>
-          h('div', { class: 'onair-stub' }, [
+          h('div', { class: 'onair-stub', 'data-shown': String(props.shown) }, [
             props.embedded ? 'Live panel · embedded' : 'Live panel',
-            h('button', { type: 'button', onClick: () => emit('ended') }, 'End Episode'),
+            h('button', { type: 'button', onClick: end }, 'End Episode'),
           ]);
       },
     }),
@@ -557,11 +559,13 @@ describe('Episode', () => {
       expect(root.querySelector('.studio-stub')).toBeNull();
       expect(tabClock()).toEqual({ clock: '00:01:00', sub: 'of 2:00:00' });
       expect(badges(3)[0]).toBe('Recording: on air');
-      // Another tab hides the live panel but keeps it running.
+      // Another tab hides the live panel but keeps it running; the on-air bar shows.
+      expect(root.querySelector('.onair-stub')?.getAttribute('data-shown')).toBe('true');
       tab(0).click();
       await settle();
       expect(shown('.onair-stub')).toBe(false);
       expect(root.querySelector('.onair-stub')).not.toBeNull();
+      expect(root.querySelector('.onair-stub')?.getAttribute('data-shown')).toBe('false');
       tab(2).click();
       await settle();
       live.showId = null;

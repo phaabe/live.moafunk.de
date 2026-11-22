@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   audioDropped: null as null | { value: boolean },
   verdict: null as null | { value: string },
   capture: {} as Record<string, unknown>,
+  /** The recorder's onError, as the live session gave it (ownCaptureCallbacks). */
+  captureOnError: null as null | ((message: string) => void),
   flowReset: vi.fn(),
   recording: { is_recording: true, show_id: 7 },
   // On Air's live panel (#1053).
@@ -101,6 +103,14 @@ vi.mock('@admin/composables', async () => {
       berlinToUtcDate: (date: string, time: string) => new Date(`${date}T${time}:00Z`),
     }),
     useAudioCapture: () => mocks.capture,
+    // The live session takes the callbacks; the stubs keep them for the tests.
+    ownStreamCallbacks: (callbacks: typeof mocks.options | null) => {
+      if (callbacks) mocks.options = callbacks;
+    },
+    ownCaptureCallbacks: (callbacks: { onError: (message: string) => void } | null) => {
+      if (callbacks) mocks.captureOnError = callbacks.onError;
+    },
+    streamShowId: () => 7,
     useStreamSocket: (options: typeof mocks.options = {}) => {
       mocks.options = options;
       return {
@@ -369,6 +379,33 @@ describe('On Air', () => {
     expect(root.querySelector('select')).toBeNull();
   });
 
+  it('hides the on-air bar while it is on screen (#1063)', async () => {
+    await mountOnAir();
+    const { useLiveSession } = await import('../liveSession');
+    const { panelShown, session } = useLiveSession();
+    expect(session.value?.showId).toBe(7);
+    expect(panelShown.value).toBe(true);
+    // Leaving On Air keeps the session: the bar shows on the next page.
+    app!.unmount();
+    app = null;
+    expect(panelShown.value).toBe(false);
+    expect(session.value?.showId).toBe(7);
+  });
+
+  it('lets the on-air bar show while the episode page shows another tab', async () => {
+    vi.setSystemTime(new Date('2026-11-15T12:42:10Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    const shown = ref(false);
+    await mountPage(
+      defineComponent(() => () => h(StudioOnAir, { embedded: true, shown: shown.value }))
+    );
+    const { panelShown } = (await import('../liveSession')).useLiveSession();
+    expect(panelShown.value).toBe(false);
+    shown.value = true;
+    await nextTick();
+    expect(panelShown.value).toBe(true);
+  });
+
   it('shows REC only while this episode records', async () => {
     mocks.recording = { is_recording: false, show_id: 7 };
     await mountOnAir();
@@ -499,7 +536,7 @@ describe('On Air', () => {
     it('leaves a gone input to its own notice', async () => {
       await mountOnAir();
       silent();
-      (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](DEVICE_ENDED);
+      mocks.captureOnError!(DEVICE_ENDED);
       await vi.advanceTimersByTimeAsync(15_000);
       expect([...root.querySelectorAll('[role="alert"]')].map((a) => a.textContent)).toEqual([
         DEVICE_ENDED,
@@ -630,9 +667,10 @@ describe('On Air', () => {
       expect(locks).toHaveLength(2);
       expect(chip()).not.toBeNull();
 
+      // Leaving On Air keeps it: the show is still on air (#1063).
       app!.unmount();
       app = null;
-      expect(locks[1].release).toHaveBeenCalled();
+      expect(locks[1].release).not.toHaveBeenCalled();
     });
 
     it('shows nothing when the browser has no wake lock or refuses it', async () => {
@@ -707,8 +745,7 @@ describe('On Air', () => {
 
   describe('when the audio input is gone', () => {
     /** What useAudioCapture calls when the device's track ends on air. */
-    const captureError = (message: string) =>
-      (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](message);
+    const captureError = (message: string) => mocks.captureOnError!(message);
     const inputSelect = () => root.querySelector('select');
     async function pick(value: string) {
       const select = inputSelect()!;
@@ -924,7 +961,7 @@ describe('flow', () => {
 
   it('Studio · On Air, input gone matches the flow', async () => {
     await mountOnAirAt4210();
-    (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](DEVICE_ENDED);
+    mocks.captureOnError!(DEVICE_ENDED);
     await nextTick();
     await expectFlow('studio-onair-noinput', root);
   });

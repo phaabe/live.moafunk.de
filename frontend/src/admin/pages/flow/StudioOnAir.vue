@@ -1,26 +1,12 @@
-<script lang="ts">
-// When the live episode went on air, kept across remounts: leaving On Air
-// does not end the broadcast, and the Studio sends the host back here.
-let onAirSince = null as { showId: number; at: number } | null;
-</script>
-
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watchEffect } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import {
-  useHostFlow,
-  useAudioCapture,
-  useStreamSocket,
-  useUploadHealth,
-  useAutoBitrate,
-  DEVICE_ENDED_MESSAGE,
-  type UploadQualityMode,
-} from '@admin/composables';
-import { useListeners, forgetListeners } from '@admin/composables/useListeners';
-import { useWakeLock } from '@admin/composables/useWakeLock';
+import { useHostFlow, useAudioCapture, DEVICE_ENDED_MESSAGE } from '@admin/composables';
+import { useListeners } from '@admin/composables/useListeners';
 import { recordingApi } from '@admin/api';
 import { config } from '@/config';
+import { AUDIO_DROPPED_MESSAGE, startLiveSession, useLiveSession } from '@admin/liveSession';
 import LiveChatCard from '@admin/components/LiveChatCard.vue';
 import LiveAudioCard from '@admin/components/live-panel/LiveAudioCard.vue';
 import LiveConnectionCard from '@admin/components/live-panel/LiveConnectionCard.vue';
@@ -29,12 +15,9 @@ import LiveMomentsCard from '@admin/components/live-panel/LiveMomentsCard.vue';
 import PanelIcon from '@admin/components/live-panel/PanelIcon.vue';
 import {
   ENDING_SOON_S,
-  formatHms,
   formatLeft,
   slotWindow,
   useMoments,
-  forgetMoments,
-  type ConnectionVerdict,
 } from '@admin/components/live-panel/onAir';
 
 /**
@@ -44,43 +27,47 @@ import {
  * connection keeps this screen while the socket reconnects by itself, and
  * End Episode still works.
  *
+ * The broadcast's state lives in the live session (liveSession.ts, #1063),
+ * not here: it goes on while the host opens other admin pages, and this
+ * screen shows it again when it opens.
+ *
  * `embedded`: the live panel as the Show time tab of the host's episode page
- * (#1052). It has no title, and End Episode tells the page, which then shows
- * the Wrap-up (the page is already on the episode's path).
+ * (#1052). It has no title. After End Episode the page shows the Wrap-up (it
+ * watches the session's end; the page is already on the episode's path).
+ * `shown`: false while the page shows another tab; the on-air bar then shows.
  */
-const props = defineProps<{ embedded?: boolean }>();
-const emit = defineEmits<{ ended: [] }>();
+const props = withDefaults(defineProps<{ embedded?: boolean; shown?: boolean }>(), {
+  shown: true,
+});
 const router = useRouter();
 const flow = useHostFlow();
 const audioCapture = useAudioCapture();
 const showId = flow.showId.value!;
 
-const since = onAirSince?.showId === showId ? onAirSince.at : Date.now();
-onAirSince = { showId, at: since };
+// Go Live started it; this returns it (or starts it, the clock from now).
+const live = startLiveSession(
+  showId,
+  props.embedded ? `/shows/${showId}` : `/stream/on-air?show=${showId}`
+);
+const { now, elapsed, error, inputGone, screenOn, audioDropped } = live;
+const { health, quality, targetKbps, lastStep, setQuality, connection, downFor } = live;
 
-const error = ref<string | null>(null);
+// The on-air bar hides while this panel is on screen.
+const { panelShown } = useLiveSession();
+watchEffect(() => {
+  panelShown.value = props.shown;
+});
+
 const ending = ref(false);
 
-const socket = useStreamSocket({
-  onError: (message) => {
-    error.value = message;
-  },
-});
 // ─── Audio input gone (flow screen `studio-onair-noinput`) ──────────────────
 // The device's track ended: listeners hear silence. The notice and Audio
 // input stay until a new input sends audio. The host can also change the
 // input while it works (Change in the Audio card): the same picker.
-const inputGone = ref(false);
 const picking = ref(false);
-audioCapture.setOnError((message) => {
-  if (message !== DEVICE_ENDED_MESSAGE) {
-    error.value = message;
-    return;
-  }
-  inputGone.value = true;
-  void audioCapture.listDevices();
-});
-// A plugged-in device shows up in the list.
+// A plugged-in device shows up in the list, also one plugged in while the
+// host was on another page.
+if (inputGone.value) void audioCapture.listDevices();
 function onDeviceChange() {
   if (inputGone.value || picking.value) void audioCapture.listDevices();
 }
@@ -99,22 +86,7 @@ async function pickInput(event: Event) {
   // change here does not re-render.
   select.value = '';
   if (!id) return;
-  const ok =
-    id === 'screen'
-      ? await audioCapture.captureScreenAudio()
-      : await audioCapture.captureDevice(id);
-  if (!ok) {
-    error.value = audioCapture.error.value;
-    return;
-  }
-  // A new capture starts at the default rate: keep a fixed upload quality.
-  if (quality.value !== 'auto') audioCapture.setStreamBitsPerSecond(quality.value * 1000);
-  // The capture stopped the old recorder; the new one sends to the same socket.
-  if (audioCapture.startRecording()) {
-    inputGone.value = false;
-    picking.value = false;
-    error.value = null;
-  }
+  if (await live.changeInput(id)) picking.value = false;
 }
 
 const inputLabel = computed(() => {
@@ -124,11 +96,6 @@ const inputLabel = computed(() => {
 });
 
 // ─── On air · hh:mm:ss · REC ────────────────────────────────────────────────
-const now = ref(Date.now());
-const clock = setInterval(() => (now.value = Date.now()), 1000);
-const elapsedSeconds = computed(() => Math.max(0, Math.floor((now.value - since) / 1000)));
-const elapsed = computed(() => formatHms(elapsedSeconds.value));
-
 // REC only while the backend records this episode.
 const recording = ref(false);
 async function pollRecording() {
@@ -169,13 +136,13 @@ const progress = computed(() => {
   return Math.round(Math.max(0, Math.min(1, part)) * 100);
 });
 
-// ─── Wake lock, listeners, moments ──────────────────────────────────────────
-const wakeLock = useWakeLock();
+// ─── Listeners, moments ─────────────────────────────────────────────────────
+// The screen wake lock is the session's (screenOn).
 const listeners = useListeners(showId);
 const monitoring = ref(false);
 const moments = useMoments(showId);
 function markMoment() {
-  moments.mark(elapsedSeconds.value);
+  moments.mark(live.elapsedSeconds.value);
 }
 
 // ─── Audio ──────────────────────────────────────────────────────────────────
@@ -183,59 +150,6 @@ const gain = computed(() => audioCapture.inputVolume.value);
 function setGain(value: number) {
   audioCapture.setInputVolume(value);
 }
-
-// ─── Connection ─────────────────────────────────────────────────────────────
-// The upload telemetry also drives the automatic quality step-down that the
-// old connection card ran, so a weak line still adapts. A fixed quality
-// (Upload quality in the Connection card) switches Auto off.
-const quality = ref<UploadQualityMode>('auto');
-const targetKbps = computed(() => Math.round(audioCapture.streamBitsPerSecond.value / 1000));
-const lastStep = ref<{ from: number; to: number; at: number } | null>(null);
-const health = useUploadHealth(
-  computed(() => socket.state.value === 'live'),
-  audioCapture.streamBitsPerSecond
-);
-useAutoBitrate({
-  mode: quality,
-  currentKbps: targetKbps,
-  bufferSeconds: health.bufferSeconds,
-  ticks: health.ticks,
-  onChange: (kbps) => {
-    lastStep.value = { from: targetKbps.value, to: kbps, at: Date.now() };
-    audioCapture.setStreamBitsPerSecond(kbps * 1000);
-  },
-});
-function setQuality(mode: UploadQualityMode) {
-  if (mode === quality.value) return;
-  quality.value = mode;
-  lastStep.value = null;
-  if (mode !== 'auto') audioCapture.setStreamBitsPerSecond(mode * 1000);
-}
-
-const connection = computed<ConnectionVerdict>(() => {
-  switch (socket.state.value) {
-    case 'live':
-      if (health.verdict.value === 'good') return 'stable';
-      return health.verdict.value === 'tight' ? 'tight' : 'too slow';
-    case 'connecting':
-    case 'connected':
-      return 'reconnecting…';
-    default:
-      return 'lost';
-  }
-});
-
-// How long the socket has been down, for "Reconnecting · 4 s".
-const droppedAt = ref<number | null>(socket.state.value === 'live' ? null : Date.now());
-watch(socket.state, (state) => {
-  if (state === 'live') droppedAt.value = null;
-  else droppedAt.value ??= Date.now();
-});
-const downFor = computed(() => {
-  const s =
-    droppedAt.value === null ? 0 : Math.max(0, Math.floor((now.value - droppedAt.value) / 1000));
-  return s < 60 ? `${s} s` : formatLeft(s);
-});
 
 /** The status bar's problem line: the connection first, then the slot end. */
 const barAlert = computed<{ chip: string; text: string } | null>(() => {
@@ -272,21 +186,12 @@ const barAlert = computed<{ chip: string; text: string } | null>(() => {
 const confirming = ref(false);
 async function endEpisode() {
   ending.value = true;
-  // Send the recorder's last chunk before "stop" closes the stream.
-  await audioCapture.stopRecordingAndFlush();
-  // "stop" ends the stream and the recording on the backend.
-  socket.stopStream();
-  audioCapture.stopCapture();
-  onAirSince = null;
-  forgetListeners();
-  forgetMoments();
-  flow.reset();
-  if (props.embedded) emit('ended');
-  else await router.push({ path: `/shows/${showId}`, state: { episodeEnded: showId } });
+  const id = await live.end();
+  if (!props.embedded) await router.push({ path: `/shows/${id}`, state: { episodeEnded: id } });
 }
 
 onUnmounted(() => {
-  clearInterval(clock);
+  panelShown.value = false;
   if (recordingPoll) clearInterval(recordingPoll);
   navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
 });
@@ -306,7 +211,7 @@ onUnmounted(() => {
           ><span class="rec"><i aria-hidden="true"></i>REC</span></template
         >
       </p>
-      <span v-if="wakeLock.active.value" class="wake-chip"
+      <span v-if="screenOn" class="wake-chip"
         ><PanelIcon name="monitor" :size="14" />Screen stays on</span
       >
       <span v-if="listeners.current.value !== null" class="bar-listeners"
@@ -352,9 +257,7 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <p v-if="socket.audioDropped.value" class="notice warn" role="alert">
-      The connection was down for more than 10 minutes. The recording misses some audio.
-    </p>
+    <p v-if="audioDropped" class="notice warn" role="alert">{{ AUDIO_DROPPED_MESSAGE }}</p>
     <p v-if="error" class="notice bad" role="alert">{{ error }}</p>
 
     <div class="cols">

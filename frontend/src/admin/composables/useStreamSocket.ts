@@ -67,6 +67,22 @@ let currentCallbacks: {
   onError?: (error: string) => void;
   onLive?: () => void;
 } = {};
+// Set while the live session (liveSession.ts) owns the callbacks.
+let callbacksOwned = false;
+
+/**
+ * Give the callbacks to the live session (null lets go). While this tab is
+ * live or reconnecting, other useStreamSocket() calls then keep them: a page
+ * that calls it cannot take them. After a lost connection Go back on air may
+ * take them; the session takes them back when the show is live again.
+ */
+export function ownStreamCallbacks(callbacks: UseStreamSocketOptions | null): void {
+  callbacksOwned = callbacks !== null;
+  if (callbacks) {
+    const { onConnected, onDisconnected, onError, onLive } = callbacks;
+    currentCallbacks = { onConnected, onDisconnected, onError, onLive };
+  }
+}
 
 // ─── Page unload: close the socket without 'stop' ───────────────────────────
 // The server stops the stream on any close. Without 'stop' it treats a reload
@@ -185,6 +201,14 @@ export function liveStreamShowId(): number | null {
   return live ? currentShowId : null;
 }
 
+/**
+ * The show this tab streams: live, reconnecting, or lost and not stopped yet.
+ * Null after stopStream() or cleanup(), and for a test broadcast.
+ */
+export function streamShowId(): number | null {
+  return currentTest ? null : currentShowId;
+}
+
 /** Where a WebM stream's header ends: the offset of its first Cluster, or -1. */
 export function webmHeaderLength(bytes: Uint8Array): number {
   for (let i = 0; i + 3 < bytes.length; i++) {
@@ -275,8 +299,11 @@ export function useStreamSocket(options: UseStreamSocketOptions = {}) {
   // No limit: a live show reconnects until End Episode (stopStream).
   const { maxReconnectAttempts = Infinity, onConnected, onDisconnected, onError, onLive } = options;
 
-  // Update callbacks so the currently-mounted component receives events
-  currentCallbacks = { onConnected, onDisconnected, onError, onLive };
+  // Update callbacks so the currently-mounted component receives events,
+  // unless the live session owns them (ownStreamCallbacks).
+  if (!callbacksOwned || liveStreamShowId() === null) {
+    currentCallbacks = { onConnected, onDisconnected, onError, onLive };
+  }
 
   function connect(
     force = false,

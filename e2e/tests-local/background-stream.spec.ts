@@ -1,7 +1,7 @@
 // The host is on air and opens other admin pages (ticket 1061,
-// https://github.com/phaabe/live.moafunk.de/issues/1061). Does the broadcast
-// keep sending audio, and what does the host still see? This test records
-// how the app behaves today; it is the evidence for that ticket.
+// https://github.com/phaabe/live.moafunk.de/issues/1061). The broadcast keeps
+// sending audio, and the live session keeps the screen on and remembers a gone
+// input (ticket 1063, https://github.com/phaabe/live.moafunk.de/issues/1063).
 import { test, expect, type Page } from '@playwright/test';
 import { pickInput, runSoundcheck, soundcheckAndGoLive } from '../lib/studio';
 
@@ -104,6 +104,27 @@ async function endEpisode(page: Page): Promise<void> {
   await expect.poll(async () => (await mockLive(page)).live).toBe(0);
 }
 
+/** The on-air bar under the nav bar, on every admin page but the live panel. */
+const onAirBar = (page: Page) => page.getByRole('region', { name: 'On air' });
+
+/** On another admin page while live: the bar and the tab title say so. */
+async function expectBar(page: Page): Promise<void> {
+  await expect(onAirBar(page)).toBeVisible();
+  await expect(onAirBar(page).locator('.pill')).toHaveText(/^On air · \d\d:\d\d:\d\d$/);
+  await expect(page).toHaveTitle(/^● ON AIR/);
+}
+
+/** Every browser dialog the page shows, by type. */
+function collectDialogs(page: Page): string[] {
+  const dialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    dialogs.push(dialog.type());
+    // Stay on the page: the show stays on air.
+    await dialog.dismiss();
+  });
+  return dialogs;
+}
+
 test.beforeEach(async ({ page, browser, baseURL }) => {
   expect((await page.request.get(`${MOCK}/mock/mode/ok`)).ok()).toBe(true);
   await watchWakeLocks(page);
@@ -120,28 +141,41 @@ test.beforeEach(async ({ page, browser, baseURL }) => {
   });
 });
 
-test('standalone On Air: the stream goes on across admin pages, the warnings do not', async ({
+test('standalone On Air: the stream, the bar and the warnings go on across admin pages', async ({
   page,
 }) => {
   test.slow();
   const polls = countPolls(page);
+  const dialogs = collectDialogs(page);
   await page.goto('/admin/#/stream/live?show=1');
   await soundcheckAndGoLive(page);
   await expect.poll(async () => (await mockLive(page)).live).toBe(1);
   await stillSends(page, 'On Air (live panel)');
   const lockOnPanel = await wakeLockHeld(page);
+  // The live panel has its own status bar.
+  await expect(onAirBar(page)).toHaveCount(0);
 
   const pollsBefore = polls.count;
   await open(page, '/dashboard');
+  await expectBar(page);
   await stillSends(page, 'Dashboard');
   const lockAway = await wakeLockHeld(page);
+  // Moving between admin pages asked nothing. A close still asks, also here
+  // (Go Live was the user gesture Chromium needs); Stay keeps the show on air.
+  expect(dialogs).toEqual([]);
+  await page.close({ runBeforeUnload: true });
+  await expect.poll(() => dialogs).toEqual(['beforeunload']);
+  expect(page.isClosed()).toBe(false);
+  await stillSends(page, 'Dashboard, stayed on "Leave site?"');
   await open(page, '/shows');
+  await expectBar(page);
   await stillSends(page, 'My Show');
   await open(page, '/shows/2');
+  await expectBar(page);
   await stillSends(page, 'another episode (/shows/2)');
-  // Unplugged while away: nothing on this page says so.
+  // Unplugged while away: the bar on this page says so.
   await unplugInput(page);
-  await expect(page.getByText(DEVICE_ENDED)).toHaveCount(0);
+  await expect(onAirBar(page).getByText(DEVICE_ENDED)).toBeVisible();
   await stillSends(page, 'another episode, input unplugged');
   const pollsAway = polls.count - pollsBefore;
 
@@ -150,22 +184,26 @@ test('standalone On Air: the stream goes on across admin pages, the warnings do 
   await page.waitForURL(/#\/stream\/on-air/);
   await expect(page.locator('.on-air-pill')).toBeVisible();
   await stillSends(page, 'back on On Air');
-  // The unplugged input is not shown on the live panel either.
+  // The live panel shows the input that went while the host was away.
+  await expect(page.getByText(DEVICE_ENDED)).toBeVisible();
   const warningAfterReturn = await page.getByText(DEVICE_ENDED).count();
   const lockBack = await wakeLockHeld(page);
   console.log(
     `wake lock: panel=${lockOnPanel} away=${lockAway} back=${lockBack} | polls while away=${pollsAway} | unplug warning after return=${warningAfterReturn}`
   );
   expect(lockOnPanel).toBe(true);
-  expect(lockAway).toBe(false);
+  expect(lockAway).toBe(true);
   expect(lockBack).toBe(true);
+  // The listener and REC polls stay on the live panel.
   expect(pollsAway).toBe(0);
-  expect(warningAfterReturn).toBe(0);
+  await expect(onAirBar(page)).toHaveCount(0);
 
   await endEpisode(page);
+  await expect(page).not.toHaveTitle(/ON AIR/);
+  expect(dialogs).toEqual(['beforeunload']);
 });
 
-test('episode page: the stream goes on across admin pages, the Show time tab comes back', async ({
+test('episode page: the stream and the bar go on across admin pages, the Show time tab comes back', async ({
   page,
 }) => {
   test.slow();
@@ -183,12 +221,16 @@ test('episode page: the stream goes on across admin pages, the Show time tab com
   await unplugInput(page);
   await expect(page.getByText(DEVICE_ENDED)).toBeVisible();
   const clockBefore = await page.locator('.on-air-clock').textContent();
-  // Another tab of the same page keeps the live panel mounted.
+  // Another tab of the same page keeps the live panel mounted; the bar shows the warning.
   await page.getByRole('tab', { name: /Social media/ }).click();
+  await expectBar(page);
+  await expect(onAirBar(page).getByText(DEVICE_ENDED)).toBeVisible();
   await stillSends(page, 'episode page, Social media tab');
   const lockOtherTab = await wakeLockHeld(page);
 
   await open(page, '/dashboard');
+  await expectBar(page);
+  await expect(onAirBar(page).getByText(DEVICE_ENDED)).toBeVisible();
   await stillSends(page, 'Dashboard');
   const lockAway = await wakeLockHeld(page);
   await open(page, '/shows');
@@ -203,17 +245,23 @@ test('episode page: the stream goes on across admin pages, the Show time tab com
     'true'
   );
   await stillSends(page, 'back on the episode page');
+  await expect(onAirBar(page)).toHaveCount(0);
   const clockAfter = await page.locator('.on-air-clock').textContent();
-  // The input is still gone, but the new live panel does not know it.
+  // The input is still gone, and the live panel still says so.
+  await expect(page.getByText(DEVICE_ENDED)).toBeVisible();
   const warningAfterReturn = await page.getByText(DEVICE_ENDED).count();
   console.log(
     `on-air clock: before leaving=${clockBefore} after return=${clockAfter} | wake lock: other tab=${lockOtherTab} away=${lockAway} | unplug warning after return=${warningAfterReturn}`
   );
   expect(lockOtherTab).toBe(true);
-  expect(lockAway).toBe(false);
-  expect(warningAfterReturn).toBe(0);
+  expect(lockAway).toBe(true);
 
+  // End Episode in the bar, on another tab of this episode: the Wrap-up opens.
+  await page.getByRole('tab', { name: /Social media/ }).click();
+  await expectBar(page);
   await endEpisode(page);
+  await expect(page.getByRole('heading', { level: 1, name: 'Wrap-up' })).toBeVisible();
+  await expect(onAirBar(page)).toHaveCount(0);
 });
 
 // Ticket 1062 (https://github.com/phaabe/live.moafunk.de/issues/1062): the

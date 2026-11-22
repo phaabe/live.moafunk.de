@@ -3,6 +3,8 @@ export {
   useStreamSocket,
   getStreamSocketStats,
   liveStreamShowId,
+  streamShowId,
+  ownStreamCallbacks,
   parsePong,
   type StreamConnectionState,
   type StreamSocketStats,
@@ -11,6 +13,7 @@ export {
 } from './useStreamSocket';
 export {
   useAudioCapture,
+  ownCaptureCallbacks,
   STREAM_AUDIO_BITS_PER_SECOND,
   BROWSER_UNSUPPORTED_MESSAGE,
   DEVICE_ENDED_MESSAGE,
