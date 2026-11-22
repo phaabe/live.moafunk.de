@@ -1316,11 +1316,30 @@ describe('Wrap-up and Done', () => {
     expect(button('Publish').disabled).toBe(false);
   });
 
-  it('shows Done for a published episode', async () => {
-    current = episode({ date: PAST, episode_status: 'finished' });
+  it('opens a finished episode on its Recording card, where the track can go public', async () => {
+    current = episode({
+      date: PAST,
+      episode_status: 'finished',
+      soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31',
+      soundcloud_public: false,
+      // A live episode with a recording: not the Wrap-up either.
+      latest_recording: {
+        id: 1,
+        version: 'v1',
+        status: 'raw',
+        duration_ms: 7120000,
+        download_url: 'https://r2.example/v1.mp3',
+      },
+    });
     await mount();
-    expect(text()).toContain('Episode published');
-    expect(text()).toContain('Back to Show');
+    expect(text()).not.toContain('Episode published');
+    expect(text()).not.toContain('Wrap-up');
+    expect(tabs().map((t) => t.state)).toEqual(['done', 'done', 'done', 'done']);
+    expect(tabs().map((t) => t.selected)).toEqual([false, false, false, true]);
+    expect(shownCards()).toEqual(['Recording & SoundCloud']);
+    expect(text()).not.toContain('Open Wrap-up');
+    button('Make track public').click();
+    await vi.waitFor(() => expect(text()).toContain('Public on SoundCloud'));
   });
 });
 
@@ -1979,9 +1998,11 @@ describe('Wrap-up · Post-announcement', () => {
       'Instagram · waits for the public SoundCloud track',
     ],
   ])('says on Done when there is %s', async (_name, list, isPublic, pill) => {
-    current = wrapup({ episode_status: 'finished', soundcloud_public: isPublic });
+    current = wrapup({ soundcloud_public: isPublic });
     announcements = list;
     await mount();
+    button('Publish').click();
+    await vi.waitFor(() => expect(text()).toContain('Episode published'));
     expect(text()).toContain(pill);
   });
 });
@@ -2174,12 +2195,14 @@ describe('flow', () => {
   it('Published matches the flow', async () => {
     current = episode({
       date: '2026-10-25',
-      episode_status: 'finished',
+      episode_status: 'wrapup_open',
       latest_recording: recordingReady,
       soundcloud_public: true,
     });
     announcements = [announcement('post', { scheduled_at: MI_2810_1800 })];
     await mount();
+    button('Publish').click();
+    await vi.waitFor(() => expect(root.textContent).toContain('Episode published'));
     await expectFlow('done', root);
   });
 });

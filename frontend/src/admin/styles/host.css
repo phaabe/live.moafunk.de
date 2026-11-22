@@ -242,10 +242,6 @@
   color: #8e8ea4;
 }
 
-.host-page .row-icon.none {
-  width: 18px;
-}
-
 .host-page .tag {
   border-radius: var(--radius-md);
 }

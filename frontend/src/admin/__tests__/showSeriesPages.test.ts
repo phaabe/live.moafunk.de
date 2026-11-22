@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import appRouter from '../router';
-import { episodeDay, episodeTarget } from '../episodeRow';
+import { episodeDay } from '../episodeRow';
 import ShowCreatePage from '../pages/ShowCreatePage.vue';
 import ShowSeriesPage from '../pages/ShowSeriesPage.vue';
 import {
@@ -272,12 +272,6 @@ describe('episode rows', () => {
     expect(episodeDay('2026-10-25')).toBe('So 25.10.');
     expect(episodeDay('2026-11-16')).toBe('Mo 16.11.');
   });
-
-  it('link upcoming and wrap-up rows but not finished ones', () => {
-    expect(episodeTarget({ id: 42, status: 'upcoming' })).toBe('/shows/42');
-    expect(episodeTarget({ id: 41, status: 'wrapup_open' })).toBe('/shows/41');
-    expect(episodeTarget({ id: 40, status: 'finished' })).toBeNull();
-  });
 });
 
 describe('New Show', () => {
@@ -459,7 +453,7 @@ describe('Show page (owner)', () => {
       },
       {
         text: 'So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud',
-        href: null,
+        href: '/shows/40',
       },
     ]);
     expect(chips('upcoming')).toEqual(['mine', 'mine']);
@@ -551,10 +545,14 @@ describe('Show page (another host)', () => {
       { text: 'Di 27.10. · 20:00–22:00 · Live | Upcoming', href: '/shows/44' },
     ]);
     expect(rows('past')).toEqual([
-      { text: 'Di 13.10. · 20:00–22:00 · Live | Finished · Private on SoundCloud', href: null },
+      {
+        text: 'Di 13.10. · 20:00–22:00 · Live | Finished · Private on SoundCloud',
+        href: '/shows/39',
+      },
     ]);
     expect(chips('upcoming')).toEqual(['']);
     expect(root.querySelectorAll('.upcoming-episodes .row-icon.read-only')).toHaveLength(1);
+    expect(root.querySelectorAll('.past-episodes .row-icon.read-only')).toHaveLength(1);
 
     button('View episode').click();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/44'));

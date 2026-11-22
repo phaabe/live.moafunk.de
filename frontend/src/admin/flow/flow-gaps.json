@@ -175,7 +175,7 @@
         "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
         "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
         "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
-        "row: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
+        "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
       ],
       "why": "Redesign #1051 (approved in the issue): Episodes splits into Upcoming episodes and Past episodes; rows show the time, past rows also the SoundCloud state. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -208,7 +208,7 @@
         "link: So 25.10. · 12:00–14:00 · Live | Upcoming",
         "link: So 08.11. · 12:00–14:00 · Pre-recorded | Upcoming",
         "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
-        "row: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
+        "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud"
       ],
       "why": "Redesign #1051 (approved in the issue): Schedule merges into each Show's page (#/shows/<slug>, /schedule redirects to My Show); its next episodes are the Next episode and Upcoming episodes cards there. Update the flow in Flow Lab, then pin the new rev."
     },
