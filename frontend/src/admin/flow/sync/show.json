@@ -1,39 +1,8 @@
 {
   "screen": "show",
-  "hash": "81b1521f",
-  "status": "drift",
+  "hash": "61afb41a",
+  "status": "ok",
   "leftOut": [],
-  "missing": [
-    "back: My Shows",
-    "button: Book Slot",
-    "h2: Details",
-    "field: Name",
-    "field: Description",
-    "field: Repeats",
-    "field: Day",
-    "field: Time",
-    "field: Instagram handle",
-    "button: Save",
-    "h2: Episodes",
-    "row: So 25.10. · Live | Upcoming",
-    "row: So 18.10. · Live | Finished · wrap-up open",
-    "row: So 11.10. · Pre-recorded | Finished"
-  ],
-  "extra": [
-    "h2: Schedule",
-    "h2: Past episodes",
-    "button: Edit",
-    "button: Book another date",
-    "button: So 25.10. · Next",
-    "button: So 01.11. · Free",
-    "button: So 08.11. · Pre-rec",
-    "button: So 15.11. · Free",
-    "button: Open episode",
-    "link: < My Show",
-    "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
-    "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud",
-    "row: Rhythm: | Every week · Sundays · 12:00–14:00",
-    "row: Host: | lena",
-    "row: Instagram: | @brunchtime"
-  ]
+  "missing": [],
+  "extra": []
 }

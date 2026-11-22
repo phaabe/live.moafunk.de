@@ -1,6 +1,6 @@
 {
   "screen": "schedule",
-  "hash": "6fc48ba6",
+  "hash": "465ea943",
   "status": "drift",
   "leftOut": [
     {
@@ -9,14 +9,6 @@
     }
   ],
   "missing": [
-    "h1: Schedule",
-    "pill: On air · Brunchtime · until 14:00",
-    "h2: Your next episodes",
-    "row: So 25.10. · Brunchtime | Upcoming · Live",
-    "row: So 08.11. · Brunchtime | Upcoming · Pre-recorded",
-    "h2: Free slots",
-    "row: So 01.11. · 12:00–14:00 | Free",
-    "row: So 15.11. · 12:00–14:00 | Free",
     "nav: Admin",
     "nav: Dashboard",
     "nav: Schedule",
@@ -25,23 +17,5 @@
     "nav: Recovery Email",
     "nav: Logout"
   ],
-  "extra": [
-    "h1: Brunchtime",
-    "h2: Schedule",
-    "h2: Past episodes",
-    "button: Edit",
-    "button: Book another date",
-    "button: So 25.10. · On air",
-    "button: So 01.11. · Free",
-    "button: So 08.11. · Pre-rec",
-    "button: So 15.11. · Free",
-    "button: Open episode",
-    "link: < My Show",
-    "link: On air now | Brunchtime | lena | until 14:00",
-    "link: So 18.10. · 12:00–14:00 · Live | Finished · wrap-up open",
-    "link: So 11.10. · 12:00–14:00 · Pre-recorded | Finished · Public on SoundCloud",
-    "row: Rhythm: | Every week · Sundays · 12:00–14:00",
-    "row: Host: | lena",
-    "row: Instagram: | @brunchtime"
-  ]
+  "extra": []
 }
