@@ -1,4 +1,4 @@
-import { ref, computed, onUnmounted, watch, type Ref } from 'vue';
+import { ref, computed, onScopeDispose, watch, type Ref } from 'vue';
 import { getStreamSocketStats, type StreamSocketStats } from './useStreamSocket';
 
 /** Seconds of throughput history kept for the sparkline. */
@@ -148,7 +148,8 @@ export function useUploadHealth(active: Ref<boolean>, targetBitsPerSecond: Ref<n
     { immediate: true }
   );
 
-  onUnmounted(stop);
+  // A component's unmount, or the end of the live session's scope.
+  onScopeDispose(stop);
 
   return {
     uploadKbps,

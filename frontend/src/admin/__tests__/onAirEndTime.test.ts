@@ -81,6 +81,11 @@ vi.mock('@admin/composables', () => ({
     verdict: ref('good'),
   }),
   useAutoBitrate: vi.fn(),
+  // The live session (#1063) takes the callbacks and checks the stream's show.
+  ownStreamCallbacks: vi.fn(),
+  ownCaptureCallbacks: vi.fn(),
+  streamShowId: () => 7,
+  DEVICE_ENDED_MESSAGE: 'Audio device is no longer active. Re-select your device.',
 }));
 
 let app: App | null = null;

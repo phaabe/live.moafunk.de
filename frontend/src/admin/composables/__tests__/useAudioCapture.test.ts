@@ -492,3 +492,31 @@ describe('inputs', () => {
     );
   });
 });
+
+describe('the live session owns the callbacks (#1063)', () => {
+  it('keeps the audio on the broadcast when another page sets its own', async () => {
+    const { capture, recorder } = await goLive();
+    const session = { onData: vi.fn(), onError: vi.fn() };
+    mod.ownCaptureCallbacks(session);
+    // Another admin page wires the recorder to its own sink.
+    const page = { onData: vi.fn(), onError: vi.fn() };
+    mod.useAudioCapture(page);
+    capture.setOnData(page.onData);
+    capture.setOnError(page.onError);
+
+    recorder.emit(chunk(1));
+    await flush();
+    recorder.onerror?.(new Event('error'));
+    expect(session.onData).toHaveBeenCalledOnce();
+    expect(session.onError).toHaveBeenCalledWith('Recording error');
+    expect(page.onData).not.toHaveBeenCalled();
+    expect(page.onError).not.toHaveBeenCalled();
+
+    // After End Episode a page may set them again.
+    mod.ownCaptureCallbacks(null);
+    capture.setOnData(page.onData);
+    recorder.emit(chunk(2));
+    await flush();
+    expect(page.onData).toHaveBeenCalledOnce();
+  });
+});

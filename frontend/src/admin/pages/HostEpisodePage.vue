@@ -32,6 +32,7 @@ import {
 } from '../components/episode/tabs';
 import { useEpisode } from '../components/episode/useEpisode';
 import { openReplaceFile } from '../replaceFile';
+import { useLiveSession } from '../liveSession';
 import {
   defaultPostTime,
   editable,
@@ -58,6 +59,7 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const hostFlow = useHostFlow();
+const { ended: liveEnded } = useLiveSession();
 
 const show = ref<ShowDetail | null>(null);
 const view = ref<'episode' | 'wrapup' | 'done'>('episode');
@@ -305,12 +307,15 @@ function wentLive() {
   void load(false);
 }
 
-/** End Episode in the live panel: the Wrap-up, also while the recording is still saved. */
+/** End Episode in the live panel or the on-air bar: the Wrap-up, also while the recording is still saved. */
 async function endedHere() {
   picked.value = null;
   await load(false);
   view.value = 'wrapup';
 }
+watch(liveEnded, (e) => {
+  if (e && e.showId === show.value?.id) void endedHere();
+});
 
 async function cancelBooking() {
   if (!show.value || !window.confirm('Cancel this booking?')) return;
@@ -500,7 +505,7 @@ async function publish() {
           <FlowLive ref="studio" embedded @live="wentLive" />
         </section>
         <section v-if="onAirHere" v-show="tab === 2" class="ep-embed now" aria-label="Live Panel">
-          <StudioOnAir embedded @ended="endedHere" />
+          <StudioOnAir embedded />
         </section>
       </div>
     </template>

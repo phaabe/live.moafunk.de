@@ -99,11 +99,26 @@ let chunkReads = Promise.resolve();
 // Mutable callbacks — updated via options or setOnData()/setOnError()
 let currentOnData: AudioDataCallback | null = null;
 let currentOnError: ((error: string) => void) | null = null;
+// Set while the live session (liveSession.ts) owns the callbacks.
+let callbacksOwned = false;
+
+/**
+ * Give the callbacks to the live session (null lets go). While it owns them,
+ * the options, setOnData() and setOnError() of other callers change nothing:
+ * the recorder keeps sending to the broadcast.
+ */
+export function ownCaptureCallbacks(callbacks: Required<UseAudioCaptureOptions> | null): void {
+  callbacksOwned = callbacks !== null;
+  if (callbacks) {
+    currentOnData = callbacks.onData;
+    currentOnError = callbacks.onError;
+  }
+}
 
 export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
   // Update callbacks so the currently-mounted component receives events
-  if (options.onData) currentOnData = options.onData;
-  if (options.onError) currentOnError = options.onError;
+  if (options.onData && !callbacksOwned) currentOnData = options.onData;
+  if (options.onError && !callbacksOwned) currentOnError = options.onError;
 
   // ─── Public methods ─────────────────────────────────────────────────────
 
@@ -113,14 +128,14 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
    * after the composable has already been created.
    */
   function setOnData(callback: AudioDataCallback | null): void {
-    currentOnData = callback;
+    if (!callbacksOwned) currentOnData = callback;
   }
 
   /**
    * Update the onError callback at runtime.
    */
   function setOnError(callback: ((error: string) => void) | null): void {
-    currentOnError = callback;
+    if (!callbacksOwned) currentOnError = callback;
   }
 
   /**

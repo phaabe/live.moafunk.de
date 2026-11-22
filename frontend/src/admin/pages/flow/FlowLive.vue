@@ -13,6 +13,7 @@ import {
 } from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
+import { startLiveSession } from '@admin/liveSession';
 
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
@@ -119,10 +120,14 @@ async function goLive() {
   // A test broadcast the host still listens to: connect() would reuse its socket.
   soundcheck.value?.stopTest?.();
   // Take over the socket's callbacks from the soundcheck: this connection is
-  // the broadcast. On Air registers its own once it opens.
+  // the broadcast. Once live, the live session takes them.
   const socket = useStreamSocket({
     onLive: () => {
       wentLive.value = true;
+      startLiveSession(
+        showId,
+        props.embedded ? `/shows/${showId}` : `/stream/on-air?show=${showId}`
+      );
       if (props.embedded) emit('live');
       else void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
     },

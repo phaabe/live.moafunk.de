@@ -1,7 +1,7 @@
 // The host is on air and opens other admin pages (ticket 1061,
-// https://github.com/phaabe/live.moafunk.de/issues/1061). Does the broadcast
-// keep sending audio, and what does the host still see? This test records
-// how the app behaves today; it is the evidence for that ticket.
+// https://github.com/phaabe/live.moafunk.de/issues/1061). The broadcast keeps
+// sending audio, and the live session keeps the screen on and remembers a gone
+// input (ticket 1063, https://github.com/phaabe/live.moafunk.de/issues/1063).
 import { test, expect, type Page } from '@playwright/test';
 import { pickInput, runSoundcheck, soundcheckAndGoLive } from '../lib/studio';
 
@@ -150,17 +150,18 @@ test('standalone On Air: the stream goes on across admin pages, the warnings do 
   await page.waitForURL(/#\/stream\/on-air/);
   await expect(page.locator('.on-air-pill')).toBeVisible();
   await stillSends(page, 'back on On Air');
-  // The unplugged input is not shown on the live panel either.
+  // The live panel shows the input that went while the host was away.
+  await expect(page.getByText(DEVICE_ENDED)).toBeVisible();
   const warningAfterReturn = await page.getByText(DEVICE_ENDED).count();
   const lockBack = await wakeLockHeld(page);
   console.log(
     `wake lock: panel=${lockOnPanel} away=${lockAway} back=${lockBack} | polls while away=${pollsAway} | unplug warning after return=${warningAfterReturn}`
   );
   expect(lockOnPanel).toBe(true);
-  expect(lockAway).toBe(false);
+  expect(lockAway).toBe(true);
   expect(lockBack).toBe(true);
+  // The listener and REC polls stay on the live panel.
   expect(pollsAway).toBe(0);
-  expect(warningAfterReturn).toBe(0);
 
   await endEpisode(page);
 });
@@ -204,14 +205,14 @@ test('episode page: the stream goes on across admin pages, the Show time tab com
   );
   await stillSends(page, 'back on the episode page');
   const clockAfter = await page.locator('.on-air-clock').textContent();
-  // The input is still gone, but the new live panel does not know it.
+  // The input is still gone, and the live panel still says so.
+  await expect(page.getByText(DEVICE_ENDED)).toBeVisible();
   const warningAfterReturn = await page.getByText(DEVICE_ENDED).count();
   console.log(
     `on-air clock: before leaving=${clockBefore} after return=${clockAfter} | wake lock: other tab=${lockOtherTab} away=${lockAway} | unplug warning after return=${warningAfterReturn}`
   );
   expect(lockOtherTab).toBe(true);
-  expect(lockAway).toBe(false);
-  expect(warningAfterReturn).toBe(0);
+  expect(lockAway).toBe(true);
 
   await endEpisode(page);
 });

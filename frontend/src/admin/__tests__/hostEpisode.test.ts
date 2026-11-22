@@ -72,16 +72,18 @@ vi.mock('../pages/flow/FlowLive.vue', async () => {
 });
 vi.mock('../pages/flow/StudioOnAir.vue', async () => {
   const { defineComponent, h } = await import('vue');
+  const { useLiveSession } = await import('../liveSession');
   return {
     __esModule: true,
     default: defineComponent({
       props: { embedded: Boolean },
-      emits: ['ended'],
-      setup(props, { emit }) {
+      setup(props) {
+        // End Episode ends the live session; the page watches that (episode 42).
+        const end = () => (useLiveSession().ended.value = { showId: 42 });
         return () =>
           h('div', { class: 'onair-stub' }, [
             props.embedded ? 'Live panel · embedded' : 'Live panel',
-            h('button', { type: 'button', onClick: () => emit('ended') }, 'End Episode'),
+            h('button', { type: 'button', onClick: end }, 'End Episode'),
           ]);
       },
     }),
