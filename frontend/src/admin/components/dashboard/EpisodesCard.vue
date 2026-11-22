@@ -9,7 +9,7 @@ import { hostsOf, isMine, timeRange } from './dashboard';
 // or Upcoming, three at a time with arrows, so the card keeps one height.
 // Rows read "So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live".
 // Own episodes open the episode; other hosts' ones open it read-only (eye
-// icon).
+// icon). Color: yours white, others gray, your open wrap-up yellow.
 
 type Tab = 'past' | 'upcoming';
 
@@ -70,6 +70,11 @@ function mine(e: Row): boolean {
   return isMine(hostsOf(e), props.username);
 }
 
+/** The host's own episode waits for its wrap-up: the one row in yellow. */
+function needsYou(e: Row): boolean {
+  return e.status === 'wrapup_open' && mine(e);
+}
+
 /** Arrow keys move between the tabs, as in any tab list. */
 function onKey(event: KeyboardEvent) {
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -126,7 +131,9 @@ function onKey(event: KeyboardEvent) {
                 </span>
               </span>
               <span class="row-tags">
-                <span :class="['tag', `tag-${e.status}`]">{{ e.status_label }}</span>
+                <span :class="['tag', `tag-${e.status}`, { 'needs-you': needsYou(e) }]">{{
+                  e.status_label
+                }}</span>
                 <span class="sep"> · </span>
                 <span class="tag">{{ e.mode_label }}</span>
               </span>
@@ -205,8 +212,8 @@ function onKey(event: KeyboardEvent) {
 }
 
 .tab.on {
-  background: var(--color-primary);
-  color: #000;
+  background: #2a2a42;
+  color: #fff;
 }
 
 .tab:focus-visible {
@@ -273,6 +280,37 @@ function onKey(event: KeyboardEvent) {
 .pager-button:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
+}
+
+/* Priority colors (#1049): yours white, others gray, your open wrap-up yellow. */
+.host-page .episodes-card .date-chip.mine {
+  background: var(--color-surface-alt);
+  box-shadow: inset 0 0 0 1.5px #fff;
+  color: #fff;
+}
+
+.host-page .episodes-card :deep(.date-chip.mine small) {
+  color: #d0d0dc;
+}
+
+.host-page .episodes-card .row-host.mine,
+.host-page .episodes-card .row-icon {
+  color: #fff;
+}
+
+.host-page .episodes-card .row-icon.read-only {
+  color: #8e8ea4;
+}
+
+.host-page .episodes-card .tag {
+  border-color: #4a4a60;
+  background: transparent;
+  color: #b0b0c4;
+}
+
+.host-page .episodes-card .tag.needs-you {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 /* A wide card: time, Show and host line up in columns, like the design. */

@@ -229,6 +229,16 @@ describe('Dashboard', () => {
     expect(root.textContent).not.toContain('Last show');
     expect(root.textContent).not.toContain('Telegram');
   });
+
+  it('keeps yellow for the host’s next step only', async () => {
+    await mount();
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
+    // Own rows are marked, but not with the yellow `primary` chip of the old design.
+    expect(root.querySelectorAll('.episodes .date-chip.mine')).toHaveLength(1);
+    expect(root.querySelectorAll('.card-action.primary')).toHaveLength(1);
+    expect(text(root.querySelector('.card-action.primary'))).toBe('Open episode');
+    expect([...root.querySelectorAll('.needs-you')].map(text)).toEqual(['Finished · wrap-up open']);
+  });
 });
 
 describe('Dashboard episodes', () => {
@@ -254,7 +264,8 @@ describe('Dashboard episodes', () => {
     const tags = [...root.querySelectorAll('.episodes .row-tags .tag:first-child')].map(
       (t) => t.className
     );
-    expect(tags).toEqual(['tag tag-finished', 'tag tag-wrapup_open', 'tag tag-finished']);
+    // Only the host's own open wrap-up asks for them.
+    expect(tags).toEqual(['tag tag-finished', 'tag tag-wrapup_open needs-you', 'tag tag-finished']);
     expect(text(card('.pager-range'))).toBe('1–3 of 4');
     pager('Next episodes').click();
     await nextTick();

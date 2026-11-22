@@ -19,6 +19,8 @@ import { airsAt, hostsOf, isMine } from '../components/dashboard/dashboard';
 // next show on top, all hosts' episodes (Past first, then Upcoming), the
 // hosts' chalkboard, and every Show as a tile. The episode page shows the
 // owner's screen or a read-only view.
+// Colors by priority: red = on air, yellow = your next step, white = yours,
+// gray = everything else.
 
 const auth = useAuthStore();
 const username = computed(() => auth.user?.username);
@@ -178,6 +180,11 @@ onUnmounted(() => {
 <style scoped>
 .dashboard-page {
   max-width: 1200px;
+}
+
+/* Yellow is for your next step only, so card icons stay gray. */
+.dashboard-page :deep(.board-card-title svg) {
+  color: #8e8ea4;
 }
 
 .dash-cols {
