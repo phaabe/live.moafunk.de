@@ -314,7 +314,8 @@ const testSource = (id: SoundcheckStep['id']) => void soundcheck.test(id as Soun
 const skipSource = (id: SoundcheckStep['id']) => void soundcheck.skip(id as SoundcheckSource);
 
 // Go Live uses the same socket: the page stops the test before it connects.
-defineExpose({ stopTest: () => soundcheck.dispose() });
+// `steps`: the episode page shows each check's state on its Soundcheck tab.
+defineExpose({ stopTest: () => soundcheck.dispose(), steps: soundcheck.steps });
 
 // ─── Rehearsal connection verdict (#275) ─────────────────────────────────────
 // The same browser-side upload telemetry as the on-air connection card runs

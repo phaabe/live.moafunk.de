@@ -43,7 +43,13 @@ import {
  * Moments. Only End Episode ends it: the end time never does. A dropped
  * connection keeps this screen while the socket reconnects by itself, and
  * End Episode still works.
+ *
+ * `embedded`: the live panel as the Show time tab of the host's episode page
+ * (#1052). It has no title, and End Episode tells the page, which then shows
+ * the Wrap-up (the page is already on the episode's path).
  */
+const props = defineProps<{ embedded?: boolean }>();
+const emit = defineEmits<{ ended: [] }>();
 const router = useRouter();
 const flow = useHostFlow();
 const audioCapture = useAudioCapture();
@@ -275,7 +281,8 @@ async function endEpisode() {
   forgetListeners();
   forgetMoments();
   flow.reset();
-  await router.push({ path: `/shows/${showId}`, state: { episodeEnded: showId } });
+  if (props.embedded) emit('ended');
+  else await router.push({ path: `/shows/${showId}`, state: { episodeEnded: showId } });
 }
 
 onUnmounted(() => {
@@ -286,8 +293,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="on-air host-page">
-    <h1 class="page-title studio-title">Studio</h1>
+  <div :class="['on-air', 'host-page', { embedded }]">
+    <h1 v-if="!embedded" class="page-title studio-title">Studio</h1>
 
     <section :class="['bar', { warn: barAlert }]" aria-label="Broadcast status">
       <!-- The flow's pill "On air · 00:42:10 · REC"; its parts sit in the bar's grid. -->

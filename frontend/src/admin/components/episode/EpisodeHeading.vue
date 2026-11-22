@@ -16,7 +16,8 @@ import { timeRange, type EpisodePhase, type Segment } from './phase';
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
-  segments: Segment[];
+  /** The step icons. Left out on the host's own page, where the tab tiles show the steps. */
+  segments?: Segment[];
   /** One of the episode's hosts: may edit before the start. */
   canEdit?: boolean;
 }>();
@@ -111,7 +112,7 @@ function saved() {
           ><BoardIcon name="eye" :size="16" />Read only · only its hosts can edit</span
         >
       </div>
-      <EpisodeProgress :segments="segments" />
+      <EpisodeProgress v-if="segments" :segments="segments" />
     </template>
   </section>
 </template>

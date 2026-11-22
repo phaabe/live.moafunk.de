@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onUnmounted, provide, ref, useId, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BaseButton, BaseModal } from '@shared/components';
 import {
@@ -12,16 +12,24 @@ import {
   type ShowDetail,
 } from '../api';
 import { useAuthStore } from '../stores/auth';
-import { useHostFlow } from '../composables';
+import { liveStreamShowId, useHostFlow, type SoundcheckStep } from '../composables';
 import AnnounceComposer from '../components/AnnounceComposer.vue';
 import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
 import PromotionCard from '../components/PromotionCard.vue';
 import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import EpisodeHeading from '../components/episode/EpisodeHeading.vue';
+import EpisodeTabs from '../components/episode/EpisodeTabs.vue';
 import ShowTimeCard from '../components/episode/ShowTimeCard.vue';
 import SoundcheckCard from '../components/episode/SoundcheckCard.vue';
 import { episodeTimes } from '../components/episode/phase';
+import {
+  EPISODE_TABS,
+  recordingItems,
+  showClock,
+  socialItems,
+  soundcheckItems,
+} from '../components/episode/tabs';
 import { useEpisode } from '../components/episode/useEpisode';
 import { openReplaceFile } from '../replaceFile';
 import {
@@ -34,12 +42,17 @@ import {
   slotState,
 } from '../promotion';
 
-// The host's own episode on one path (/shows/<id>), #1052: a heading box with
-// the four steps and one status card per step (Social media, Soundcheck, Show
-// time, Recording & SoundCloud) in one layout for pre-show, on air and
-// post-show. The flow screens
-// `wrapup` and `done` stay their own screens on the same path. Another host's
-// episode gets the same page read-only (HostEpisodeView).
+// The host's own episode on one path (/shows/<id>), #1052: a heading box, then
+// the four steps as tab tiles (Social media, Soundcheck, Show time, Recording)
+// above one main card, in one layout for pre-show, on air and post-show. The
+// Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab;
+// the live panel is the Show time tab while this browser tab is live. The flow
+// screens `wrapup` and `done` stay their own screens on the same path. Another
+// host's episode gets the cards read-only (HostEpisodeView).
+
+const FlowLive = defineAsyncComponent(() => import('./flow/FlowLive.vue'));
+const StudioOnAir = defineAsyncComponent(() => import('./flow/StudioOnAir.vue'));
+provide(EPISODE_TABS, true);
 
 const route = useRoute();
 const router = useRouter();
@@ -183,12 +196,93 @@ onUnmounted(() => {
   if (poll) clearTimeout(poll);
 });
 
-/** Open Studio; while on air, "Back to On Air" opens On Air (its gate falls back to the Studio). */
-async function openStudio(path: '/stream/live' | '/stream/on-air' = '/stream/live') {
-  if (!show.value || !studioOpen.value) return;
-  busy.value = true;
+// ─── Tabs ───────────────────────────────────────────────────────────────────
+const panelId = useId();
+/** The tab the host picked (0–3); null follows the current step. */
+const picked = ref<number | null>(null);
+
+/** This browser tab sends this episode's stream. `now` makes it look again every second. */
+const liveHere = computed(() => {
+  void now.value;
+  return !!show.value && liveStreamShowId() === show.value.id;
+});
+/** This browser tab is live with another episode: its Studio stays as it is. */
+const otherLive = computed(() => {
+  void now.value;
+  const live = liveStreamShowId();
+  return live !== null && live !== show.value?.id;
+});
+const onAirNow = computed(() => !!show.value?.on_air || liveHere.value);
+
+const tab = computed(() => {
+  if (picked.value !== null) return picked.value;
+  if (liveHere.value) return 2;
+  const i = segments.value.findIndex((s) => s.state === 'now');
+  return i < 0 ? 0 : i;
+});
+
+/** The Studio may open on this page: the rules of its own route gate. */
+const studioAllowed = computed(() => {
+  const s = show.value;
+  return (
+    !!s &&
+    isMine.value &&
+    s.stream_mode !== 'prerecorded' &&
+    !s.prerecorded_confirmed_at &&
+    studioOpen.value &&
+    phase.value !== 'post' &&
+    !liveHere.value &&
+    !otherLive.value
+  );
+});
+/** The Studio (soundcheck, input, Go Live) is the Soundcheck tab's page, also after the start.
+ * Show time shows only the live panel; until then its card leads here. */
+const studioTab = computed(() => studioAllowed.value && tab.value === 1);
+/** The live panel is the Show time page while this browser tab is live. */
+const onAirHere = computed(() => liveHere.value && hostFlow.showId.value === show.value?.id);
+
+/** Mounted on first open, then kept: the checks and the audio input survive a tab switch. */
+const studioMounted = ref(false);
+const studio = ref<{ checks: SoundcheckStep[] | null } | null>(null);
+watch(
+  studioTab,
+  async (want) => {
+    if (want && !studioMounted.value && (await selectForStudio())) studioMounted.value = true;
+  },
+  { immediate: true }
+);
+// Gone live, ended or closed: the Studio goes, as it did when On Air opened.
+watch(studioAllowed, (ok) => {
+  if (!ok) studioMounted.value = false;
+});
+
+const tabSocial = computed(() => socialItems(announcements.value, trackPublic.value));
+const tabSoundcheck = computed(() =>
+  show.value
+    ? soundcheckItems(show.value, phase.value, tested.value, studio.value?.checks ?? null)
+    : []
+);
+const tabClock = computed(() =>
+  show.value
+    ? showClock(show.value, phase.value, now.value, onAirNow.value)
+    : { kind: 'pre' as const, clock: '', sub: '' }
+);
+const tabRecording = computed(() =>
+  show.value
+    ? recordingItems(
+        show.value,
+        phase.value,
+        recording.value,
+        onAirNow.value,
+        !services.value.soundcloud
+      )
+    : []
+);
+
+/** Select this episode for the Studio, so it uses it even when the host has several. */
+async function selectForStudio(): Promise<boolean> {
+  if (!show.value) return false;
   try {
-    // Select this episode, so the Studio uses it even when the host has several.
     let mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     if (!mine) {
       await hostFlow.fetchMyShow();
@@ -198,12 +292,24 @@ async function openStudio(path: '/stream/live' | '/stream/on-air' = '/stream/liv
     if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
-    await router.push({ path, query: { show: String(mine.id) } });
+    return true;
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not open the Studio';
-  } finally {
-    busy.value = false;
+    return false;
   }
+}
+
+/** Go Live worked in the Studio tab: Show time shows the live panel. */
+function wentLive() {
+  picked.value = null;
+  void load(false);
+}
+
+/** End Episode in the live panel: the Wrap-up, also while the recording is still saved. */
+async function endedHere() {
+  picked.value = null;
+  await load(false);
+  view.value = 'wrapup';
 }
 
 async function cancelBooking() {
@@ -318,13 +424,13 @@ async function publish() {
       </div>
     </template>
 
-    <!-- Episode: heading box and the four status cards -->
+    <!-- Episode: heading box, the four step tabs and one main card -->
     <template v-else>
       <router-link :to="backTo" class="back-link"
         ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span
         >{{ showName }}</router-link
       >
-      <EpisodeHeading :show="show" :phase="phase" :segments="segments" can-edit @saved="load(true)">
+      <EpisodeHeading :show="show" :phase="phase" can-edit @saved="load(true)">
         <template #danger>
           <BaseButton variant="danger" class="quiet-danger" :disabled="busy" @click="cancelBooking">
             <BoardIcon name="close" :size="16" />Cancel booking
@@ -332,8 +438,19 @@ async function publish() {
         </template>
       </EpisodeHeading>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <div class="ep-cards">
+      <EpisodeTabs
+        :segments="segments"
+        :selected="tab"
+        :social="tabSocial"
+        :soundcheck="tabSoundcheck"
+        :clock="tabClock"
+        :recording="tabRecording"
+        :panel-id="panelId"
+        @select="picked = $event"
+      />
+      <div :id="panelId" class="ep-main" role="tabpanel" :aria-labelledby="`${panelId}-tab-${tab}`">
         <PromotionCard
+          v-show="tab === 0"
           :show="show"
           :phase="phase"
           :state="step(0)"
@@ -344,24 +461,27 @@ async function publish() {
           @compose="openComposer"
         />
         <SoundcheckCard
+          v-show="tab === 1 && !studioTab"
           :show="show"
           :phase="phase"
           :state="step(1)"
           :now="now"
           :tested="tested"
           :busy="busy"
-          @open-studio="openStudio()"
+          @open-studio="picked = 1"
           @replace-file="replaceFile"
         />
         <ShowTimeCard
+          v-show="tab === 2 && !onAirHere"
           :show="show"
           :phase="phase"
           :state="step(2)"
           :now="now"
           :busy="busy"
-          @open-studio="openStudio"
+          @open-studio="picked = 1"
         />
         <EpisodeRecordingCard
+          v-show="tab === 3"
           :show="show"
           :phase="phase"
           :state="step(3)"
@@ -371,6 +491,17 @@ async function publish() {
           @changed="load(false)"
           @open-wrapup="view = 'wrapup'"
         />
+        <section
+          v-if="studioMounted"
+          v-show="studioTab"
+          :class="['ep-embed', step(tab)]"
+          aria-label="Studio"
+        >
+          <FlowLive ref="studio" embedded @live="wentLive" />
+        </section>
+        <section v-if="onAirHere" v-show="tab === 2" class="ep-embed now" aria-label="Live Panel">
+          <StudioOnAir embedded @ended="endedHere" />
+        </section>
       </div>
     </template>
     <BaseModal
@@ -397,10 +528,25 @@ async function publish() {
   max-width: 1180px;
 }
 
-.ep-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
-  gap: var(--spacing-lg);
+.ep-main {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The Studio and the live panel in the main card, framed in their step's colour. */
+.ep-embed {
+  padding: var(--spacing-lg);
+  border: 2px solid #34344c;
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+}
+
+.ep-embed.done {
+  border-color: #8f8536;
+}
+
+.ep-embed.now {
+  border-color: var(--color-primary);
 }
 
 .post-slot {
@@ -442,8 +588,8 @@ async function publish() {
 }
 
 @media (max-width: 640px) {
-  .ep-cards {
-    gap: 14px;
+  .ep-embed {
+    padding: var(--spacing-sm);
   }
 }
 </style>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from 'vue';
+import { computed, inject, ref, useId, watch } from 'vue';
 import type { Status, StepState } from './phase';
 import { usePhone } from './phone';
+import { EPISODE_TABS } from './tabs';
 import EpisodeIcon from './EpisodeIcon.vue';
 
 // One status card of the episode page (#1052): title, its step (1–4) and its
@@ -21,7 +22,10 @@ const props = defineProps<{
   status: Status;
 }>();
 
-const phone = usePhone();
+const narrow = usePhone();
+// As a tab's content (the host's own episode page) the card is always open.
+const inTabs = inject(EPISODE_TABS, false);
+const phone = computed(() => narrow.value && !inTabs);
 const current = computed(() => props.state === 'now');
 const open = ref(current.value);
 // A new step opens its card and folds the one before.

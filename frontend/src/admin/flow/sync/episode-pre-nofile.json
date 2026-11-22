@@ -7,6 +7,7 @@
     "h1: So 08.11. · Brunchtime",
     "pill: Pre-recorded · no file yet · plays at 12:00",
     "h2: Next step",
+    "button: Upload your set",
     "h2: Details",
     "field: Title",
     "field: Description",
@@ -19,24 +20,17 @@
   "extra": [
     "h1: Brunchtime #32",
     "h2: Social media",
-    "h2: Soundcheck",
-    "h2: Show time",
-    "h2: Recording & SoundCloud",
     "pill: Upcoming",
     "button: Edit",
+    "button: 1 · Social media",
+    "button: 2 · Soundcheck",
+    "button: 3 · Show time · in 7 days · until 12:00",
+    "button: 4 · Recording",
     "button: Set up pre-announcement",
     "button: Set up on-air story",
     "button: Set up post-announcement",
-    "link: live.moafunk.de",
-    "field: Recording file",
-    "row: 1 · Set up social media | 0 of 2 posts ready",
-    "row: 2 · Soundcheck | no set",
-    "row: 3 · Show time | 12:00–14:00",
-    "row: 4 · Publish recording | after 14:00",
     "row: Pre-announcement · Instagram feed post · before the show | Not set up",
     "row: On-air story · Instagram story · at go-live | Not set up",
-    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up",
-    "row: Mode | Pre-recorded set",
-    "row: SoundCloud | After the show"
+    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
   ]
 }
