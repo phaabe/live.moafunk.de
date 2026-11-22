@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 29,
+  "rev": 30,
   "screens": [
     {
       "id": "dashboard",
@@ -219,57 +219,144 @@
     },
     {
       "id": "schedule",
-      "title": "Schedule",
+      "title": "Show · your episode on air",
       "who": "host",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/schedule",
-      "hash": "6fc48ba6",
-      "notesHash": "1c83e12d",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime",
+      "hash": "465ea943",
+      "notesHash": "b90df5bf",
       "elements": [
         {
-          "k": "h1",
-          "text": "Schedule"
+          "k": "back",
+          "text": "My Show",
+          "to": "my-shows"
         },
         {
           "k": "h2",
           "text": "On air now"
         },
         {
-          "k": "pill",
-          "tone": "live",
-          "text": "On air · Brunchtime · until 14:00"
+          "k": "row",
+          "text": "On air now",
+          "meta": "Brunchtime | lena | until 14:00",
+          "to": "studio-onair"
         },
         {
-          "k": "h2",
-          "text": "Your next episodes"
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Brunchtime"
+        },
+        {
+          "k": "button",
+          "text": "Edit",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "Sunday brunch sounds, every week from 12:00."
         },
         {
           "k": "row",
-          "text": "So 25.10. · Brunchtime",
-          "meta": "Upcoming · Live",
+          "text": "Rhythm:",
+          "meta": "Every week · Sundays · 12:00–14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Host:",
+          "meta": "lena",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram:",
+          "meta": "@brunchtime",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Schedule"
+        },
+        {
+          "k": "button",
+          "text": "Book another date",
+          "to": "book-slot",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 25.10. · On air",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 01.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 08.11. · Pre-rec",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 15.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "On air now"
+        },
+        {
+          "k": "text",
+          "text": "So 25.10."
+        },
+        {
+          "k": "text",
+          "text": "12:00–14:00 · Live"
+        },
+        {
+          "k": "text",
+          "text": "The Studio is open."
+        },
+        {
+          "k": "text",
+          "text": "Instagram: Pre-announcement · On-air story · Post-announcement"
+        },
+        {
+          "k": "text",
+          "text": "On air now · until 14:00"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Past episodes"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · 12:00–14:00 · Live",
+          "meta": "Finished · wrap-up open",
           "to": "episode"
         },
         {
           "k": "row",
-          "text": "So 08.11. · Brunchtime",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-pre"
-        },
-        {
-          "k": "h2",
-          "text": "Free slots"
-        },
-        {
-          "k": "row",
-          "text": "So 01.11. · 12:00–14:00",
-          "meta": "Free",
-          "to": "book-slot"
-        },
-        {
-          "k": "row",
-          "text": "So 15.11. · 12:00–14:00",
-          "meta": "Free",
-          "to": "book-slot"
+          "text": "So 11.10. · 12:00–14:00 · Pre-recorded",
+          "meta": "Finished · Public on SoundCloud",
+          "to": "episode"
         },
         {
           "k": "nav",
@@ -466,17 +553,17 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "81b1521f",
-      "notesHash": "6a095ac4",
+      "hash": "61afb41a",
+      "notesHash": "00a82f92",
       "elements": [
         {
           "k": "back",
-          "text": "My Shows",
+          "text": "My Show",
           "to": "my-shows"
         },
         {
           "k": "media",
-          "text": "Show cover · drop an image",
+          "text": "Show cover · the Show’s initials when it has none",
           "to": null
         },
         {
@@ -484,75 +571,111 @@
           "text": "Brunchtime"
         },
         {
+          "k": "button",
+          "text": "Edit",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
           "k": "text",
           "text": "Sunday brunch sounds, every week from 12:00."
         },
         {
-          "k": "button",
-          "text": "Book Slot",
-          "to": "book-slot",
-          "primary": true
+          "k": "row",
+          "text": "Rhythm:",
+          "meta": "Every week · Sundays · 12:00–14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Host:",
+          "meta": "lena",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram:",
+          "meta": "@brunchtime",
+          "to": null
         },
         {
           "k": "h2",
-          "text": "Details"
-        },
-        {
-          "k": "field",
-          "text": "Name",
-          "value": "Brunchtime"
-        },
-        {
-          "k": "field",
-          "text": "Description",
-          "value": "Sunday brunch sounds, every week from 12:00."
-        },
-        {
-          "k": "field",
-          "text": "Repeats",
-          "value": "Every week ▾"
-        },
-        {
-          "k": "field",
-          "text": "Day",
-          "value": "Sunday ▾"
-        },
-        {
-          "k": "field",
-          "text": "Time",
-          "value": "12:00–14:00 ▾"
-        },
-        {
-          "k": "field",
-          "text": "Instagram handle",
-          "value": "@brunchtime"
+          "text": "Schedule"
         },
         {
           "k": "button",
-          "text": "Save",
+          "text": "Book another date",
+          "to": "book-slot",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 25.10. · Next",
           "to": null,
           "primary": false
         },
         {
+          "k": "button",
+          "text": "So 01.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 08.11. · Pre-rec",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 15.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "Next episode"
+        },
+        {
+          "k": "text",
+          "text": "So 25.10."
+        },
+        {
+          "k": "text",
+          "text": "12:00–14:00 · Live"
+        },
+        {
+          "k": "text",
+          "text": "Test your audio in the Studio before air time."
+        },
+        {
+          "k": "text",
+          "text": "Instagram: Pre-announcement · On-air story · Post-announcement"
+        },
+        {
+          "k": "text",
+          "text": "Starts in 2 days 4 h"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
+          "primary": true
+        },
+        {
           "k": "h2",
-          "text": "Episodes"
+          "text": "Past episodes"
         },
         {
           "k": "row",
-          "text": "So 25.10. · Live",
-          "meta": "Upcoming",
-          "to": "episode"
-        },
-        {
-          "k": "row",
-          "text": "So 18.10. · Live",
+          "text": "So 18.10. · 12:00–14:00 · Live",
           "meta": "Finished · wrap-up open",
           "to": "episode"
         },
         {
           "k": "row",
-          "text": "So 11.10. · Pre-recorded",
-          "meta": "Finished",
+          "text": "So 11.10. · 12:00–14:00 · Pre-recorded",
+          "meta": "Finished · Public on SoundCloud",
           "to": "episode"
         }
       ]

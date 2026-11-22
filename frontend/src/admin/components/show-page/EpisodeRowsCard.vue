@@ -4,6 +4,8 @@ import { RouterLink } from 'vue-router';
 import type { SeriesEpisode } from '../../api';
 import BoardIcon from '../BoardIcon.vue';
 import DateChip from '../DateChip.vue';
+import { socialItems } from '../episode/tabs';
+import PostIcons from './PostIcons.vue';
 import { episodeTime, soundcloudLabel } from './showPage';
 
 // Upcoming or Past episodes of the show detail page, as M46 rows: date,
@@ -34,6 +36,7 @@ const rows = computed(() =>
     label: e.status_label,
     soundcloud: props.kind === 'past' ? soundcloudLabel(e.soundcloud) : null,
     tone: props.mine ? CHIP[e.status] : '',
+    posts: socialItems(e.instagram ?? [], e.soundcloud === 'public'),
   }))
 );
 </script>
@@ -83,6 +86,7 @@ const rows = computed(() =>
               <span class="tag tag-soundcloud">{{ row.soundcloud }}</span>
             </template>
           </span>
+          <PostIcons :items="row.posts" small class="row-posts" />
           <BoardIcon
             :name="mine ? 'chevron' : 'eye'"
             :class="['row-icon', { 'read-only': !mine }]"
@@ -102,6 +106,17 @@ const rows = computed(() =>
 
 .row-mode svg {
   color: #a0a0b4;
+}
+
+.row-posts {
+  flex: none;
+  padding: 0;
+}
+
+@media (max-width: 640px) {
+  .row-posts {
+    display: none;
+  }
 }
 
 .tag-soundcloud {

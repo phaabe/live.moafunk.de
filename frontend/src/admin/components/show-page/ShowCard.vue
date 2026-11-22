@@ -2,11 +2,11 @@
 import { computed } from 'vue';
 import { BaseButton } from '@shared/components';
 import type { SeriesDetail } from '../../api';
-import BoardIcon from '../BoardIcon.vue';
-import { hostsLine, rhythmText } from './showPage';
+import { initials, rhythmText } from './showPage';
 
-// The Show's header card on its detail page: cover, name, description, rhythm,
-// Instagram handle and hosts. Read-only; its owner edits it on My Show.
+// The Show's header card on its detail page (issue 1051, design D1): cover,
+// name, Edit, description and the facts rhythm, hosts and Instagram.
+// Read-only; its owner edits it on My Show.
 
 const props = defineProps<{
   series: SeriesDetail;
@@ -16,7 +16,8 @@ const props = defineProps<{
 const emit = defineEmits<{ edit: [] }>();
 
 const rhythm = computed(() => rhythmText(props.series));
-const hosts = computed(() => hostsLine(props.series.hosts));
+const hosts = computed(() => (props.series.hosts ?? []).map((h) => h.username));
+const handle = computed(() => props.series.instagram_handle || null);
 </script>
 
 <template>
@@ -26,17 +27,15 @@ const hosts = computed(() => hostsLine(props.series.hosts));
         v-if="series.cover_url"
         :src="series.cover_url"
         :srcset="series.cover_srcset ?? undefined"
-        sizes="(max-width: 640px) 100vw, 180px"
+        sizes="(max-width: 640px) 100vw, 232px"
         :alt="`Cover of ${series.name}`"
       />
-      <span v-else class="cover-name" aria-hidden="true">{{ series.name }}</span>
+      <span v-else class="cover-initials" aria-hidden="true">{{ initials(series.name) }}</span>
     </div>
     <div class="show-text">
-      <h1 class="page-title show-name">{{ series.name }}</h1>
-      <p v-if="series.description" class="description">{{ series.description }}</p>
-      <p class="facts">
-        <span class="fact"><BoardIcon name="repeat" :size="16" />{{ rhythm }}</span>
-        <span v-if="series.instagram_handle" class="fact"
+      <div class="show-head">
+        <h1 class="page-title show-name">{{ series.name }}</h1>
+        <BaseButton v-if="editable" variant="secondary" class="edit" @click="emit('edit')"
           ><svg
             width="16"
             height="16"
@@ -48,29 +47,32 @@ const hosts = computed(() => hostsLine(props.series.hosts));
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <path
-              d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5zM16 11.4A4 4 0 1 1 12.6 8a4 4 0 0 1 3.4 3.4zM17.5 6.5h.01"
-            /></svg
-          ><span class="sep">Instagram </span>@{{ series.instagram_handle }}</span
+            <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg
+          >Edit</BaseButton
         >
-        <span v-if="hosts" class="fact"><BoardIcon name="user" :size="16" />{{ hosts }}</span>
-      </p>
+      </div>
+      <p v-if="series.description" class="description">{{ series.description }}</p>
+      <dl class="facts">
+        <div class="fact">
+          <dt>Rhythm<span class="sep">: </span></dt>
+          <dd>{{ rhythm }}</dd>
+        </div>
+        <div v-if="hosts.length" class="fact">
+          <dt>{{ hosts.length === 1 ? 'Host' : 'Hosts' }}<span class="sep">: </span></dt>
+          <dd class="hosts">
+            <span v-for="(name, i) in hosts" :key="name" class="host"
+              ><span v-if="i" class="sep">, </span
+              ><span class="avatar" :data-initial="name.charAt(0).toUpperCase()"></span
+              >{{ name }}</span
+            >
+          </dd>
+        </div>
+        <div class="fact">
+          <dt>Instagram<span class="sep">: </span></dt>
+          <dd :class="{ muted: !handle }">{{ handle ? `@${handle}` : 'Not linked' }}</dd>
+        </div>
+      </dl>
     </div>
-    <BaseButton v-if="editable" variant="secondary" class="edit" @click="emit('edit')"
-      ><svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" /></svg
-      >Edit</BaseButton
-    >
   </section>
 </template>
 
@@ -78,36 +80,43 @@ const hosts = computed(() => hostsLine(props.series.hosts));
 .show-card {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: var(--spacing-lg) var(--spacing-xl);
-  padding: var(--spacing-lg);
+  padding: var(--spacing-md);
 }
 
 .show-cover {
-  width: 180px;
-  height: 180px;
+  flex: none;
+  width: 232px;
+  height: 232px;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
 }
 
-.cover-name {
-  align-self: stretch;
+.cover-initials {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: center;
   width: 100%;
-  padding: var(--spacing-md);
-  background: var(--color-primary);
-  color: #000;
-  font: 700 1.25rem/1.1 var(--font-family);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  overflow-wrap: break-word;
+  height: 100%;
+  background: var(--color-surface-alt);
+  color: var(--color-primary);
+  font: 700 4.5rem/1 var(--font-family);
+  letter-spacing: -0.04em;
 }
 
 .show-text {
-  flex: 1 1 360px;
+  flex: 1 1 320px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.show-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
 }
 
 .show-name {
@@ -116,62 +125,95 @@ const hosts = computed(() => hostsLine(props.series.hosts));
   overflow-wrap: anywhere;
 }
 
+.edit {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Long descriptions stop after three lines; the card keeps its height. */
 .description {
   margin: 0;
+  max-width: 60ch;
   font-size: var(--font-size-md);
   color: #c8c8d4;
   white-space: pre-line;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
-  margin: 4px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: var(--spacing-md) var(--spacing-lg);
+  margin: auto 0 0;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid #2a2a42;
 }
 
 .fact {
+  min-width: 0;
+}
+
+.fact dt {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8bc;
+}
+
+.fact dd {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: #eee;
+}
+
+.fact dd.muted {
+  color: #a8a8bc;
+}
+
+.hosts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.host {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  color: #d0d0dc;
 }
 
-.fact svg {
-  flex: none;
-  color: var(--color-primary);
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* The initial is decoration: out of the text, so the row reads "Host: lena". */
+.avatar::before {
+  content: attr(data-initial);
 }
 
 @media (max-width: 640px) {
-  .show-card {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
-    padding: 0;
-  }
-
   .show-cover {
     width: 100%;
-    height: 150px;
-    border-radius: 0;
-  }
-
-  .show-text {
-    flex: none;
-    padding: var(--spacing-md);
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
 
   .show-name {
     font-size: 2rem;
-  }
-
-  .facts {
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .edit {
-    margin: 0 var(--spacing-md) var(--spacing-md);
   }
 }
 </style>

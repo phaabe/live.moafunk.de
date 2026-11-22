@@ -1119,6 +1119,8 @@ export interface SeriesEpisode {
   has_file?: boolean;
   /** Set once the recording is on SoundCloud. */
   soundcloud?: 'public' | 'private' | null;
+  /** Its Instagram posts (no drafts), pre → onair → post. */
+  instagram?: Pick<Announcement, 'slot' | 'state' | 'scheduled_at' | 'sent_at'>[];
 }
 
 /** A host of a Show. Today that is its owner; a Show may get more later. */
