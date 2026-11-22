@@ -56,7 +56,8 @@ test('a live show recovers by itself and ends in one recording', async () => {
   });
 
   const live = await test.step('soundcheck, then Go Live at the start time', async () => {
-    await page.getByRole('button', { name: 'Open Studio' }).click();
+    // The Studio on its own page: the reload below relies on its On Air route.
+    await page.goto(`/#/stream/live?show=${episode}`);
     await soundcheckAndGoLive(page);
     const at = Date.now();
     await toneBack(FIRST_TONE_S);
