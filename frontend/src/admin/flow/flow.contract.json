@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 27,
+  "rev": 28,
   "screens": [
     {
       "id": "dashboard",
@@ -10,8 +10,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "59e405cd",
-      "notesHash": "d53aaf8a",
+      "hash": "2e9bf3ce",
+      "notesHash": "9040aa7e",
       "elements": [
         {
           "k": "h1",
@@ -19,31 +19,156 @@
         },
         {
           "k": "h2",
-          "text": "Upcoming shows"
+          "text": "On air"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Dub Kitchen** · mira · Pre-recorded · 18:00–20:00"
+        },
+        {
+          "k": "text",
+          "text": "00:42:10 · 37 listening"
+        },
+        {
+          "k": "button",
+          "text": "Listen live",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "My next show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime #31** · Live · Host: lena · So 25.10. · 12:00–14:00"
+        },
+        {
+          "k": "text",
+          "text": "Starts in 1 day 18 h"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Episodes"
+        },
+        {
+          "k": "nav",
+          "text": "Past",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Upcoming",
+          "to": null
         },
         {
           "k": "row",
-          "text": "So 25.10. · 12:00–14:00 · Brunchtime · lena",
-          "meta": "Upcoming · Live",
+          "text": "Di 20.10. · 20:00–22:00 · Night Shift · jonas",
+          "meta": "Finished · Live",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Finished · wrap-up open · Live",
           "to": "episode"
         },
         {
           "k": "row",
-          "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
-          "meta": "Upcoming · Live",
+          "text": "Fr 16.10. · 18:00–20:00 · Dub Kitchen · mira",
+          "meta": "Finished · Pre-recorded",
           "to": "episode-view"
         },
         {
-          "k": "row",
-          "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-view"
+          "k": "text",
+          "text": "1–3 of 4"
+        },
+        {
+          "k": "button",
+          "text": "Previous episodes",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Next episodes",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Chalkboard"
+        },
+        {
+          "k": "text",
+          "text": "All hosts"
+        },
+        {
+          "k": "text",
+          "text": "**jonas** · 10:03 · Can someone take Di 03.11.?"
+        },
+        {
+          "k": "text",
+          "text": "**lena · you** · 10:20 · I can do it."
+        },
+        {
+          "k": "field",
+          "text": "Note for all hosts",
+          "value": "Write on the board"
+        },
+        {
+          "k": "button",
+          "text": "Post",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Shows"
+        },
+        {
+          "k": "text",
+          "text": "Most episodes first"
         },
         {
           "k": "row",
-          "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-pre"
+          "text": "Brunchtime · Yours",
+          "meta": "lena · 31 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "Night Shift",
+          "meta": "jonas · 12 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "UNHEARD",
+          "meta": "moafunk · 8 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "Dub Kitchen",
+          "meta": "mira · 5 episodes",
+          "to": "show"
         },
         {
           "k": "nav",

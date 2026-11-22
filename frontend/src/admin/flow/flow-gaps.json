@@ -235,61 +235,6 @@
       "why": "Redesign #1051 (approved in the issue): Schedule is no page of its own any more, so its check runs on the Show page, which has no nav (the nav is checked on Dashboard and My Show). Update the flow in Flow Lab, then pin the new rev."
     },
     {
-      "screen": "dashboard",
-      "items": [
-        "h2: Upcoming shows",
-        "row: So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live",
-        "row: Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live",
-        "row: Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira | Upcoming · Pre-recorded",
-        "row: So 08.11. · 12:00–14:00 · Brunchtime · lena | Upcoming · Pre-recorded",
-        "h2: Episodes",
-        "button: Past",
-        "button: Upcoming",
-        "link: Di 20.10. · 20:00–22:00 · Night Shift · jonas | Finished · Live",
-        "link: So 18.10. · 12:00–14:00 · Brunchtime · lena | Finished · wrap-up open · Live",
-        "link: Fr 16.10. · 18:00–20:00 · Dub Kitchen · mira | Finished · Pre-recorded",
-        "button: Previous episodes",
-        "button: Next episodes"
-      ],
-      "why": "Redesign #1049 (approved in the issue): “Upcoming shows” became the card “Episodes” with the tabs Past and Upcoming. Past is the default and lists all hosts' past episodes; the flow's rows moved to the Upcoming tab. The card shows three episodes at a time; arrows page through the rest. Update the Dashboard in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "dashboard",
-      "items": [
-        "h2: On air",
-        "link: Listen live"
-      ],
-      "why": "Redesign #1049 (approved in the issue): new card “On air” (upper left): the show on air with Listen live, or Back to On Air when it is the host's own. Update the Dashboard in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "dashboard",
-      "items": [
-        "h2: My next show",
-        "link: Open episode"
-      ],
-      "why": "Redesign #1049 (approved in the issue): new card “My next show” (upper right): the host's next episode with a countdown and Open episode. Update the Dashboard in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "dashboard",
-      "items": [
-        "h2: Chalkboard",
-        "field: Note for all hosts",
-        "button: Post"
-      ],
-      "why": "Redesign #1049 (approved in the issue): new card “Chalkboard”: short notes that all hosts and admins see, stored by the backend (no Telegram). Update the Dashboard in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "dashboard",
-      "items": [
-        "h2: Shows",
-        "link: Brunchtime · Yours | lena · 31 episodes",
-        "link: Night Shift | jonas · 12 episodes",
-        "link: UNHEARD | moafunk · 8 episodes",
-        "link: Dub Kitchen | mira · 5 episodes"
-      ],
-      "why": "Redesign #1049 (approved in the issue): new card “Shows”: all Shows as tiles (cover, host, finished episodes), most episodes first; a tile opens the Show page. Update the Dashboard in Flow Lab, then pin the new rev."
-    },
-    {
       "screen": "studio-onair",
       "items": [
         "row: Connection | stable",
