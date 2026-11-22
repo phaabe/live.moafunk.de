@@ -11,7 +11,7 @@ import { berlinToUtcDate, nextDayDateStr } from '../../showTime';
  */
 export type EpisodePhase = 'pre' | 'live' | 'post';
 
-/** The Studio opens this long before the start. */
+/** Soundcheck is the current step from this long before the start. The Studio is open earlier. */
 export const STUDIO_OPENS_MS = 30 * 60 * 1000;
 
 /** The colour of a card's status chip. */
@@ -23,7 +23,7 @@ export interface Status {
 
 export type Schedule = Pick<ShowDetail, 'date' | 'start_time' | 'end_time'>;
 
-/** Start, end and Studio opening of an episode in ms (null without a time). */
+/** Start, end and soundcheck time of an episode in ms (null without a time). */
 export function episodeTimes(s: Schedule): {
   startMs: number | null;
   endMs: number | null;
@@ -150,19 +150,19 @@ const clamp = (n: number) => Math.round(Math.min(Math.max(n, 0), 100));
  * The four steps of an episode, in the order of its cards: Set up social
  * media › Soundcheck › Show time › Publish recording. Steps before the
  * current one are done, the ones after it are next. Before the show, Set up
- * social media is current until both posts are set up or the Studio opens.
- * The current step fills: social media by its set-up posts, Soundcheck by the
- * time from Studio open to the start, Show time by the time on air of the
- * show length, Publish recording by its done steps.
+ * social media is current until both posts are set up or the soundcheck time
+ * comes. The current step fills: social media by its set-up posts, Soundcheck
+ * by the time from the soundcheck time to the start, Show time by the time on
+ * air of the show length, Publish recording by its done steps.
  */
 export function progress({ show, now, phase, tested, social, steps }: ProgressInput): Segment[] {
   const { openMs } = episodeTimes(show);
   const prerecorded = show.stream_mode === 'prerecorded';
-  const studioOpen = openMs !== null && now >= openMs;
+  const soundcheckTime = openMs !== null && now >= openMs;
   let at: number;
   if (phase === 'live') at = 2;
   else if (phase === 'post') at = 3;
-  else at = social.ready >= 2 || studioOpen ? 1 : 0;
+  else at = social.ready >= 2 || soundcheckTime ? 1 : 0;
   const state = (i: number): StepState => (i < at ? 'done' : i === at ? 'now' : 'next');
 
   const setup: Segment = {
@@ -182,7 +182,7 @@ export function progress({ show, now, phase, tested, social, steps }: ProgressIn
   if (at === 1) preLabel = `starts ${untilStart(show, now)}`;
   else if (prerecorded) preLabel = show.prerecorded_filename ? 'set uploaded' : 'no set';
   else if (tested) preLabel = 'tested';
-  else preLabel = openMs === null ? 'done' : `Studio from ${berlinTime(openMs)}`;
+  else preLabel = openMs === null ? 'done' : `before ${show.start_time}`;
   const pre: Segment = {
     name: 'Soundcheck',
     short: 'Soundcheck',

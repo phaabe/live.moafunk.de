@@ -12,6 +12,7 @@
     "h1: So 25.10. · Brunchtime",
     "pill: Upcoming · Live · 12:00–14:00",
     "h2: Next step",
+    "button: Open Studio",
     "h2: Details",
     "field: Title",
     "field: Description",
@@ -33,13 +34,11 @@
   ],
   "extra": [
     "h1: Brunchtime #31",
-    "h2: Soundcheck",
     "pill: Upcoming",
     "button: Edit",
     "button: 1 · Social media (done)",
     "button: 2 · Soundcheck",
     "button: 3 · Show time · in 5 days · until 12:00",
-    "button: 4 · Recording",
-    "row: Studio | Opens So 25.10. · 11:30"
+    "button: 4 · Recording"
   ]
 }

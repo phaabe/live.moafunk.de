@@ -387,9 +387,7 @@ describe('Show page helpers', () => {
   it("give the flow's next step for live and pre-recorded episodes", () => {
     const [prerecorded, live] = BRUNCHTIME.episodes;
     const friday = Date.parse(FRIDAY);
-    expect(nextStep(live, friday)).toBe(
-      'Test your audio before air time. The Studio opens 30 min before the start.'
-    );
+    expect(nextStep(live, friday)).toBe('Test your audio in the Studio before air time.');
     expect(nextStep(prerecorded, friday)).toBe(
       'Nothing to do. The set plays at air time. Wrap-up opens after 14:00.'
     );
@@ -440,7 +438,7 @@ describe('Show page (owner)', () => {
     expect(next?.querySelector('.next-slot')?.textContent).toBe('12:00–14:00 · Live');
     expect(next?.querySelector('.next-count')?.textContent).toBe('Starts in 2 days 4 h');
     expect(next?.querySelector('.next-hint')?.textContent).toBe(
-      'Test your audio before air time. The Studio opens 30 min before the start.'
+      'Test your audio in the Studio before air time.'
     );
     // The page's one yellow button.
     expect(root.querySelectorAll('button.variant-primary')).toHaveLength(1);

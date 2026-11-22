@@ -254,6 +254,17 @@ describe('Studio', () => {
     expect(goLiveButton()).toBeUndefined();
   });
 
+  it('is open hours and days before the start: the pill counts hours, then names the day', async () => {
+    await mountStudio('2026-11-15T09:41:18Z');
+    expect(text()).toContain('Soundcheck · show starts in 2:18:42');
+    app!.unmount();
+    root.remove();
+    await mountStudio('2026-11-13T15:00:00Z');
+    expect(text()).toContain('Soundcheck · show starts So 15.11. · 12:00');
+    // Go Live comes at the start, from the countdown.
+    expect(goLiveButton()).toBeUndefined();
+  });
+
   it('turns the countdown into Go Live at the start; it blinks once the soundcheck is confirmed', async () => {
     await mountStudio('2026-11-15T11:59:58Z');
     await vi.advanceTimersByTimeAsync(2000);

@@ -500,16 +500,21 @@ describe('Episode', () => {
     expect(root.querySelector('input[type="text"], textarea, select')).toBeNull();
     expect(text()).not.toContain('Cancel booking');
     expect(card('Soundcheck').textContent).toContain(
-      'Test your audio before air time. The Studio opens 30 min before the start.'
+      'Test your audio in the Studio before air time.'
     );
-    expect(button('Open Studio').disabled).toBe(true);
-    expect(cardStatus('Soundcheck')).toBe('Studio closed');
+    expect(cardStatus('Soundcheck')).toBe('Studio open');
     // No tested or untested claim: the Studio does not save the test.
     expect(card('Soundcheck').textContent).not.toMatch(/tested/i);
     for (const part of LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram')) {
       expect(text()).not.toContain(part);
     }
     expect(root.querySelector('a')?.getAttribute('href')).toBe('/shows/brunchtime');
+    // Days before the start the Studio is open too. It asks for the
+    // microphone, so it opens only from the Soundcheck tab.
+    expect(root.querySelector('.studio-stub')).toBeNull();
+    tab(1).click();
+    await settle();
+    await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
   });
 
   it('opens the Studio in the Soundcheck tab, with this episode selected, from 30 min before the start', async () => {
@@ -848,13 +853,13 @@ describe('Episode · phases', () => {
     // More than a day before the start, the clock says the days.
     expect(tabClock()).toEqual({ clock: 'in 2 days', sub: 'until 12:00' });
     expect(currentCards()).toEqual(['Social media']);
-    // The Studio is closed, and Soundcheck is not the current step: no yellow button.
+    // Soundcheck is not the current step yet: no yellow button. The Studio is open.
     expect(yellow()).toEqual([]);
     expect(cardStatus('Show time')).toBe('Starts in 2 days');
-    expect(card('Soundcheck').textContent).toContain('Opens Di 27.10. · 11:30');
+    expect(cardStatus('Soundcheck')).toBe('Studio open');
   });
 
-  it('moves on to Soundcheck once both posts are set up, before the Studio opens', async () => {
+  it('moves on to Soundcheck once both posts are set up, days before the start', async () => {
     at('11:00');
     current = day({ date: '2026-10-27' });
     announcements = [announcement('pre', { scheduled_at: FR_2310_1800 }), announcement('onair')];
@@ -979,7 +984,9 @@ describe('Episode · phone', () => {
     ).toBe('');
     tab(1).click();
     await nextTick();
-    expect(shownCards()).toEqual(['Soundcheck']);
+    // Soundcheck opens the Studio in the main card.
+    await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
+    expect(shownCards()).toEqual([]);
     expect(tabs()[1].selected).toBe(true);
   });
 

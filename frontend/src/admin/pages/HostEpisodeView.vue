@@ -47,7 +47,7 @@ watch(
         :announcements="slots"
         read-only
       />
-      <SoundcheckCard :show="show" :phase="phase" :state="step(1)" :now="now" read-only />
+      <SoundcheckCard :show="show" :phase="phase" :state="step(1)" read-only />
       <ShowTimeCard :show="show" :phase="phase" :state="step(2)" :now="now" read-only />
       <EpisodeRecordingCard
         :show="show"

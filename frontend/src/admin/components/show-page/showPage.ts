@@ -70,7 +70,7 @@ export function nextStep(e: SeriesEpisode, now: number): string {
       : 'Nothing to do. The set plays at air time.';
   }
   if (started) return 'The Studio is open.';
-  return 'Test your audio before air time. The Studio opens 30 min before the start.';
+  return 'Test your audio in the Studio before air time.';
 }
 
 /** "Every week · Sundays · 12:00–14:00", "Every other Friday · 22:00–23:30". */
