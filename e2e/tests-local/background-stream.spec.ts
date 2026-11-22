@@ -216,7 +216,9 @@ test('episode page: the stream goes on across admin pages, the Show time tab com
   await endEpisode(page);
 });
 
-test('admin: leaving the Recording page ends the live broadcast', async ({ page }) => {
+// Ticket 1062 (https://github.com/phaabe/live.moafunk.de/issues/1062): the
+// Recording page leaves a broadcast from another page alone.
+test('admin: leaving the Recording page keeps the live broadcast', async ({ page }) => {
   test.slow();
   expect((await page.request.get(`${MOCK}/mock/role/admin`)).ok()).toBe(true);
   await page.goto('/admin/#/stream/live?show=1');
@@ -225,11 +227,15 @@ test('admin: leaving the Recording page ends the live broadcast', async ({ page 
   await stillSends(page, 'admin, On Air');
 
   await open(page, '/recording');
+  await expect(page.getByText('This tab is already live from another page.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /Stop Stream/ })).toHaveCount(0);
   await stillSends(page, 'admin, Recording page');
   await open(page, '/dashboard');
-  // The Recording page stops the stream when it closes: "stop" ends the broadcast.
-  await expect.poll(async () => (await mockLive(page)).live).toBe(0);
-  console.log('admin, left Recording page: live=0, broadcast ended');
-  await open(page, '/stream/on-air?show=1');
-  await page.waitForURL(/#\/stream\/live/);
+  await stillSends(page, 'admin, left Recording page');
+
+  // Back on the live panel, which still owns the broadcast.
+  await open(page, '/stream/live?show=1');
+  await page.waitForURL(/#\/stream\/on-air/);
+  await stillSends(page, 'admin, back on On Air');
+  await endEpisode(page);
 });
