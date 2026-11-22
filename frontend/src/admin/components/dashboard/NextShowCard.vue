@@ -7,7 +7,7 @@ import EpisodeHead from './EpisodeHead.vue';
 import { airWindow, dayAndTime, hostsOf, modeAndHosts, startsIn } from './dashboard';
 
 // Dashboard card "My next show" (#1049): the host's next episode, a countdown
-// and Open episode, the page's one primary button.
+// and Open episode, the page's one primary (yellow) button.
 const props = defineProps<{
   episode: UpcomingEpisode | null;
   coverUrl: string | null;
@@ -63,7 +63,7 @@ const countdown = computed(() => {
 .countdown {
   margin: 0;
   font: 700 1.25rem var(--font-family);
-  color: var(--color-primary);
+  color: #fff;
 }
 
 .none {

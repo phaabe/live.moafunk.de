@@ -618,6 +618,12 @@ async fn main() -> anyhow::Result<()> {
             "/api/series-overview",
             get(handlers::series::api_series_overview),
         )
+        // Host Dashboard: the hosts' and admins' chalkboard
+        .route(
+            "/api/chalkboard",
+            get(handlers::chalkboard::api_list_chalkboard)
+                .post(handlers::chalkboard::api_add_chalkboard_note),
+        )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",

@@ -778,6 +778,19 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Dashboard chalkboard: notes every host and admin can read and write.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chalkboard_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     crate::recovery::migrate(pool).await?;
 
     tracing::info!("Database migrations completed");

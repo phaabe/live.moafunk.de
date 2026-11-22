@@ -88,7 +88,7 @@ const tiles = computed(() =>
 }
 
 .show-tile:hover .tile-name {
-  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .show-tile:focus-visible {
@@ -114,10 +114,10 @@ const tiles = computed(() =>
 }
 
 .yours {
-  padding: 2px 6px;
+  padding: 1px 6px;
+  border: 1px solid #fff;
   border-radius: var(--radius-sm);
-  background: var(--color-primary);
-  color: #000;
+  color: #fff;
   font: 700 10px var(--font-ui);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -135,7 +135,7 @@ const tiles = computed(() =>
 
 .tile-count {
   font: 700 13px var(--font-family);
-  color: #e8e2a8;
+  color: #d0d0dc;
 }
 
 @media (max-width: 640px) {

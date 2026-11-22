@@ -8,7 +8,7 @@ import {
   type UpcomingEpisode,
 } from '../api';
 import { useAuthStore } from '../stores/auth';
-import ChatCard from '../components/dashboard/ChatCard.vue';
+import ChalkboardCard from '../components/dashboard/ChalkboardCard.vue';
 import EpisodesCard from '../components/dashboard/EpisodesCard.vue';
 import NextShowCard from '../components/dashboard/NextShowCard.vue';
 import OnAirCard from '../components/dashboard/OnAirCard.vue';
@@ -17,8 +17,10 @@ import { airsAt, hostsOf, isMine } from '../components/dashboard/dashboard';
 
 // Flow screen `dashboard` (host at /dashboard), redesign #1049: On air and My
 // next show on top, all hosts' episodes (Past first, then Upcoming), the
-// hosts' group chat, and every Show as a tile. The episode page shows the
+// hosts' chalkboard, and every Show as a tile. The episode page shows the
 // owner's screen or a read-only view.
+// Colors by priority: red = on air, yellow = your next step, white = yours,
+// gray = everything else.
 
 const auth = useAuthStore();
 const username = computed(() => auth.user?.username);
@@ -167,7 +169,7 @@ onUnmounted(() => {
         />
       </div>
       <aside class="dash-side">
-        <ChatCard :username="username" />
+        <ChalkboardCard :username="username" />
       </aside>
     </div>
 
@@ -178,6 +180,11 @@ onUnmounted(() => {
 <style scoped>
 .dashboard-page {
   max-width: 1200px;
+}
+
+/* Yellow is for your next step only, so card icons stay gray. */
+.dashboard-page :deep(.board-card-title svg) {
+  color: #8e8ea4;
 }
 
 .dash-cols {
