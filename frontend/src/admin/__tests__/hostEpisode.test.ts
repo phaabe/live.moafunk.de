@@ -323,12 +323,20 @@ const yellow = () =>
 
 const cardStatus = (title: string) => card(title).querySelector('.ep-status')?.textContent?.trim();
 
-/** The progress bar: each part's state, fill and label. */
+/** The four step icons: each step's state, fill and label. */
 const bar = () =>
   [...root.querySelectorAll('.segs li')].map((li) => ({
     state: ['done', 'now', 'next'].find((c) => li.classList.contains(c)),
-    fill: Number(li.querySelector('i')?.getAttribute('data-fill')),
+    fill: Number(li.getAttribute('data-fill')),
     label: li.querySelector('.seg-label')?.textContent?.trim(),
+  }));
+
+/** Each card's frame (current, done or next) and its step, in page order. */
+const frames = () =>
+  [...root.querySelectorAll<HTMLElement>('.ep-card')].map((c) => ({
+    title: c.querySelector('h2')?.textContent?.trim(),
+    frame: ['current', 'done', 'next'].find((x) => c.classList.contains(x)),
+    step: c.querySelector('.ep-card-phase')?.textContent?.trim(),
   }));
 
 function editButton(): HTMLButtonElement {
@@ -361,11 +369,18 @@ describe('Episode', () => {
     for (const part of ['< Brunchtime', 'Upcoming', 'Live', 'Host: lena']) {
       expect(text()).toContain(part);
     }
-    expect([...root.querySelectorAll('h2')].map((h) => h.textContent?.trim())).toEqual([
-      'Soundcheck',
-      'Show time',
-      'Recording & SoundCloud',
-      'Social media',
+    // The cards in step order; nothing is set up yet, so step 1 is current.
+    expect(frames()).toEqual([
+      { title: 'Social media', frame: 'current', step: 'Step 1' },
+      { title: 'Soundcheck', frame: 'next', step: 'Step 2' },
+      { title: 'Show time', frame: 'next', step: 'Step 3' },
+      { title: 'Recording & SoundCloud', frame: 'next', step: 'Step 4' },
+    ]);
+    expect([...root.querySelectorAll('.segs b')].map((b) => b.textContent?.trim())).toEqual([
+      '1 · Set up social media',
+      '2 · Soundcheck',
+      '3 · Show time',
+      '4 · Publish recording',
     ]);
     // Read-only details: no form until Edit.
     expect(root.querySelector('input[type="text"], textarea, select')).toBeNull();
@@ -527,7 +542,8 @@ describe('Episode', () => {
       'Upload your set before air time. Without a file nothing plays.'
     );
     expect(card('Show time').textContent).toContain('Plays at 12:00.');
-    expect(yellow()).toEqual(['Upload your set']);
+    // Set up social media is still the current step, so the button is not yellow yet.
+    expect(yellow()).toEqual([]);
     button('Upload your set').click();
     await vi.waitFor(() =>
       expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book?mode=prerecorded')
@@ -571,39 +587,66 @@ describe('Episode · phases', () => {
     download_url: 'https://r2.example/v1.mp3',
   };
 
-  it('pre-show: fills Pre-show from Studio open to the start', async () => {
+  it('pre-show: moves on to Soundcheck when the Studio opens and fills it up to the start', async () => {
     at('11:40');
     current = day();
     await mount();
     expect(bar()).toEqual([
+      { state: 'done', fill: 100, label: '0 of 2 posts ready' },
       { state: 'now', fill: 33, label: 'starts in 20 min' },
       { state: 'next', fill: 0, label: '12:00–14:00' },
       { state: 'next', fill: 0, label: 'after 14:00' },
     ]);
-    expect(root.querySelector('[aria-current="step"]')?.textContent).toContain('Pre-show');
+    expect(root.querySelector('[aria-current="step"]')?.textContent).toContain('Soundcheck');
     expect(currentCards()).toEqual(['Soundcheck']);
     expect(yellow()).toEqual(['Open Studio']);
     expect(cardStatus('Show time')).toBe('Starts in 20 min');
   });
 
-  it('counts the days to the start', async () => {
+  it('keeps Set up social media current until both posts are set up', async () => {
     at('11:00');
     current = day({ date: '2026-10-27' });
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
     await mount();
-    expect(bar()[0]).toEqual({ state: 'now', fill: 0, label: 'starts in 2 days' });
+    expect(bar().slice(0, 2)).toEqual([
+      { state: 'now', fill: 50, label: '1 of 2 posts ready' },
+      { state: 'next', fill: 0, label: 'Studio from 11:30' },
+    ]);
+    expect(currentCards()).toEqual(['Social media']);
+    // The Studio is closed, and Soundcheck is not the current step: no yellow button.
+    expect(yellow()).toEqual([]);
     expect(cardStatus('Show time')).toBe('Starts in 2 days');
     expect(card('Soundcheck').textContent).toContain('Opens Di 27.10. · 11:30');
+  });
+
+  it('moves on to Soundcheck once both posts are set up, before the Studio opens', async () => {
+    at('11:00');
+    current = day({ date: '2026-10-27' });
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 }), announcement('onair')];
+    await mount();
+    expect(bar().slice(0, 2)).toEqual([
+      { state: 'done', fill: 100, label: '2 posts ready' },
+      { state: 'now', fill: 0, label: 'starts in 2 days' },
+    ]);
+    expect(frames().map((f) => f.frame)).toEqual(['done', 'current', 'next', 'next']);
   });
 
   it('on air: fills Show time by the time on air of the show length', async () => {
     at('12:42');
     current = day({ on_air: true });
+    announcements = [
+      announcement('pre', { state: 'sent', sent_at: FR_2310_1800 }),
+      announcement('onair', { state: 'sent', sent_at: '2026-10-25T10:00:00Z' }),
+    ];
     await mount();
     expect(bar()).toEqual([
+      { state: 'done', fill: 100, label: '2 posts sent' },
       { state: 'done', fill: 100, label: 'Studio from 11:30' },
       { state: 'now', fill: 35, label: '00:42:00 of 2:00:00' },
       { state: 'next', fill: 0, label: 'after 14:00' },
     ]);
+    // Frames follow the steps: done dim yellow, current yellow, next gray.
+    expect(frames().map((f) => f.frame)).toEqual(['done', 'done', 'current', 'next']);
     expect(card('Show time').querySelector('.big b')?.textContent).toBe('00:42:00');
     expect(yellow()).toEqual(['Back to On Air']);
   });
@@ -615,6 +658,7 @@ describe('Episode · phases', () => {
     button('< Episode').click();
     await settle();
     expect(bar()).toEqual([
+      { state: 'done', fill: 100, label: '0 of 2 posts ready' },
       { state: 'done', fill: 100, label: 'Studio from 11:30' },
       { state: 'done', fill: 100, label: 'aired 1:58:40' },
       { state: 'now', fill: 33, label: '1 of 3 · recording ready' },
@@ -649,7 +693,7 @@ describe('Episode · phases', () => {
     await mount();
     button('< Episode').click();
     await settle();
-    expect(bar()[2]).toEqual({ state: 'now', fill: 100, label: '3 of 3 · post sent' });
+    expect(bar()[3]).toEqual({ state: 'now', fill: 100, label: '3 of 3 · post sent' });
     expect(cardStatus('Recording & SoundCloud')).toBe('Public on SoundCloud');
   });
 
@@ -676,7 +720,7 @@ describe('Episode · phases', () => {
     expect(card('Soundcheck').querySelector('button')?.textContent?.trim()).toBe('Replace file');
     expect(card('Show time').textContent).toContain('Plays at 12:00.');
     expect(text()).not.toContain('Open Studio');
-    expect(bar()[0].label).toBe('starts in 20 min');
+    expect(bar()[1].label).toBe('starts in 20 min');
   });
 });
 
@@ -691,24 +735,31 @@ describe('Episode · phone', () => {
   const content = (title: string) => card(title).querySelector('.ep-card-content') as HTMLElement;
   const toggle = (title: string) => card(title).querySelector('h2 button') as HTMLButtonElement;
 
-  it('opens only the card of the current phase; the others open on tap', async () => {
+  it('opens only the card of the current step; the others open on tap', async () => {
     await mount();
-    expect(content('Soundcheck').style.display).toBe('');
-    expect(toggle('Soundcheck').getAttribute('aria-expanded')).toBe('true');
+    expect(content('Social').style.display).toBe('');
+    expect(toggle('Social').getAttribute('aria-expanded')).toBe('true');
     // Phones use the short titles of the design.
-    for (const title of ['Show time', 'Recording', 'Social']) {
+    for (const title of ['Soundcheck', 'Show time', 'Recording']) {
       expect(content(title).style.display).toBe('none');
       expect(toggle(title).getAttribute('aria-expanded')).toBe('false');
       // Folded cards still show their title and status.
       expect(card(title).querySelector('.ep-status')?.textContent).toBeTruthy();
     }
-    toggle('Social').click();
-    await nextTick();
-    expect(content('Social').style.display).toBe('');
-    expect(toggle('Social').getAttribute('aria-expanded')).toBe('true');
+    // The step icons use the short names too.
+    expect([...root.querySelectorAll('.segs b')].map((b) => b.textContent?.trim())).toEqual([
+      '1 · Social',
+      '2 · Soundcheck',
+      '3 · Show time',
+      '4 · Publish',
+    ]);
     toggle('Soundcheck').click();
     await nextTick();
-    expect(content('Soundcheck').style.display).toBe('none');
+    expect(content('Soundcheck').style.display).toBe('');
+    expect(toggle('Soundcheck').getAttribute('aria-expanded')).toBe('true');
+    toggle('Social').click();
+    await nextTick();
+    expect(content('Social').style.display).toBe('none');
   });
 
   it('opens the Show time card while on air', async () => {
@@ -1726,10 +1777,10 @@ describe('who sees what', () => {
       expect(text()).toContain(part);
     }
     expect([...root.querySelectorAll('h2')].map((h) => h.textContent?.trim())).toEqual([
+      'Social media',
       'Soundcheck',
       'Show time',
       'Recording & SoundCloud',
-      'Social media',
     ]);
     expect(text()).not.toContain("Today's show page");
     expect(root.querySelectorAll('button, input, select, textarea')).toHaveLength(0);
@@ -1789,7 +1840,7 @@ describe('who sees what', () => {
       expect(!!root.querySelector('a[href^="https://soundcloud.com"]')).toBe(linked);
       // The recording file itself stays with the episode's hosts.
       expect(root.querySelector('.audio-player')).toBeNull();
-      expect(bar().map((s) => s.state)).toEqual(['done', 'done', 'done']);
+      expect(bar().map((s) => s.state)).toEqual(['done', 'done', 'done', 'done']);
       expect(currentCards()).toEqual([]);
     }
   );

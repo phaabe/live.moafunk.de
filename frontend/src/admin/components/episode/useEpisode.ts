@@ -3,7 +3,7 @@ import type { ShowDetail } from '../../api';
 import { setLength } from '../../episodeRow';
 import { inSlot, type SlotReading } from '../../promotion';
 import { berlinToUtcDate } from '../../showTime';
-import { episodePhase, progress, type EpisodePhase } from './phase';
+import { episodePhase, progress, type EpisodePhase, type StepState } from './phase';
 
 /** How long after the end a missing recording still counts as processing
  * (the backend's own "no recording" alert waits as long). */
@@ -57,7 +57,7 @@ export function recordingPill(s: ShowDetail | null, now: number): RecordingPill 
 
 /**
  * The shared state of the episode page, for its hosts and for every other
- * host: the clock, the phase, the recording and the progress bar. Call it in
+ * host: the clock, the phase, the recording and the four steps. Call it in
  * a component's setup; the clock stops with the component.
  */
 export function useEpisode(
@@ -78,6 +78,13 @@ export function useEpisode(
   const recordingReady = computed(() => phase.value === 'post' && recording.value.state === 'ok');
   const trackPublic = computed(() => !!show.value?.soundcloud_public);
   const postSent = computed(() => inSlot(slots.value, 'post')?.state === 'sent');
+  const social = computed(() => {
+    const before = (['pre', 'onair'] as const).map((slot) => inSlot(slots.value, slot));
+    return {
+      ready: before.filter((a) => !!a && a.state !== 'draft').length,
+      sent: before.filter((a) => a?.state === 'sent').length,
+    };
+  });
   const segments = computed(() =>
     show.value
       ? progress({
@@ -85,6 +92,7 @@ export function useEpisode(
           now: now.value,
           phase: phase.value,
           tested: tested.value,
+          social: social.value,
           steps: {
             recording: recordingReady.value,
             trackPublic: trackPublic.value,
@@ -93,5 +101,7 @@ export function useEpisode(
         })
       : []
   );
-  return { now, phase, recording, trackPublic, segments };
+  /** The state of step `i` (0 = Set up social media … 3 = Publish recording). */
+  const step = (i: number): StepState => segments.value[i]?.state ?? 'next';
+  return { now, phase, recording, trackPublic, segments, step };
 }

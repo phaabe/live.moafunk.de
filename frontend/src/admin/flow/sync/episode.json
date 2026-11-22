@@ -30,24 +30,25 @@
   ],
   "extra": [
     "h1: Brunchtime #31",
+    "h2: Social media",
     "h2: Soundcheck",
     "h2: Show time",
     "h2: Recording & SoundCloud",
-    "h2: Social media",
     "pill: Upcoming",
     "button: Edit",
     "button: Edit on-air story",
     "button: Cancel on-air story",
     "button: Set up post-announcement",
     "link: live.moafunk.de",
-    "row: Pre-show | starts in 5 days",
-    "row: Show time | 12:00–14:00",
-    "row: Post-show | after 14:00",
-    "row: Studio | Opens So 25.10. · 11:30",
-    "row: Mode | Live from the Studio",
-    "row: SoundCloud | After the show",
+    "row: 1 · Set up social media (done) | 2 posts ready",
+    "row: 2 · Soundcheck | starts in 5 days",
+    "row: 3 · Show time | 12:00–14:00",
+    "row: 4 · Publish recording | after 14:00",
     "row: Pre-announcement · Instagram feed post · Fr 23.10. · 18:00 | Scheduled",
     "row: On-air story · Instagram story · when you go live | Scheduled",
-    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
+    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up",
+    "row: Studio | Opens So 25.10. · 11:30",
+    "row: Mode | Live from the Studio",
+    "row: SoundCloud | After the show"
   ]
 }

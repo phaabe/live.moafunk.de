@@ -1,27 +1,41 @@
 <script setup lang="ts">
 import BoardIcon from '../BoardIcon.vue';
+import EpisodeIcon from './EpisodeIcon.vue';
 import type { Segment } from './phase';
+import { usePhone } from './phone';
 
-// Progress bar option A (#1052): three equal parts Pre-show › Show time ›
-// Post-show. Done parts are green, the current part fills in yellow.
+// Step icons (#1052, option E): Set up social media › Soundcheck › Show time ›
+// Publish recording, each a round icon with its name and a status line. The
+// current step is yellow, done steps dim yellow with a check, next steps
+// gray. The line after the current step fills as the step goes on. The card
+// of each step has a frame in the same colour.
 
 defineProps<{ segments: Segment[] }>();
+const phone = usePhone();
 </script>
 
 <template>
   <div class="ep-progress">
     <ol class="segs" aria-label="Episode progress">
       <li
-        v-for="seg in segments"
+        v-for="(seg, i) in segments"
         :key="seg.name"
         :class="['seg', seg.state]"
         :aria-current="seg.state === 'now' ? 'step' : undefined"
+        :data-fill="seg.fill"
+        :style="{ '--fill': `${seg.fill}%` }"
       >
-        <span class="bar" aria-hidden="true"
-          ><i :style="{ width: `${seg.fill}%` }" :data-fill="seg.fill"></i
-        ></span>
+        <span class="ic" aria-hidden="true">
+          <EpisodeIcon v-if="i === 0" name="instagram" :size="phone ? 18 : 24" />
+          <BoardIcon v-else-if="i === 1" name="headphones" :size="phone ? 18 : 24" />
+          <BoardIcon v-else-if="i === 2" name="broadcast" :size="phone ? 18 : 24" />
+          <EpisodeIcon v-else name="cloud" :size="phone ? 18 : 24" />
+          <span v-if="seg.state === 'done'" class="chk"
+            ><BoardIcon name="check" :size="phone ? 9 : 12"
+          /></span>
+        </span>
         <b
-          ><BoardIcon v-if="seg.state === 'done'" name="check" :size="14" />{{ seg.name
+          >{{ i + 1 }} · {{ phone ? seg.short : seg.name
           }}<span v-if="seg.state === 'done'" class="sep"> (done)</span></b
         >
         <span class="seg-label">{{ seg.label }}</span>
@@ -32,92 +46,128 @@ defineProps<{ segments: Segment[] }>();
 
 <style scoped>
 .ep-progress {
-  padding: 16px var(--spacing-lg) 18px;
+  padding: 18px var(--spacing-lg) 16px;
   border-top: 1px solid #2a2a42;
   background: #0a0a1c;
 }
 
 .segs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px 14px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .seg {
-  display: grid;
-  grid-template-columns: minmax(0, auto) minmax(0, auto);
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 2px 8px;
+  --c: #8e8ea4;
+  --line: #26263e;
+  --size: 56px;
+  --gap: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
+  padding: 0 4px;
+  text-align: center;
+  line-height: 1.3;
 }
 
-.bar {
-  grid-column: 1 / -1;
-  height: 10px;
-  margin-bottom: 8px;
-  border-radius: 5px;
-  background: #26263e;
-  overflow: hidden;
+.seg.done {
+  --c: #8f8536;
+  --line: #8f8536;
 }
 
-.bar i {
-  display: block;
-  height: 100%;
+.seg.now {
+  --c: var(--color-primary);
+  --line: linear-gradient(to right, var(--color-primary) var(--fill), #26263e var(--fill));
+}
+
+/* The line to the next step, through the middle of the icons. */
+.seg:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: calc(var(--size) / 2 - 2px);
+  left: calc(50% + var(--size) / 2 + var(--gap));
+  width: calc(100% - var(--size) - 2 * var(--gap));
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.ic {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size);
+  height: var(--size);
+  margin-bottom: 6px;
+  border: 2px solid #34344c;
+  border-radius: 50%;
+  background: var(--color-surface);
+  color: #8e8ea4;
+}
+
+.done .ic {
+  border-color: #8f8536;
+  background: #1c1a0a;
+  color: #8f8536;
+}
+
+.now .ic {
+  border-color: var(--color-primary);
   background: var(--color-primary);
+  color: #000;
+  box-shadow: 0 0 0 5px rgba(255, 236, 68, 0.22);
 }
 
-.seg.done .bar i {
-  background: #34c759;
+.chk {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #8f8536;
+  color: #000;
 }
 
 .seg b {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: 14px;
-  color: #fff;
-}
-
-.seg.now b {
-  color: var(--color-primary);
-}
-
-.seg.done b svg {
-  color: #34c759;
+  color: var(--c);
+  overflow-wrap: break-word;
 }
 
 .seg-label {
   font: 700 12px var(--font-family);
   color: #a8a8bc;
-  text-align: right;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .seg.now .seg-label {
-  color: #e8e2a8;
+  color: #e4e4ee;
 }
 
 @media (max-width: 640px) {
   .ep-progress {
-    padding: 14px var(--spacing-md) 16px;
-  }
-
-  .segs {
-    gap: 4px;
-  }
-
-  .bar {
-    height: 8px;
+    padding: 14px var(--spacing-sm) 14px;
   }
 
   .seg {
-    grid-template-columns: minmax(0, 1fr);
-    justify-content: stretch;
-    line-height: 1.25;
+    --size: 40px;
+    --gap: 6px;
+    padding: 0 2px;
+  }
+
+  .chk {
+    width: 16px;
+    height: 16px;
   }
 
   .seg b {
@@ -126,7 +176,6 @@ defineProps<{ segments: Segment[] }>();
 
   .seg-label {
     font-size: 11px;
-    text-align: left;
   }
 }
 </style>

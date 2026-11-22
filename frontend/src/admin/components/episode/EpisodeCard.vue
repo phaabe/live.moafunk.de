@@ -1,37 +1,36 @@
 <script setup lang="ts">
-import { ref, useId, watch } from 'vue';
-import type { Status } from './phase';
+import { computed, ref, useId, watch } from 'vue';
+import type { Status, StepState } from './phase';
 import { usePhone } from './phone';
 import EpisodeIcon from './EpisodeIcon.vue';
 
-// One status card of the episode page (#1052): title, the phase it belongs
-// to and its status, then the content and the actions. The card of the
-// current phase has a yellow frame. On phones only that card is open; the
-// others show title and status and open on tap.
+// One status card of the episode page (#1052): title, its step (1–4) and its
+// status, then the content and the actions. The frame has the colour of its
+// step: yellow for the current step, dim yellow when done, gray when next.
+// On phones only the current card is open; the others show title and status
+// and open on tap.
 
 const props = defineProps<{
   title: string;
   /** A shorter title for phones ("Recording", "Social"). */
   short?: string;
-  /** "Pre-show", "During the show", "Post-show", "All phases". */
-  phase: string;
+  /** Its step in the heading box: 1 Set up social media … 4 Publish recording. */
+  step: number;
+  /** Where that step is. */
+  state: StepState;
   status: Status;
-  /** The card of the current phase. */
-  current?: boolean;
 }>();
 
 const phone = usePhone();
-const open = ref(!!props.current);
-// A new phase opens its card and folds the one before.
-watch(
-  () => props.current,
-  (current) => (open.value = !!current)
-);
+const current = computed(() => props.state === 'now');
+const open = ref(current.value);
+// A new step opens its card and folds the one before.
+watch(current, (now) => (open.value = now));
 const bodyId = useId();
 </script>
 
 <template>
-  <section :class="['ep-card', { current, folded: phone && !open }]">
+  <section :class="['ep-card', current ? 'current' : state, { folded: phone && !open }]">
     <div class="ep-card-head">
       <h2 class="ep-card-title">
         <button
@@ -46,7 +45,7 @@ const bodyId = useId();
         </button>
         <template v-else><slot name="icon" />{{ title }}</template>
       </h2>
-      <span v-if="!phone" class="ep-card-phase">{{ phase }}</span>
+      <span v-if="!phone" class="ep-card-phase">Step {{ step }}</span>
       <span :class="['ep-status', status.tone]"
         ><span class="dot" aria-hidden="true"></span>{{ status.text }}</span
       >
@@ -61,18 +60,25 @@ const bodyId = useId();
 
 <style scoped>
 .ep-card {
+  --step: #8e8ea4;
   position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: 1px solid #2a2a42;
+  border: 2px solid #34344c;
   border-radius: var(--radius-xl);
   background: var(--color-surface);
   overflow: hidden;
 }
 
+.ep-card.done {
+  --step: #8f8536;
+  border-color: #8f8536;
+}
+
 .ep-card.current {
-  border: 2px solid var(--color-primary);
+  --step: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .ep-card-head {
@@ -104,7 +110,7 @@ const bodyId = useId();
 
 .ep-card-title :deep(svg) {
   flex: none;
-  color: var(--color-primary);
+  color: var(--step);
 }
 
 /* On phones the whole head opens and folds the card. */
@@ -140,9 +146,9 @@ const bodyId = useId();
 }
 
 .ep-card-phase {
-  color: #a0a0b4;
+  color: var(--step);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .ep-card-head .ep-status {
