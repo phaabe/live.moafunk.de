@@ -14,6 +14,10 @@
 // - PUT /api/shows/1/studio-log: what the Studio and the live panel saved;
 //   GET /api/shows/1 returns it, like the backend.
 // - /mock/live: how many LIVE broadcasts are open, and the audio chunks each got.
+// - MOCK_RECORDING=<mp3>: episode 1 has that file as its recording, for the
+//   Edit recording page (/admin/#/shows/1/edit-recording): edit, peaks (ffmpeg)
+//   and /mock/recording.mp3 with CORS and Range, like R2. Apply only pretends.
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -99,6 +103,71 @@ const routes = {
 /** Browsers listening to /test.mp3. */
 const listeners = new Set();
 
+// ---- Edit recording (#883) ----
+const RECORDING = process.env.MOCK_RECORDING ?? null;
+const recording = { edit: null, status: 'none', peaks: null, reading: false };
+
+/** Peaks like the backend: 8 kHz mono, loudest sample per 1/20 s, 0..1. */
+function readPeaks() {
+  recording.reading = true;
+  const ffmpeg = spawn('ffmpeg', ['-v', 'error', '-i', RECORDING, '-ac', '1', '-ar', '8000', '-f', 's16le', '-']);
+  const peaks = [];
+  let rest = Buffer.alloc(0);
+  let samples = 0;
+  ffmpeg.stdout.on('data', (chunk) => {
+    const data = Buffer.concat([rest, chunk]);
+    const whole = data.length - (data.length % 800);
+    for (let i = 0; i < whole; i += 800) {
+      let max = 0;
+      for (let k = i; k < i + 800; k += 2) max = Math.max(max, Math.abs(data.readInt16LE(k)));
+      peaks.push(Math.round((max / 32768) * 100) / 100);
+    }
+    samples += whole / 2;
+    rest = data.subarray(whole);
+  });
+  ffmpeg.on('close', () => {
+    recording.peaks = { duration: samples / 8000, per_second: 20, peaks };
+    recording.reading = false;
+    console.log(`recording peaks: ${peaks.length}`);
+  });
+}
+
+function editState() {
+  if (!RECORDING) return { source: null, edit: null, status: 'none', error: null, edited_url: null, rendered_at: null };
+  return {
+    source: { url: `http://localhost:${PORT}/mock/recording.mp3`, duration: recording.peaks?.duration ?? null },
+    edit: recording.edit,
+    status: recording.status,
+    error: null,
+    edited_url: null,
+    rendered_at: null,
+  };
+}
+
+/** The recording with CORS and Range, so the editor can seek and use Web Audio. */
+function serveRecording(req, res) {
+  const size = statSync(RECORDING).size;
+  const headers = {
+    'content-type': 'audio/mpeg',
+    'accept-ranges': 'bytes',
+    'access-control-allow-origin': '*',
+  };
+  const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '');
+  if (!m) {
+    res.writeHead(200, { ...headers, 'content-length': size });
+    createReadStream(RECORDING).pipe(res);
+    return;
+  }
+  const start = m[1] ? Number(m[1]) : 0;
+  const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  res.writeHead(206, {
+    ...headers,
+    'content-range': `bytes ${start}-${end}/${size}`,
+    'content-length': end - start + 1,
+  });
+  createReadStream(RECORDING, { start, end }).pipe(res);
+}
+
 const server = createServer((req, res) => {
   const path = req.url.split('?')[0];
   if (path.startsWith('/mock/mode/')) {
@@ -129,6 +198,37 @@ const server = createServer((req, res) => {
       Object.assign(studioLog, JSON.parse(body));
       res.writeHead(204).end();
     });
+    return;
+  }
+  if (RECORDING && path === '/mock/recording.mp3') {
+    serveRecording(req, res);
+    return;
+  }
+  if (path === '/api/shows/1/recording/peaks') {
+    if (!RECORDING) return res.writeHead(404).end('{"error":"no recording"}');
+    if (!recording.peaks && !recording.reading) readPeaks();
+    res.writeHead(recording.peaks ? 200 : 202, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(recording.peaks ?? { status: 'processing' }));
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit' && req.method === 'PUT') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      recording.edit = JSON.parse(body);
+      recording.status = 'draft';
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    });
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit/apply' && req.method === 'POST') {
+    recording.status = 'rendering';
+    setTimeout(() => (recording.status = 'done'), 5000);
+    res.writeHead(202, { 'content-type': 'application/json' }).end('{"status":"rendering"}');
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
     return;
   }
   if (path === '/mock/live') {

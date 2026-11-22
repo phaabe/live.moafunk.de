@@ -369,49 +369,16 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // Resolve the audio source, in priority order:
-    //   1. a manually attached recording (pre-recorded / UNHEARD shows),
-    //   2. the latest *finalized* live recording (final.mp3, default bucket),
-    //   3. the latest streamed *archive* MP3 (shows bucket) — streamed shows stay
-    //      `raw` with only an archive_key, so this is the auto-upload source (#251).
-    let (recording_bucket, recording_key, source_filename) = match show.recording_key.as_ref() {
-        Some(key) => (
-            state.config.r2_bucket_name.clone(),
-            key.clone(),
-            show.recording_filename
-                .clone()
-                .unwrap_or_else(|| "recording.mp3".to_string()),
-        ),
-        None => {
-            if let Some(version) =
-                crate::db::get_latest_finalized_recording_version(&state.db, show_id).await?
-            {
-                let final_key = version.final_key.clone().ok_or_else(|| {
-                    AppError::BadRequest("Finalized recording has no file to upload".to_string())
-                })?;
-                (
-                    state.config.r2_bucket_name.clone(),
-                    final_key,
-                    format!("{}.mp3", version.version),
-                )
-            } else if let Some(version) =
-                crate::db::get_latest_archived_recording_version(&state.db, show_id).await?
-            {
-                let archive_key = version.archive_key.clone().ok_or_else(|| {
-                    AppError::BadRequest("Archived recording has no file to upload".to_string())
-                })?;
-                (
-                    state.config.r2_shows_bucket_name.clone(),
-                    archive_key,
-                    format!("{}.mp3", version.version),
-                )
-            } else {
-                return Err(AppError::BadRequest(
-                    "Show has no recording to upload".to_string(),
-                ));
-            }
-        }
-    };
+    // The rendered edit when there is one, else the original recording (see
+    // `recording_edit::resolve_original_recording` for the order).
+    let crate::recording_edit::RecordingSource {
+        bucket: recording_bucket,
+        key: recording_key,
+        filename: source_filename,
+        ..
+    } = crate::recording_edit::upload_source(state, &show)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
 
     tracing::info!(
         show_id = show_id,

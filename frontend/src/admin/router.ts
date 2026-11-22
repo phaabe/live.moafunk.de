@@ -13,6 +13,7 @@ const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const HostEpisodePage = () => import('./pages/HostEpisodePage.vue');
 const HostAnnouncePage = () => import('./pages/HostAnnouncePage.vue');
+const HostEditRecordingPage = () => import('./pages/HostEditRecordingPage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
@@ -289,6 +290,13 @@ const router = createRouter({
       name: 'show-announce',
       component: HostAnnouncePage,
       meta: { requiresAuth: true, roles: ['host'] },
+    },
+    {
+      // Flow screens edit-recording*: the Edit recording page, from the Recording card (#883).
+      path: '/shows/:id(\\d+)/edit-recording',
+      name: 'show-edit-recording',
+      component: HostEditRecordingPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       path: '/stream',

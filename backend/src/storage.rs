@@ -602,6 +602,35 @@ pub async fn download_file_from_bucket(
     Ok((data, content_type))
 }
 
+/// Stream an object to a local file, so a long recording never sits in RAM.
+pub async fn download_to_file(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let response = state
+        .s3_client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to download file: {}", e)))?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create {}: {}", path.display(), e)))?;
+    tokio::io::copy(&mut response.body.into_async_read(), &mut file)
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to read file: {}", e)))?;
+    file.flush()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write {}: {}", path.display(), e)))?;
+    Ok(())
+}
+
 pub async fn get_presigned_url(
     state: &Arc<AppState>,
     key: &str,

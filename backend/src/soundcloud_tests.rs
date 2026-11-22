@@ -1100,6 +1100,40 @@ async fn upload_source_order() {
     );
 }
 
+/// A rendered edit of the current recording goes up instead of it, named
+/// after it; an edit of an older recording does not.
+#[tokio::test]
+async fn upload_prefers_the_edited_recording() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = show_with_recording(&state, &r2).await;
+    sqlx::query(
+        "INSERT INTO recording_edits (show_id, edit_json, status, edited_key, source_key) \
+         VALUES (?, '{}', 'done', 'recordings/1/edited/a.mp3', 'shows/rec.mp3')",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    r2.insert(&state, "recordings/1/edited/a.mp3", b"edited!");
+    upload_track(&state, id).await.unwrap();
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "set-edited.mp3", "len": 7})
+    );
+
+    sqlx::query("UPDATE recording_edits SET source_key = 'shows/older.mp3' WHERE show_id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    fake.calls.lock().unwrap().clear();
+    upload_track(&state, id).await.unwrap();
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "set.mp3", "len": 9})
+    );
+}
+
 #[tokio::test]
 async fn upload_errors() {
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_access_token": null })).await;

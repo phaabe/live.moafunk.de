@@ -1,4 +1,6 @@
 // API client for admin panel
+import type { RecordingEdit } from '../components/recording-editor/edit';
+
 // In production, admin panel is hosted at admin.live.moafunk.de (same origin as API)
 const API_BASE = '';
 
@@ -507,6 +509,14 @@ export interface ShowDetail {
   soundcloud_url?: string;
   soundcloud_uploaded_at?: string;
   soundcloud_public?: boolean;
+  /** The Edit recording page (#883): none, draft, rendering, done or failed. */
+  recording_edit_status?: string | null;
+  /** When the edited file was made (server time, "YYYY-MM-DD HH:MM:SS"). */
+  recording_edited_at?: string | null;
+  /** Length of the edited file in seconds. */
+  recording_edited_seconds?: number | null;
+  /** The edited file; Upload to SoundCloud sends it. */
+  edited_recording_url?: string | null;
   prerecorded_key?: string;
   prerecorded_filename?: string;
   prerecorded_confirmed_at?: string;
@@ -915,6 +925,41 @@ export interface AnnouncementMeta {
   /** Admin switches; a service that is off is "temporarily not available". */
   services: ServiceSettings;
 }
+
+/** Waveform data of a recording: the loudest sample per bucket, 0..1. */
+export interface RecordingPeaks {
+  duration: number;
+  per_second: number;
+  peaks: number[];
+}
+
+export type RecordingEditStatus = 'none' | 'draft' | 'rendering' | 'done' | 'failed';
+
+/** GET /api/shows/:id/recording/edit — the Edit recording page (#883). */
+export interface RecordingEditState {
+  /** The original recording; null when the episode has none. */
+  source: { url: string; duration: number | null } | null;
+  edit: RecordingEdit | null;
+  status: RecordingEditStatus;
+  error: string | null;
+  edited_url: string | null;
+  rendered_at: string | null;
+}
+
+export const recordingEditApi = {
+  get: (showId: number) => api.get<RecordingEditState>(`/api/shows/${showId}/recording/edit`),
+
+  /** 202 `{status: 'processing'}` while the server still computes them. */
+  peaks: (showId: number) =>
+    api.get<RecordingPeaks | { status: 'processing' }>(`/api/shows/${showId}/recording/peaks`),
+
+  save: (showId: number, edit: RecordingEdit) =>
+    api.put<RecordingEditState>(`/api/shows/${showId}/recording/edit`, edit),
+
+  /** Starts the render on the server: 202 `{status: 'rendering'}`. */
+  apply: (showId: number) =>
+    api.post<{ status: RecordingEditStatus }>(`/api/shows/${showId}/recording/edit/apply`),
+};
 
 /**
  * Where an announcement is, without its text, image or error: what every host

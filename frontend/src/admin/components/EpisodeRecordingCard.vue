@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import { seriesApi, showsApi, type ShowDetail } from '../api';
 import AudioPlayer from './AudioPlayer.vue';
+import { span } from './recording-editor/edit';
 import EpisodeCard from './episode/EpisodeCard.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
 import type { EpisodePhase, Status, StepState } from './episode/phase';
@@ -31,6 +33,7 @@ const props = defineProps<{
   readOnly?: boolean;
 }>();
 const emit = defineEmits<{ uploaded: []; changed: [] }>();
+const router = useRouter();
 
 const uploading = ref(false);
 const progress = ref('');
@@ -58,9 +61,46 @@ const isPublic = computed(
 const playback = computed(() => {
   if (props.readOnly || props.phase !== 'post') return null;
   const s = props.show;
+  if (s.edited_recording_url) return s.edited_recording_url;
   if (prerecorded.value) return s.prerecorded_url ?? null;
   return s.latest_recording?.download_url ?? s.recording_url ?? null;
 });
+
+/** The Edit recording page (#883): where the edited file is. */
+const editLine = computed(() => {
+  const s = props.show;
+  switch (s.recording_edit_status) {
+    case 'rendering':
+      return 'Making the edited file…';
+    case 'failed':
+      return 'Edit failed. Open Edit recording to try again.';
+    case 'done':
+    case 'draft':
+      return s.edited_recording_url
+        ? `Edited · ${span(s.recording_edited_seconds ?? 0)}`
+        : 'Edit not applied yet';
+    default:
+      return null;
+  }
+});
+/** SoundCloud got the file before the last edit; Upload to SoundCloud sends the edited one. */
+const soundcloudStale = computed(() => {
+  const s = props.show;
+  const at = (v?: string | null) => (v ? Date.parse(v.replace(' ', 'T') + 'Z') : NaN);
+  return !!link.value && at(s.soundcloud_uploaded_at) < at(s.recording_edited_at);
+});
+
+// While the server makes the edited file, look again every 5 s.
+let poll: ReturnType<typeof setInterval> | undefined;
+watch(
+  () => props.show.recording_edit_status === 'rendering',
+  (rendering) => {
+    clearInterval(poll);
+    if (rendering) poll = setInterval(() => emit('changed'), 5000);
+  },
+  { immediate: true }
+);
+onBeforeUnmount(() => clearInterval(poll));
 
 /** "Ready · 1:58:40", "Processing…", "No usable recording · …" */
 const recordingLine = computed(() =>
@@ -191,6 +231,17 @@ async function switchPublic() {
           {{ recordingLine }}
         </dd>
       </div>
+      <div v-if="!readOnly && phase === 'post' && editLine">
+        <dt>Edit</dt>
+        <dd
+          :class="{
+            ok: show.recording_edit_status === 'done',
+            bad: show.recording_edit_status === 'failed',
+          }"
+        >
+          {{ editLine }}
+        </dd>
+      </div>
       <div v-if="!readOnly && (uploading || show.recording_filename)">
         <dt>File</dt>
         <dd class="status">{{ uploading ? progress || 'Uploading…' : show.recording_filename }}</dd>
@@ -219,6 +270,7 @@ async function switchPublic() {
           @change="upload"
         />
       </label>
+      <p v-if="soundcloudStale" class="stale">SoundCloud has the file from before the edit.</p>
       <p v-if="soundcloudOff" class="notice">SoundCloud is temporarily not available.</p>
       <p v-if="error" class="field-error" role="alert">{{ error }}</p>
     </template>
@@ -231,6 +283,12 @@ async function switchPublic() {
         :loading="publishing"
         @click="publish"
         >Publish episode</BaseButton
+      >
+      <BaseButton
+        v-if="phase === 'post' && hasRecording"
+        variant="secondary"
+        @click="router.push(`/shows/${show.id}/edit-recording`)"
+        >Edit recording</BaseButton
       >
       <BaseButton
         v-if="hasRecording"
@@ -265,6 +323,11 @@ async function switchPublic() {
 
 .status {
   overflow-wrap: anywhere;
+}
+
+.stale {
+  margin: 0;
+  color: #fbbf24;
 }
 
 .field {
