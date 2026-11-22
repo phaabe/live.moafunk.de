@@ -1,38 +1,55 @@
-import type { RepeatRule, Series } from '../../api';
+import type { Series, UpcomingEpisode } from '../../api';
+import { dayAndTime } from '../dashboard/dashboard';
+import { rhythmText } from '../show-page/showPage';
 
-/** One line of a Show's details in read mode: "Repeats · Every week". */
+/** One row of a Show's details in read mode: "Rhythm · Every week · Sundays · 12:00–14:00". */
 export interface ShowFact {
-  label: string;
+  label: 'Next episode' | 'Rhythm' | 'Instagram';
   value: string;
+  /** accent: a booked next episode; muted: nothing booked or set. */
+  tone?: 'accent' | 'muted';
 }
 
-const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+/**
+ * A Show's details as plain text for My Show (#1050): Next episode, Rhythm
+ * and Instagram. Every card has the same three, so no value moves to another
+ * place when a Show has no rhythm or no episode. `next` is the Show's next
+ * episode, null when none is booked, undefined when the episodes could not load.
+ */
+export function showFacts(show: Series, next: UpcomingEpisode | null | undefined): ShowFact[] {
+  const nextFact: ShowFact = next
+    ? { label: 'Next episode', value: dayAndTime(next), tone: 'accent' }
+    : {
+        label: 'Next episode',
+        value: next === undefined ? 'Could not load' : 'None booked',
+        tone: 'muted',
+      };
+  return [
+    nextFact,
+    { label: 'Rhythm', value: rhythmText(show) },
+    show.instagram_handle
+      ? { label: 'Instagram', value: `@${show.instagram_handle}` }
+      : { label: 'Instagram', value: 'Not set', tone: 'muted' },
+  ];
+}
 
-/** The words of the Repeats select in the Show form. */
-const REPEATS: Record<RepeatRule, string> = {
-  weekly: 'Every week',
-  biweekly: 'Every 2 weeks',
-};
+/** The cover label shows when the next episode is this many days away or less. */
+const SOON_DAYS = 7;
 
 /**
- * A Show's details as plain text for My Show (#1050): Repeats, Day, Time,
- * Instagram and Hosts. `compact` (the grid) puts Day and Time in one item.
- * Without a rhythm there is no Day and no Time.
+ * The cover label of a Show's next episode (#1050): "Today", "Tomorrow" or
+ * "in 3 days", counted in calendar days from `today` (Berlin, "YYYY-MM-DD").
+ * Null when nothing is booked or it is more than 7 days away.
  */
-export function showFacts(show: Series, hosts: string[], compact = false): ShowFact[] {
-  const rhythm = show.rhythm;
-  const facts: ShowFact[] = [
-    { label: 'Repeats', value: rhythm ? REPEATS[rhythm.repeat_rule] : 'No fixed rhythm' },
-  ];
-  if (rhythm) {
-    const day = DAYS[rhythm.weekday - 1] ?? '';
-    const time = `${rhythm.start_time}–${rhythm.end_time}`;
-    if (compact) facts.push({ label: 'Day · Time', value: `${day} · ${time}` });
-    else facts.push({ label: 'Day', value: day }, { label: 'Time', value: time });
-  }
-  facts.push(
-    { label: 'Instagram', value: show.instagram_handle ? `@${show.instagram_handle}` : 'Not set' },
-    { label: 'Hosts', value: hosts.join(', ') || '—' }
-  );
-  return facts;
+export function coverCountdown(
+  next: UpcomingEpisode | null | undefined,
+  today: string
+): string | null {
+  if (!next) return null;
+  // Both dates parse as UTC midnight, so the difference is whole days.
+  const days = (Date.parse(next.date) - Date.parse(today)) / 86_400_000;
+  if (days < 0 || days > SOON_DAYS) return null;
+  if (days === 0) return 'Today';
+  if (days === 1) return 'Tomorrow';
+  return `in ${days} days`;
 }

@@ -4,8 +4,9 @@ import { createPinia } from 'pinia';
 import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
-import { showFacts } from '../components/my-show/showFacts';
-import type { Series } from '../api';
+import { coverCountdown, showFacts } from '../components/my-show/showFacts';
+import { getBerlinNowISO } from '../showTime';
+import type { Series, UpcomingEpisode } from '../api';
 
 // My Show (#1050): read mode, edit mode, the discard prompt and ?edit=<slug>.
 // The list itself and the flow check are in hostScreens.test.ts.
@@ -31,9 +32,25 @@ const UNHEARD: Series = {
   instagram_handle: null,
 };
 
+/** Brunchtime's next episode. */
+const BRUNCH_31: UpcomingEpisode = {
+  id: 31,
+  title: 'Brunchtime #31',
+  date: '2099-01-04',
+  start_time: '12:00',
+  end_time: '14:00',
+  show_name: 'Brunchtime',
+  series_slug: 'brunchtime',
+  host_username: 'lena',
+  mode: 'live',
+  mode_label: 'Live',
+};
+
 let app: App | undefined;
 let root: HTMLDivElement;
 let mySeries: Series[];
+/** GET /api/upcoming-episodes; null answers 500. */
+let upcoming: UpcomingEpisode[] | null;
 /** The body of the last PUT /api/series/:slug. */
 let put: FormData | undefined;
 let putFails: boolean;
@@ -41,6 +58,7 @@ let confirm: Mock<[message?: string], boolean>;
 
 beforeEach(() => {
   mySeries = [BRUNCHTIME];
+  upcoming = [BRUNCH_31];
   put = undefined;
   putFails = false;
   root = document.createElement('div');
@@ -51,6 +69,11 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
       if (url === '/api/series') return Response.json({ series: mySeries });
+      if (url === '/api/upcoming-episodes') {
+        return upcoming
+          ? Response.json({ episodes: upcoming })
+          : Response.json({ error: 'boom' }, { status: 500 });
+      }
       const slug = url.match(/^\/api\/series\/([^/]+)$/)?.[1];
       const show = mySeries.find((s) => s.slug === slug);
       if (show && options?.method === 'PUT') {
@@ -158,6 +181,41 @@ describe('My Show read mode', () => {
     const router = await mount();
     (root.querySelector('.name-link') as HTMLAnchorElement).click();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
+  });
+
+  it('has one link, the name, which CSS stretches over the whole card', async () => {
+    await mount();
+    const links = [...card('Brunchtime').querySelectorAll('a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/shows/brunchtime']);
+  });
+
+  it("shows each Show's next episode, or that none is booked", async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    await mount();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | So 04.01. · 12:00–14:00');
+    expect(facts(card('UNHEARD'))[0]).toBe('Next episode | None booked');
+  });
+
+  it('puts "in n days" on the cover when the next episode is a week away or less', async () => {
+    const today = getBerlinNowISO().slice(0, 10);
+    const inDays = (n: number) =>
+      new Date(Date.parse(today) + n * 86_400_000).toISOString().slice(0, 10);
+    mySeries = [BRUNCHTIME, UNHEARD, { ...UNHEARD, id: 5, slug: 'later', name: 'Later' }];
+    upcoming = [
+      { ...BRUNCH_31, date: inDays(3) },
+      { ...BRUNCH_31, id: 40, series_slug: 'later', date: inDays(8) },
+    ];
+    await mount();
+    expect(card('Brunchtime').querySelector('.cover .soon')?.textContent).toBe('in 3 days');
+    expect(card('UNHEARD').querySelector('.soon')).toBeNull();
+    expect(card('Later').querySelector('.soon')).toBeNull();
+  });
+
+  it('still shows the cards when the episodes cannot load', async () => {
+    upcoming = null;
+    await mount();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | Could not load');
   });
 });
 
@@ -340,24 +398,45 @@ describe('My Show grid', () => {
 });
 
 describe('showFacts', () => {
-  it('has no Day and no Time without a fixed rhythm', () => {
-    expect(showFacts(UNHEARD, ['lena'])).toEqual([
-      { label: 'Repeats', value: 'No fixed rhythm' },
-      { label: 'Instagram', value: 'Not set' },
-      { label: 'Hosts', value: 'lena' },
+  it('keeps the same three facts in the same order for every Show', () => {
+    expect(showFacts(BRUNCHTIME, BRUNCH_31)).toEqual([
+      { label: 'Next episode', value: 'So 04.01. · 12:00–14:00', tone: 'accent' },
+      { label: 'Rhythm', value: 'Every week · Sundays · 12:00–14:00' },
+      { label: 'Instagram', value: '@brunchtime' },
+    ]);
+    expect(showFacts(UNHEARD, null)).toEqual([
+      { label: 'Next episode', value: 'None booked', tone: 'muted' },
+      { label: 'Rhythm', value: 'No fixed rhythm' },
+      { label: 'Instagram', value: 'Not set', tone: 'muted' },
     ]);
   });
 
-  it('lists every host', () => {
-    const biweekly: Series = {
-      ...BRUNCHTIME,
-      rhythm: { ...BRUNCHTIME.rhythm!, repeat_rule: 'biweekly', weekday: 5 },
-    };
-    expect(showFacts(biweekly, ['lena', 'jonas'], true)).toEqual([
-      { label: 'Repeats', value: 'Every 2 weeks' },
-      { label: 'Day · Time', value: 'Friday · 12:00–14:00' },
-      { label: 'Instagram', value: '@brunchtime' },
-      { label: 'Hosts', value: 'lena, jonas' },
-    ]);
+  it('says so when the episodes could not load', () => {
+    expect(showFacts(BRUNCHTIME, undefined)[0]).toEqual({
+      label: 'Next episode',
+      value: 'Could not load',
+      tone: 'muted',
+    });
+  });
+});
+
+describe('coverCountdown', () => {
+  const on = (date: string) => ({ ...BRUNCH_31, date });
+
+  it('counts calendar days up to a week, with Today and Tomorrow', () => {
+    expect(coverCountdown(on('2026-11-22'), '2026-11-22')).toBe('Today');
+    expect(coverCountdown(on('2026-11-23'), '2026-11-22')).toBe('Tomorrow');
+    expect(coverCountdown(on('2026-11-25'), '2026-11-22')).toBe('in 3 days');
+    expect(coverCountdown(on('2026-11-29'), '2026-11-22')).toBe('in 7 days');
+    // Across the switch to winter time and the turn of the year.
+    expect(coverCountdown(on('2026-10-27'), '2026-10-24')).toBe('in 3 days');
+    expect(coverCountdown(on('2027-01-02'), '2026-12-30')).toBe('in 3 days');
+  });
+
+  it('has no label beyond a week, in the past or without an episode', () => {
+    expect(coverCountdown(on('2026-11-30'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(on('2026-11-21'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(null, '2026-11-22')).toBeNull();
+    expect(coverCountdown(undefined, '2026-11-22')).toBeNull();
   });
 });

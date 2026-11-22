@@ -2,24 +2,37 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, type Series } from '../../api';
+import { seriesApi, type Series, type UpcomingEpisode } from '../../api';
 import { draftOf, draftValid, toNewSeries, type SeriesDraft } from '../../seriesDraft';
 import { cleanHandle, handleError } from '../../promotion';
+import { getBerlinNowISO } from '../../showTime';
 import BoardIcon from '../BoardIcon.vue';
 import CoverDrop from '../CoverDrop.vue';
 import SeriesFields from '../SeriesFields.vue';
-import { showFacts } from './showFacts';
+import { coverCountdown, showFacts } from './showFacts';
 
-// One Show on My Show (#1050). Read mode lists the details as plain text;
-// Edit turns the same card into the Show form. The page decides which card
-// edits (`editing`) and asks before unsaved changes (`dirty`) are dropped.
+// One Show on My Show (#1050, design option C). Read mode: the cover on top
+// (with "in 3 days" when the next episode is close), then the name and the
+// details as fixed rows; the whole card opens the Show page. Edit turns the
+// same card into the Show form. The page decides which card edits
+// (`editing`) and asks before unsaved changes (`dirty`) are dropped.
+
+const FACT_ICONS = {
+  'Next episode': 'calendar',
+  Rhythm: 'repeat',
+  Instagram: 'instagram',
+} as const;
+// Read once: after midnight the label is a day off until the page reloads.
+const today = getBerlinNowISO().slice(0, 10);
 
 const props = defineProps<{
   show: Series;
   /** Who hosts the Show. Today only its owner; a list, so more hosts fit later (#1047). */
   hosts: string[];
+  /** The next episode; null when none is booked, undefined when the episodes could not load. */
+  next?: UpcomingEpisode | null;
   editing: boolean;
-  /** In the grid: a smaller cover, Day and Time as one item, a plain Book Slot. */
+  /** In the grid: a 2:1 cover (one Show: a 3:1 banner) and a smaller name. */
   compact?: boolean;
 }>();
 const emit = defineEmits<{
@@ -40,7 +53,8 @@ const saving = ref(false);
 const error = ref<string | null>(null);
 
 const showPath = computed(() => `/shows/${props.show.slug}`);
-const facts = computed(() => showFacts(props.show, props.hosts, props.compact));
+const facts = computed(() => showFacts(props.show, props.next));
+const soon = computed(() => coverCountdown(props.next, today));
 const coverSize = computed(() => (props.compact ? 120 : 180));
 const handleProblem = computed(() => handleError(cleanHandle(handle.value)));
 const canSave = computed(() => draftValid(draft.value) && !handleProblem.value);
@@ -133,49 +147,34 @@ async function save() {
     </template>
 
     <template v-else>
-      <div class="top">
-        <!-- The name is the link for screen readers; the cover is a bigger target. -->
-        <router-link :to="showPath" class="cover" tabindex="-1" aria-hidden="true">
-          <img v-if="show.cover_url" :src="show.cover_url" alt="" />
-          <BoardIcon v-else name="image" :size="compact ? 32 : 40" />
-        </router-link>
-        <div class="text">
-          <h2 class="show-name">
-            <router-link :to="showPath" class="name-link"
-              ><span>{{ show.name }}</span
-              ><BoardIcon name="chevron" :size="compact ? 22 : 28"
-            /></router-link>
-          </h2>
-          <p v-if="show.description" class="description">{{ show.description }}</p>
-          <div v-if="!compact" class="actions">
-            <BaseButton @click="router.push(`${showPath}/book`)"
-              ><BoardIcon name="calendar-plus" />Book Slot</BaseButton
-            >
-            <BaseButton variant="secondary" @click="emit('edit')"
-              ><BoardIcon name="pencil" :size="16" />Edit</BaseButton
-            >
-          </div>
-        </div>
+      <div class="cover">
+        <img v-if="show.cover_url" :src="show.cover_url" alt="" />
+        <BoardIcon v-else name="image" :size="40" />
+        <span v-if="soon" class="soon"><BoardIcon name="clock" :size="14" />{{ soon }}</span>
       </div>
-      <div class="details">
-        <div class="details-head">
-          <h3>Details</h3>
-          <span class="read-only"><BoardIcon name="lock" :size="12" />Read only</span>
-        </div>
+      <div class="body">
+        <h2 class="show-name">
+          <!-- The one link of the card; it stretches over the whole card. -->
+          <router-link :to="showPath" class="name-link"
+            ><span>{{ show.name }}</span
+            ><BoardIcon name="chevron" :size="compact ? 22 : 28"
+          /></router-link>
+        </h2>
+        <p v-if="show.description" class="description">{{ show.description }}</p>
         <dl class="facts">
-          <div v-for="fact in facts" :key="fact.label">
+          <div v-for="fact in facts" :key="fact.label" :class="fact.tone">
             <dt>{{ fact.label }}</dt>
-            <dd>{{ fact.value }}</dd>
+            <dd><BoardIcon :name="FACT_ICONS[fact.label]" :size="16" />{{ fact.value }}</dd>
           </div>
         </dl>
-      </div>
-      <div v-if="compact" class="actions">
-        <BaseButton variant="secondary" @click="router.push(`${showPath}/book`)"
-          ><BoardIcon name="calendar-plus" :size="16" />Book Slot</BaseButton
-        >
-        <BaseButton variant="secondary" @click="emit('edit')"
-          ><BoardIcon name="pencil" :size="16" />Edit</BaseButton
-        >
+        <div class="actions">
+          <BaseButton variant="secondary" class="book" @click="router.push(`${showPath}/book`)"
+            ><BoardIcon name="calendar-plus" :size="16" />Book Slot</BaseButton
+          >
+          <BaseButton variant="secondary" class="edit" @click="emit('edit')"
+            ><BoardIcon name="pencil" :size="16" />Edit</BaseButton
+          >
+        </div>
       </div>
     </template>
   </section>
@@ -190,6 +189,24 @@ async function save() {
 
 .my-show-card.editing {
   border: 2px solid var(--color-primary);
+}
+
+/* Read mode: the name link covers the whole card (::after), so a click
+   anywhere opens the Show page. The buttons sit above it. */
+.my-show-card:not(.editing) {
+  position: relative;
+  transition: border-color 0.15s;
+}
+
+.my-show-card:not(.editing):hover,
+.my-show-card:not(.editing):focus-within {
+  border-color: #5c5620;
+}
+
+.name-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
 }
 
 /* ---------- edit bar ---------- */
@@ -214,7 +231,49 @@ async function save() {
   color: var(--color-primary);
 }
 
-/* ---------- cover, name, description ---------- */
+/* ---------- read mode: cover on top, then name, rows and buttons ---------- */
+.my-show-card > .cover {
+  position: relative;
+  aspect-ratio: 3 / 1;
+  border-radius: 0;
+}
+
+.compact > .cover {
+  aspect-ratio: 2 / 1;
+}
+
+/* "in 3 days": black with a yellow frame, so it reads on any cover image. */
+.soon {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-primary);
+  border-radius: 16px;
+  background: #000;
+  color: var(--color-primary);
+  font: 700 13px/1 var(--font-family);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 24px 24px;
+}
+
+.compact .body {
+  padding: 18px 20px 20px;
+}
+
+/* ---------- edit mode: cover beside Name and Description ---------- */
 .top {
   display: flex;
   flex-wrap: wrap;
@@ -227,17 +286,6 @@ async function save() {
   flex-wrap: nowrap;
   gap: 18px;
   padding: 20px;
-}
-
-.top > .cover {
-  width: 180px;
-  height: 180px;
-  border-radius: 10px;
-}
-
-.compact .top > .cover {
-  width: 120px;
-  height: 120px;
 }
 
 .text {
@@ -255,13 +303,13 @@ async function save() {
 
 .show-name {
   margin: 0;
-  font: 700 44px/1.08 var(--font-family);
+  font: 700 36px/1.1 var(--font-family);
   color: #fff;
   overflow-wrap: anywhere;
 }
 
 .compact .show-name {
-  font-size: 30px;
+  font-size: 28px;
 }
 
 .name-link {
@@ -277,15 +325,15 @@ async function save() {
   color: var(--color-primary);
 }
 
-.name-link:hover span,
+.my-show-card:hover .name-link span,
 .name-link:focus-visible span {
   text-decoration: underline;
   text-underline-offset: 4px;
 }
 
 .description {
-  margin: 0;
-  font-size: 17px;
+  margin: -6px 0 0;
+  font-size: 16px;
   color: #c8c8d4;
 }
 
@@ -293,17 +341,95 @@ async function save() {
   font-size: 15px;
 }
 
-.actions {
+/* Fixed rows: Next episode, Rhythm, Instagram. */
+.facts {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  margin: 0;
+  border-top: 1px solid #2a2a42;
+}
+
+.facts > div {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  min-height: 42px;
+  padding: 6px 0;
+  border-bottom: 1px solid #2a2a42;
 }
 
-.compact > .actions {
-  padding: 0 20px 20px;
+.facts dt {
+  flex: none;
+  width: 120px;
+  font: 700 11px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a8a8bc;
 }
 
-/* ---------- details ---------- */
+.facts dd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e4e4ee;
+  overflow-wrap: anywhere;
+}
+
+.facts dd svg {
+  flex: none;
+  color: #8e8ea4;
+}
+
+.facts .accent dd,
+.facts .accent dd svg {
+  color: var(--color-primary);
+}
+
+.facts .muted dd {
+  color: #a8a8bc;
+  font-weight: 500;
+}
+
+/* Book Slot and Edit share the card's full width, each in its own quiet color. */
+.actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin-top: auto;
+}
+
+.actions :deep(.base-button) {
+  flex: 1 1 0;
+}
+
+.my-show-card .actions :deep(button.base-button.book) {
+  background: #221f00;
+  border: 1px solid #5c5620;
+  color: var(--color-primary);
+}
+
+.my-show-card .actions :deep(button.base-button.book:hover) {
+  background: #2e2a00;
+  border-color: #8f8536;
+}
+
+.my-show-card .actions :deep(button.base-button.edit) {
+  background: #1a1a33;
+  border: 1px solid #34344c;
+  color: #c8c8d8;
+}
+
+.my-show-card .actions :deep(button.base-button.edit:hover) {
+  border-color: #4a4a60;
+  color: #fff;
+}
+
+/* ---------- edit form ---------- */
 .details {
   flex: 1;
   padding: 20px 24px 24px;
@@ -314,71 +440,6 @@ async function save() {
   padding: 16px 20px 20px;
 }
 
-.details-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 16px;
-}
-
-.details-head h3 {
-  margin: 0;
-  font: 700 12px var(--font-family);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #c8c8d8;
-}
-
-.read-only {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  border: 1px solid #34344c;
-  border-radius: 6px;
-  color: #a8a8bc;
-  font: 600 12px var(--font-ui);
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 18px 24px;
-  margin: 0;
-}
-
-.compact .facts {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 20px;
-}
-
-.facts > div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.facts dt {
-  font: 700 11px var(--font-ui);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #a8a8bc;
-}
-
-.facts dd {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  color: #fff;
-  overflow-wrap: anywhere;
-}
-
-.compact .facts dd {
-  font-size: 16px;
-}
-
-/* ---------- edit form ---------- */
 .cover-edit {
   position: relative;
   flex: none;
@@ -500,71 +561,37 @@ async function save() {
 
 /* ---------- phones ---------- */
 @media (max-width: 640px) {
-  .my-show-card:not(.compact) .top {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 16px;
-    padding: 0 0 16px;
+  .my-show-card > .cover {
+    aspect-ratio: 2 / 1;
   }
 
-  .my-show-card:not(.compact) .top > .cover {
-    width: 100%;
-    height: 150px;
-    border-radius: 0;
-  }
-
-  .my-show-card:not(.compact) .text {
-    flex: none;
-    padding: 0 16px;
-    gap: 10px;
+  .body,
+  .compact .body {
+    padding: 16px;
   }
 
   .show-name {
-    font-size: 32px;
-  }
-
-  .compact .top {
-    padding: 16px;
-    gap: 14px;
-  }
-
-  .compact .top > .cover {
-    width: 88px;
-    height: 88px;
+    font-size: 30px;
   }
 
   .compact .show-name {
     font-size: 24px;
   }
 
-  .my-show-card:not(.compact) .actions {
-    flex-direction: column;
-    gap: 8px;
-    padding-top: 4px;
+  .facts dt {
+    width: 104px;
   }
 
+  /* Two buttons side by side: keep each label on one line. */
   .actions :deep(.base-button) {
-    flex: 1 1 auto;
     min-height: 48px;
+    padding: 0 10px;
+    white-space: nowrap;
   }
 
   .details,
   .compact .details {
     padding: 16px;
-  }
-
-  .facts,
-  .compact .facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px 16px;
-  }
-
-  .facts dd {
-    font-size: 16px;
-  }
-
-  .compact > .actions {
-    padding: 0 16px 16px;
   }
 
   .edit-bar {

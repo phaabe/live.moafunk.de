@@ -8,7 +8,7 @@ import {
   type LocationQuery,
 } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, type Series } from '../api';
+import { seriesApi, type Series, type UpcomingEpisode } from '../api';
 import { useAuthStore } from '../stores/auth';
 import BoardIcon from '../components/BoardIcon.vue';
 import MyShowCard from '../components/my-show/MyShowCard.vue';
@@ -25,6 +25,8 @@ const router = useRouter();
 const auth = useAuthStore();
 
 const shows = ref<Series[]>([]);
+/** All hosts' upcoming episodes, by date and start time; null when they could not load. */
+const upcoming = ref<UpcomingEpisode[] | null>(null);
 const loaded = ref(false);
 const error = ref<string | null>(null);
 /** The card in edit mode has unsaved changes. */
@@ -40,6 +42,10 @@ const editing = computed(() => {
 const grid = computed(() => shows.value.length > 1);
 /** The owner hosts the Show; more hosts per Show come with #1047. */
 const hosts = computed(() => (auth.user ? [auth.user.username] : []));
+
+/** A Show's next episode; null when none is booked, undefined when the episodes could not load. */
+const nextOf = (slug: string) =>
+  upcoming.value ? (upcoming.value.find((e) => e.series_slug === slug) ?? null) : undefined;
 
 /** Edit mode lives in the URL, so a reload keeps it and the Show page can link to it. */
 function setEditing(slug: string | null) {
@@ -71,14 +77,17 @@ window.addEventListener('beforeunload', onBeforeUnload);
 onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload));
 
 onMounted(async () => {
-  try {
-    shows.value = (await seriesApi.list()).series;
-  } catch (e) {
-    console.error('Failed to load shows:', e);
+  // The cards still show without the episodes; their Next episode says "Could not load".
+  const [list, episodes] = await Promise.allSettled([seriesApi.list(), seriesApi.upcoming()]);
+  if (list.status === 'fulfilled') {
+    shows.value = list.value.series;
+  } else {
+    console.error('Failed to load shows:', list.reason);
     error.value = 'Could not load your shows.';
-  } finally {
-    loaded.value = true;
   }
+  if (episodes.status === 'fulfilled') upcoming.value = episodes.value.episodes;
+  else console.error('Failed to load upcoming episodes:', episodes.reason);
+  loaded.value = true;
   // An edit link to a Show that is not the host's: drop it.
   if (editOf(route.query) && !editing.value) void setEditing(null);
 });
@@ -103,6 +112,7 @@ onMounted(async () => {
         v-model:dirty="dirty"
         :show="show"
         :hosts="hosts"
+        :next="nextOf(show.slug)"
         :editing="editing === show.slug"
         :compact="grid"
         @edit="setEditing(show.slug)"

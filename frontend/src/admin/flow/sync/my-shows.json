@@ -25,10 +25,8 @@
     "button: Edit",
     "link: My Show",
     "link: Brunchtime",
-    "row: Repeats | Every week",
-    "row: Day | Sunday",
-    "row: Time | 12:00–14:00",
-    "row: Instagram | Not set",
-    "row: Hosts | lena"
+    "row: Next episode | So 04.01. · 12:00–14:00",
+    "row: Rhythm | Every week · Sundays · 12:00–14:00",
+    "row: Instagram | Not set"
   ]
 }
