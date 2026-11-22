@@ -484,19 +484,9 @@
         "button: Upload to SoundCloud",
         "h1: Brunchtime #31",
         "h2: Soundcheck",
-        "h2: Show time",
-        "h2: Recording & SoundCloud",
-        "h2: Social media",
         "pill: Upcoming",
         "button: Edit",
-        "link: live.moafunk.de",
-        "row: 1 · Set up social media (done) | 2 posts ready",
-        "row: 2 · Soundcheck | starts in 5 days",
-        "row: 3 · Show time | 12:00–14:00",
-        "row: 4 · Publish recording | after 14:00",
-        "row: Studio | Opens So 25.10. · 11:30",
-        "row: Mode | Live from the Studio",
-        "row: SoundCloud | After the show"
+        "row: Studio | Opens So 25.10. · 11:30"
       ],
       "why": "Redesign #1052 (approved in the issue): one layout for every phase. The details move into a read-only heading box (title as the heading, date and time, status pill, mode, host) with Edit, which opens the form with Save and Cancel booking; four step icons Set up social media › Soundcheck › Show time › Publish recording, coloured by state (current yellow, done dim yellow, next gray); four status cards in step order Social media, Soundcheck, Show time and Recording & SoundCloud replace Next step, Details, Promotion · Instagram and Recording. Upload to SoundCloud shows once there is a recording. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -516,21 +506,10 @@
         "choice: Pre-recorded",
         "button: Save",
         "h1: Brunchtime #31",
-        "h2: Soundcheck",
-        "h2: Show time",
-        "h2: Recording & SoundCloud",
         "h2: Social media",
         "pill: Upcoming",
         "button: Edit",
-        "button: Set up pre-announcement",
-        "link: live.moafunk.de",
-        "field: Recording file",
-        "row: 1 · Set up social media | 0 of 2 posts ready",
-        "row: 2 · Soundcheck | set uploaded",
-        "row: 3 · Show time | 12:00–14:00",
-        "row: 4 · Publish recording | after 14:00",
-        "row: Mode | Pre-recorded set",
-        "row: SoundCloud | After the show"
+        "button: Set up pre-announcement"
       ],
       "why": "Redesign #1052 (approved in the issue): the pre-recorded episode uses the same heading box, step icons and four cards as a live one. The Soundcheck card shows the set with Replace file; Show time reads \"Plays at 12:00\"; Open Wrap-up moves to the Recording & SoundCloud card after the show; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -549,21 +528,10 @@
         "choice: Pre-recorded",
         "button: Save",
         "h1: Brunchtime #32",
-        "h2: Soundcheck",
-        "h2: Show time",
-        "h2: Recording & SoundCloud",
         "h2: Social media",
         "pill: Upcoming",
         "button: Edit",
-        "button: Set up pre-announcement",
-        "link: live.moafunk.de",
-        "field: Recording file",
-        "row: 1 · Set up social media | 0 of 2 posts ready",
-        "row: 2 · Soundcheck | no set",
-        "row: 3 · Show time | 12:00–14:00",
-        "row: 4 · Publish recording | after 14:00",
-        "row: Mode | Pre-recorded set",
-        "row: SoundCloud | After the show"
+        "button: Set up pre-announcement"
       ],
       "why": "Redesign #1052 (approved in the issue): the pre-recorded episode without a file uses the same heading box, step icons and four cards. The Soundcheck card asks for the set with Upload your set; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -610,12 +578,6 @@
     {
       "screen": "episode",
       "items": [
-        "button: Edit on-air story",
-        "button: Cancel on-air story",
-        "button: Set up post-announcement",
-        "row: Pre-announcement · Instagram feed post · Fr 23.10. · 18:00 | Scheduled",
-        "row: On-air story · Instagram story · when you go live | Scheduled",
-        "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up",
         "check: On air · story 9:16 | Sent when you go live"
       ],
       "why": "Social media card, round 2 (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): the slots Pre-announcement, On-air story and Post-announcement, each with its format and time and its own Set up, Edit and Cancel. Every slot starts as Not set up, so the on-air checkbox is gone. Set up and Edit open the post widget in a popup. Update the flow in Flow Lab, then pin the new rev."
@@ -661,6 +623,41 @@
         "field: Tag people"
       ],
       "why": "Post widget (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): a People group with More collaborators (Invite, up to 3 with the show account) and Tag people (Tag). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": [
+        "button: Edit pre-announcement",
+        "button: Cancel pre-announcement",
+        "field: Recording file",
+        "button: 1 · Social media (done)",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 5 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre",
+      "items": [
+        "button: Replace file",
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre-nofile",
+      "items": [
+        "button: Upload your set",
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio and the live panel open inside the page as the Soundcheck or Show time tab. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

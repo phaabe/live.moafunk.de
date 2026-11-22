@@ -9,6 +9,7 @@ import {
   useStreamSocket,
   BROWSER_UNSUPPORTED_MESSAGE,
   streamRecordingMimeType,
+  type SoundcheckStep,
 } from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
@@ -23,7 +24,13 @@ import BoardIcon from '@admin/components/BoardIcon.vue';
  * no tab sends audio, e.g. after a reload. The server keeps it on air for
  * 5 minutes after a drop. Going back on air needs only an input: the show
  * passed its soundcheck before.
+ *
+ * `embedded`: the Studio as a tab of the host's episode page (#1052). It has
+ * no back link and title, and going live tells the page instead of opening
+ * On Air.
  */
+const props = defineProps<{ embedded?: boolean }>();
+const emit = defineEmits<{ live: [] }>();
 const router = useRouter();
 const flow = useHostFlow();
 const audioCapture = useAudioCapture();
@@ -55,7 +62,8 @@ const record = computed({
 });
 
 // The soundcheck card. Its test broadcast uses the socket that Go Live needs.
-const soundcheck = ref<{ stopTest?: () => void } | null>(null);
+const soundcheck = ref<{ stopTest?: () => void; steps?: SoundcheckStep[] } | null>(null);
+defineExpose({ checks: computed(() => soundcheck.value?.steps ?? null) });
 
 const goingLive = ref(false);
 const wentLive = ref(false);
@@ -115,7 +123,8 @@ async function goLive() {
   const socket = useStreamSocket({
     onLive: () => {
       wentLive.value = true;
-      void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
+      if (props.embedded) emit('live');
+      else void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
     },
     onError: (message) => {
       socket.stopStream();
@@ -157,11 +166,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="studio host-page">
-    <router-link :to="episodePath" class="back-link"
-      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
-    >
-    <h1 class="page-title">Studio</h1>
+  <div :class="['studio', 'host-page', { embedded }]">
+    <template v-if="!embedded">
+      <router-link :to="episodePath" class="back-link"
+        ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
+      >
+      <h1 class="page-title">Studio</h1>
+    </template>
     <template v-if="backOnAir">
       <p class="pill status-banner live">
         <span class="dot" aria-hidden="true"></span>Still on air · no audio
