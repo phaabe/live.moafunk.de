@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 23,
+  "rev": 24,
   "screens": [
     {
       "id": "dashboard",
@@ -549,8 +549,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "e7a8a2aa",
-      "notesHash": "38d6a67d",
+      "hash": "a324a409",
+      "notesHash": "4020b388",
       "elements": [
         {
           "k": "back",
@@ -572,7 +572,7 @@
         },
         {
           "k": "text",
-          "text": "Test your audio before air time. The Studio opens 30 min before the start."
+          "text": "Test your audio in the Studio before air time."
         },
         {
           "k": "button",
@@ -1038,7 +1038,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
       "hash": "5e94b0cd",
-      "notesHash": "bc9ceae0",
+      "notesHash": "53f33fbf",
       "elements": [
         {
           "k": "back",
@@ -1236,7 +1236,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
       "hash": "85fbd85f",
-      "notesHash": "d5625cae",
+      "notesHash": "f0a57840",
       "elements": [
         {
           "k": "back",
