@@ -88,7 +88,14 @@ function onCoverChange(event: Event) {
 <template>
   <div class="show-header">
     <div class="sh-cover">
-      <img v-if="show.cover_url" :src="show.cover_url" alt="Cover" class="sh-cover-img" />
+      <img
+        v-if="show.cover_url"
+        :src="show.cover_url"
+        :srcset="show.cover_srcset ?? undefined"
+        sizes="72px"
+        alt="Cover"
+        class="sh-cover-img"
+      />
       <div v-else class="sh-cover-placeholder">🎙</div>
       <button
         v-if="canEdit"

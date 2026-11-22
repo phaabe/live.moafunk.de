@@ -214,6 +214,7 @@ export interface ArtistDetail {
     title: string;
     date: string;
     cover_url?: string;
+    cover_srcset?: string | null;
     cover_generated_at?: string;
   }[];
   available_shows: AvailableShow[];
@@ -466,6 +467,8 @@ export interface AssignedArtist {
   name: string;
   pronouns: string;
   pic_url?: string;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  pic_srcset?: string | null;
   voice_url?: string;
   track1_url?: string;
   track2_url?: string;
@@ -491,6 +494,8 @@ export interface ShowDetail {
   available_artists: { id: number; name: string; pronouns: string }[];
   artists_left: number;
   cover_url?: string;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  cover_srcset?: string | null;
   collage_url?: string;
   cover_generated_at?: string;
   active_overlay_preset_id?: number;
@@ -528,6 +533,7 @@ export interface ShowDetail {
   /** The Show's description and cover, for hosts who view another host's episode. */
   series_description?: string | null;
   series_cover_url?: string | null;
+  series_cover_srcset?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
   /** "Upcoming" | "Finished · wrap-up open" | "Finished" */
@@ -994,6 +1000,8 @@ export interface Series {
   name: string;
   description: string | null;
   cover_url: string | null;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  cover_srcset?: string | null;
   rhythm: SeriesRhythm | null;
   /** e.g. "Sundays · 12:00–14:00" */
   rhythm_line: string | null;
@@ -1061,6 +1069,7 @@ export interface SeriesOverviewItem {
   slug: string;
   name: string;
   cover_url: string | null;
+  cover_srcset?: string | null;
   host_username: string;
   /** Episodes whose broadcast is over (wrap-up open or finished). */
   finished_episodes: number;
@@ -1326,6 +1335,7 @@ export interface RecordingArtist {
   name: string;
   pronouns: string;
   pic_url?: string;
+  pic_srcset?: string | null;
   voice_url?: string;
   voice_key?: string;
   track1_url?: string;

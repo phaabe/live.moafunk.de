@@ -86,6 +86,8 @@ pub struct SeriesItem {
     name: String,
     description: Option<String>,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     rhythm: Option<Rhythm>,
     /// e.g. "Sundays · 12:00–14:00"; null while the series has no rhythm.
     rhythm_line: Option<String>,
@@ -99,6 +101,10 @@ async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
         Some(key) => storage::get_presigned_url(state, key, 3600).await.ok(),
         None => None,
     };
+    let cover_srcset = row
+        .cover_key
+        .as_deref()
+        .map(|key| crate::thumbs::srcset(state, key));
     SeriesItem {
         id: row.id,
         rhythm_line: rhythm.as_ref().map(Rhythm::line),
@@ -108,6 +114,7 @@ async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
         description: row.description,
         instagram_handle: row.instagram_handle,
         cover_url,
+        cover_srcset,
     }
 }
 
@@ -698,6 +705,8 @@ pub struct SeriesOverviewItem {
     slug: String,
     name: String,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     host_username: String,
     /// Episodes whose broadcast is over (wrap-up open or finished).
     finished_episodes: usize,
@@ -729,12 +738,17 @@ pub async fn api_series_overview(
             Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
             None => None,
         };
+        let cover_srcset = row
+            .cover_key
+            .as_deref()
+            .map(|key| crate::thumbs::srcset(&state, key));
         items.push(SeriesOverviewItem {
             finished_episodes: finished.get(&row.slug).copied().unwrap_or(0),
             id: row.id,
             slug: row.slug,
             name: row.name,
             cover_url,
+            cover_srcset,
             host_username: row.host_username,
         });
     }

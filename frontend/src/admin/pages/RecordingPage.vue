@@ -378,8 +378,8 @@ onUnmounted(() => {
         <div v-else class="artists-grid">
           <div v-for="artist in recording.artists.value" :key="artist.id" class="artist-card">
             <div class="artist-header">
-              <img v-if="artist.pic_url" :src="artist.pic_url" :alt="artist.name" class="artist-thumb"
-                crossorigin="anonymous" />
+              <img v-if="artist.pic_url" :src="artist.pic_url" :srcset="artist.pic_srcset ?? undefined"
+                sizes="48px" :alt="artist.name" class="artist-thumb" crossorigin="anonymous" />
               <div v-else class="artist-thumb-placeholder"></div>
               <div class="artist-info">
                 <router-link :to="`/artists/${artist.id}`" class="artist-name-link">

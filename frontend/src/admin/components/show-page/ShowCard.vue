@@ -22,7 +22,13 @@ const hosts = computed(() => hostsLine(props.series.hosts));
 <template>
   <section class="board-card show-card" :aria-label="`Show ${series.name}`">
     <div class="cover show-cover">
-      <img v-if="series.cover_url" :src="series.cover_url" :alt="`Cover of ${series.name}`" />
+      <img
+        v-if="series.cover_url"
+        :src="series.cover_url"
+        :srcset="series.cover_srcset ?? undefined"
+        sizes="(max-width: 640px) 100vw, 180px"
+        :alt="`Cover of ${series.name}`"
+      />
       <span v-else class="cover-name" aria-hidden="true">{{ series.name }}</span>
     </div>
     <div class="show-text">

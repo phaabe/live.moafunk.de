@@ -148,7 +148,13 @@ async function save() {
 
     <template v-else>
       <div class="cover">
-        <img v-if="show.cover_url" :src="show.cover_url" alt="" />
+        <img
+          v-if="show.cover_url"
+          :src="show.cover_url"
+          :srcset="show.cover_srcset ?? undefined"
+          sizes="(max-width: 640px) 100vw, 700px"
+          alt=""
+        />
         <BoardIcon v-else name="image" :size="40" />
         <span v-if="soon" class="soon"><BoardIcon name="clock" :size="14" />{{ soon }}</span>
       </div>

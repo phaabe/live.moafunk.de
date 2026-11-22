@@ -93,6 +93,14 @@ impl FakeR2 {
     }
 }
 
+/// An ETag that changes with the content, like R2's.
+fn etag(data: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    format!("\"{:x}\"", hasher.finish())
+}
+
 fn path(state: &AppState, key: &str) -> String {
     format!("{}/{key}", state.config.r2_bucket_name)
 }
@@ -244,7 +252,7 @@ async fn fake_r2_request(
         }
         // The server sends no body for HEAD, only its length.
         Method::GET | Method::HEAD => match objects.get(&key) {
-            Some(data) => (StatusCode::OK, data.clone()).into_response(),
+            Some(data) => (StatusCode::OK, [("etag", etag(data))], data.clone()).into_response(),
             None if method == Method::HEAD => StatusCode::NOT_FOUND.into_response(),
             None => error(StatusCode::NOT_FOUND, "NoSuchKey"),
         },

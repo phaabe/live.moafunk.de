@@ -45,7 +45,14 @@ const timeLabel = computed(() => props.show.start_time || '');
   <BaseModal :open="open" title="📱 Telegram · announcement" @close="emit('close')">
     <div class="tg-preview-wrap">
       <div class="tg-bubble">
-        <img v-if="show.cover_url" :src="show.cover_url" alt="Show cover" class="tg-img" />
+        <img
+          v-if="show.cover_url"
+          :src="show.cover_url"
+          :srcset="show.cover_srcset ?? undefined"
+          sizes="(max-width: 640px) 100vw, 600px"
+          alt="Show cover"
+          class="tg-img"
+        />
         <div class="tg-body">
           <p class="tg-channel">Moafunk</p>
           <p class="tg-text">{{ caption }}</p>
