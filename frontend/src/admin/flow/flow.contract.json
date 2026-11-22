@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 24,
+  "rev": 25,
   "screens": [
     {
       "id": "dashboard",
@@ -341,8 +341,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "25c1eea7",
-      "notesHash": "81e1aa2b",
+      "hash": "6397301d",
+      "notesHash": "6a095ac4",
       "elements": [
         {
           "k": "back",
@@ -428,7 +428,7 @@
           "k": "row",
           "text": "So 11.10. · Pre-recorded",
           "meta": "Finished",
-          "to": null
+          "to": "episode"
         }
       ]
     },
@@ -994,7 +994,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/44",
       "hash": "e507e038",
-      "notesHash": "c4d3be8b",
+      "notesHash": "6b0e97cd",
       "elements": [
         {
           "k": "back",
@@ -2056,7 +2056,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "bed29c37",
-      "notesHash": "d07f892e",
+      "notesHash": "5dce5f9d",
       "elements": [
         {
           "k": "h1",
