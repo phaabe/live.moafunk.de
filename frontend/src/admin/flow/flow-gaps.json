@@ -231,6 +231,7 @@
     {
       "screen": "schedule",
       "items": [
+        "nav: Admin",
         "nav: Dashboard",
         "nav: Schedule",
         "nav: My Shows",

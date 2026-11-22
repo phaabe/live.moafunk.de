@@ -1,6 +1,6 @@
 {
   "screen": "schedule",
-  "hash": "49407601",
+  "hash": "6fc48ba6",
   "status": "drift",
   "leftOut": [
     {
@@ -14,6 +14,7 @@
     "h2: Your next episodes",
     "row: So 25.10. · Brunchtime | Upcoming · Live",
     "row: So 08.11. · Brunchtime | Upcoming · Pre-recorded",
+    "nav: Admin",
     "nav: Dashboard",
     "nav: Schedule",
     "nav: My Shows",
