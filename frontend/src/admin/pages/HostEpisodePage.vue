@@ -20,8 +20,12 @@ import PromotionCard from '../components/PromotionCard.vue';
 import BoardIcon from '../components/BoardIcon.vue';
 import EpisodeHeading from '../components/episode/EpisodeHeading.vue';
 import EpisodeTabs from '../components/episode/EpisodeTabs.vue';
+import OnAirView from '../components/episode/OnAirView.vue';
 import ShowTimeCard from '../components/episode/ShowTimeCard.vue';
 import SoundcheckCard from '../components/episode/SoundcheckCard.vue';
+import StudioView from '../components/episode/StudioView.vue';
+import EpisodeIcon from '../components/episode/EpisodeIcon.vue';
+import { episodeTimes } from '../components/episode/phase';
 import {
   EPISODE_TABS,
   recordingItems,
@@ -42,6 +46,9 @@ import { SLOT_NAMES } from '../promotion';
 // warns and leads to Soundcheck, then shows the live panel. After the show the
 // Recording card holds what the Wrap-up had (Publish episode). Another host's
 // episode is the same page read-only: no Edit, no Studio, no card buttons.
+// A live episode's Soundcheck and Show time tabs always show the Studio card
+// and the live panel: working in the host's own tab, else read-only with what
+// the host's browser saved (StudioView, OnAirView).
 
 const FlowLive = defineAsyncComponent(() => import('./flow/FlowLive.vue'));
 const StudioOnAir = defineAsyncComponent(() => import('./flow/StudioOnAir.vue'));
@@ -149,13 +156,17 @@ const panelId = useId();
 /** The tab the host picked (0–3); null follows the current step. */
 const picked = ref<number | null>(null);
 
-/** While the recording is processing after the show, look again every 10 s. */
+/** While the recording is processing after the show, look again every 10 s.
+ * While another tab sends the episode (or it may start), every 15 s: the
+ * read-only live panel shows what the host's browser saved. */
 function schedulePoll() {
   if (poll) clearTimeout(poll);
   poll = null;
   const waiting = ended.value || phase.value === 'post';
   if (waiting && recording.value.state === 'processing') {
     poll = setTimeout(() => load(false), 10000);
+  } else if ((show.value?.on_air || phase.value === 'live') && !liveHere.value) {
+    poll = setTimeout(() => load(false), 15000);
   }
 }
 
@@ -228,9 +239,41 @@ watch(studioAllowed, (ok) => {
 const tabSocial = computed(() => socialItems(announcements.value, trackPublic.value));
 const tabSoundcheck = computed(() =>
   show.value
-    ? soundcheckItems(show.value, phase.value, tested.value, studio.value?.checks ?? null)
+    ? soundcheckItems(
+        show.value,
+        phase.value,
+        tested.value,
+        studio.value?.checks ?? show.value.studio_log?.soundcheck?.checks ?? null
+      )
     : []
 );
+
+/** Another host's episode on air: the public stream. */
+const LISTEN = 'https://live.moafunk.de';
+
+// ─── Go Live on the Show time tab (the host's own live episode) ─────────────
+const prerecorded = computed(() => show.value?.stream_mode === 'prerecorded');
+/** Go Live in the live panel's bar: own live episode, not on air, not over. */
+const showGoLive = computed(
+  () => isMine.value && !prerecorded.value && !show.value?.on_air && phase.value !== 'post'
+);
+/** From 30 min before the start, Go Live warns about a missing soundcheck or input. */
+const studioOpenNow = computed(() => {
+  const openMs = show.value ? episodeTimes(show.value).openMs : null;
+  return openMs !== null && now.value >= openMs;
+});
+const goLiveWarn = computed(() => {
+  if (!showGoLive.value || !studioOpenNow.value) return '';
+  if (studio.value?.canGoLive || studio.value?.goingLive) return '';
+  if (!tested.value) return 'No soundcheck in this browser yet. Do it before you go live.';
+  if (phase.value === 'live') return 'Your audio input is off. Pick it in the Soundcheck tab.';
+  return '';
+});
+const showTimeAlert = computed(() => {
+  const failed = showGoLive.value ? studio.value?.goLiveError : null;
+  if (failed) return { chip: 'Go Live failed', text: failed };
+  return goLiveWarn.value ? { chip: 'Soundcheck', text: goLiveWarn.value } : null;
+});
 const tabClock = computed(() =>
   show.value
     ? showClock(show.value, phase.value, now.value, onAirNow.value)
@@ -346,30 +389,23 @@ function replaceFile() {
         @compose="openComposer"
       />
       <SoundcheckCard
-        v-show="tab === 1 && !studioTab"
+        v-if="prerecorded"
+        v-show="tab === 1"
         :show="show"
         :phase="phase"
         :state="step(1)"
-        :tested="tested"
         :busy="busy"
         :read-only="!isMine"
-        @open-studio="picked = 1"
         @replace-file="replaceFile"
       />
       <ShowTimeCard
-        v-show="tab === 2 && !onAirHere"
+        v-if="prerecorded"
+        v-show="tab === 2"
         :show="show"
         :phase="phase"
         :state="step(2)"
         :now="now"
-        :busy="busy"
-        :tested="tested"
-        :ready="!!studio?.canGoLive"
-        :starting="!!studio?.goingLive"
-        :error="studio?.goLiveError"
         :read-only="!isMine"
-        @open-studio="picked = 1"
-        @go-live="studio?.goLive()"
       />
       <EpisodeRecordingCard
         v-show="tab === 3"
@@ -392,6 +428,52 @@ function replaceFile() {
       </section>
       <section v-if="onAirHere" v-show="tab === 2" class="ep-embed now" aria-label="Live Panel">
         <StudioOnAir embedded :shown="tab === 2" />
+      </section>
+      <section
+        v-if="!prerecorded && !studioAllowed"
+        v-show="tab === 1"
+        :class="['ep-embed', step(1)]"
+        aria-label="Studio"
+      >
+        <StudioView :show="show" :phase="phase" />
+      </section>
+      <section
+        v-if="!prerecorded && !onAirHere"
+        v-show="tab === 2"
+        :class="['ep-embed', step(2)]"
+        aria-label="Live Panel"
+      >
+        <OnAirView :show="show" :phase="phase" :now="now" :alert="showTimeAlert">
+          <template v-if="!isMine && show.on_air" #end>
+            <div class="end">
+              <a class="listen" :href="LISTEN" target="_blank" rel="noopener"
+                >Listen live<EpisodeIcon name="external"
+              /></a>
+            </div>
+          </template>
+          <template v-else-if="isMine && (show.on_air || showGoLive)" #end>
+            <div class="end">
+              <BaseButton v-if="show.on_air" class="xl" :loading="busy" @click="picked = 1">
+                <BoardIcon name="broadcast" />Back to On Air
+              </BaseButton>
+              <BaseButton v-else-if="goLiveWarn" variant="secondary" class="xl" @click="picked = 1">
+                <BoardIcon name="mic" />Go to Soundcheck
+              </BaseButton>
+              <!-- At the start it blinks until clicked. -->
+              <!-- Yellow only while Show time is the current step. -->
+              <BaseButton
+                v-else
+                :variant="step(2) === 'now' ? 'primary' : 'secondary'"
+                :class="['xl', { blink: studio?.canGoLive && !studio?.goingLive }]"
+                :disabled="!studio?.canGoLive"
+                :loading="!!studio?.goingLive"
+                @click="studio?.goLive()"
+              >
+                <BoardIcon name="broadcast" />Go Live
+              </BaseButton>
+            </div>
+          </template>
+        </OnAirView>
       </section>
     </div>
     <BaseModal
@@ -437,6 +519,44 @@ function replaceFile() {
 
 .ep-embed.now {
   border-color: var(--color-primary);
+}
+
+/* Listen live: another host's episode on air. */
+.listen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 24px;
+  border: 1px solid #4a4a60;
+  border-radius: var(--radius-lg);
+  color: #eee;
+  font: 700 15px/1 var(--font-family);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.listen:hover {
+  border-color: #fff;
+}
+
+/* Go Live in the live panel's bar blinks until clicked. */
+.blink {
+  animation: go-live-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes go-live-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
 }
 
 @media (max-width: 640px) {

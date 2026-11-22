@@ -448,6 +448,23 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "shows", "live_recorded", "INTEGER").await?;
     // Length of a pre-recorded set booked through Book Slot (from ffprobe).
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
+    // What the host's browser measured in the Studio and the live panel (JSON).
+    add_column_if_missing(pool, "shows", "studio_log", "TEXT").await?;
+    // Listener counts the server takes while an episode is on air (unix ms).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS show_listener_samples (\
+             show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE, \
+             at INTEGER NOT NULL, \
+             count INTEGER NOT NULL)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_show_listener_samples_show \
+         ON show_listener_samples(show_id, at)",
+    )
+    .execute(pool)
+    .await?;
     crate::series::migrate(pool).await?;
     // The host's own Instagram account, without '@'.
     add_column_if_missing(pool, "show_templates", "instagram_handle", "TEXT").await?;

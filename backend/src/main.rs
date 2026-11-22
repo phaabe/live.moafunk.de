@@ -24,6 +24,7 @@ mod soundcloud;
 mod storage;
 mod stream_bridge;
 mod stream_metrics;
+mod studio_log;
 mod telegram;
 mod telegram_notify;
 mod thumbs;
@@ -718,6 +719,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id",
             axum::routing::delete(handlers::api::api_delete_show),
+        )
+        .route(
+            "/api/shows/:id/studio-log",
+            axum::routing::put(studio_log::api_save_studio_log),
         )
         .route(
             "/api/shows/:id/active-preset",

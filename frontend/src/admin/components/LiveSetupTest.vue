@@ -23,6 +23,7 @@ import DbMeter from '@admin/components/DbMeter.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
 import StreamPreviewPlayer from '@admin/components/StreamPreviewPlayer.vue';
 import { config } from '@/config';
+import type { StudioSoundcheckLog } from '@admin/api';
 
 /**
  * Live preparation: audio input selection + level meter + rehearsal broadcast
@@ -40,10 +41,20 @@ import { config } from '@/config';
  * return feed and proposes the result. With `inputOnly` (Studio · Back on
  * air) the card shows only the meter and the input, no soundcheck.
  */
-const props = withDefaults(defineProps<{ studio?: boolean; inputOnly?: boolean }>(), {
-  studio: false,
-  inputOnly: false,
-});
+const props = withDefaults(
+  defineProps<{
+    studio?: boolean;
+    inputOnly?: boolean;
+    /**
+     * The Studio card read-only (another host's episode, or after Go Live):
+     * the input and the checks the host's browser saved at Go Live, or none
+     * yet. It never asks for an audio input and has no buttons.
+     */
+    readOnly?: boolean;
+    log?: StudioSoundcheckLog | null;
+  }>(),
+  { studio: false, inputOnly: false, readOnly: false, log: null }
+);
 
 const emit = defineEmits<{
   /** The host confirmed the test stream sounds right (test marked passed). */
@@ -76,6 +87,8 @@ const inputLive = () =>
   !!audioCapture.mediaStream.value?.getAudioTracks().some((t) => t.readyState === 'live');
 
 onMounted(async () => {
+  // Read-only: no audio input is asked for.
+  if (props.readOnly) return;
   // A soundcheck result from an earlier visit counts only while its input still sends.
   if (props.studio && !props.inputOnly) forgetLostInput();
   // First refresh prompts for permission so device labels are populated.
@@ -274,7 +287,9 @@ function markTestPassed() {
 // ─── Studio soundcheck ───────────────────────────────────────────────────────
 // What is sent is what is measured: the processed stream when there is one.
 const sentStream = computed(() =>
-  props.studio ? (audioCapture.processedStream.value ?? audioCapture.mediaStream.value) : null
+  props.studio && !props.readOnly
+    ? (audioCapture.processedStream.value ?? audioCapture.mediaStream.value)
+    : null
 );
 const sentMeter = useDbMeter(sentStream);
 
@@ -308,7 +323,7 @@ const soundcheck = useSoundcheck(
     setPassed: (passed) => flow.setLiveTestPassed(passed),
   },
   // The Studio's result stays for this browser tab, also when the host leaves the page.
-  props.studio ? studioSoundcheckResult : undefined
+  props.studio && !props.readOnly ? studioSoundcheckResult : undefined
 );
 
 // The input is lost (unplugged, screen share stopped): the result goes, and
@@ -325,7 +340,7 @@ function watchInput(stream: MediaStream | null) {
   inputTracks = stream?.getAudioTracks() ?? [];
   for (const t of inputTracks) t.addEventListener('ended', forgetLostInput);
 }
-if (props.studio && !props.inputOnly) {
+if (props.studio && !props.inputOnly && !props.readOnly) {
   watch(() => audioCapture.mediaStream.value, watchInput, { immediate: true });
 }
 
@@ -337,6 +352,11 @@ const STATE_LABELS: Record<SoundcheckStepState, string> = {
   fail: 'Failed',
   skipped: 'Skipped',
 };
+
+/** Read-only: the saved checks, else every row "Not checked yet". */
+const shownSteps = computed<SoundcheckStep[]>(() =>
+  props.readOnly ? (props.log?.checks ?? soundcheck.steps.value) : soundcheck.steps.value
+);
 
 // Music and Mic have their buttons in the row; the host starts each test.
 const isSource = (id: SoundcheckStep['id']) => id === 'music' || id === 'mic';
@@ -359,7 +379,8 @@ const testHealth = useUploadHealth(
 const isDev = import.meta.env.DEV;
 
 onUnmounted(() => {
-  navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
+  // Read-only never listened (and a page without media devices may show it).
+  navigator.mediaDevices?.removeEventListener('devicechange', onDeviceChange);
   watchInput(null);
   if (deviceRefreshInterval) {
     clearInterval(deviceRefreshInterval);
@@ -378,13 +399,20 @@ onUnmounted(() => {
 
 <template>
   <div v-if="studio" class="live-setup studio-chain">
-    <p v-if="!browserSupported" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
+    <p v-if="!browserSupported && !readOnly" class="ls-error">{{ BROWSER_UNSUPPORTED_MESSAGE }}</p>
     <!-- One card: input, then the soundcheck. Go Live is on the page. -->
     <section class="studio-step">
       <span class="step-icon" aria-hidden="true"><BoardIcon name="mic" :size="18" /></span>
       <div class="step-body">
-        <DbMeter :media-stream="audioCapture.mediaStream.value" label="Input level" />
-        <label class="ls-field">
+        <DbMeter
+          :media-stream="readOnly ? null : audioCapture.mediaStream.value"
+          label="Input level"
+        />
+        <div v-if="readOnly" class="ls-field">
+          <span class="ls-label">Audio input</span>
+          <p class="ls-select ls-value">{{ log?.input ?? 'Not chosen yet' }}</p>
+        </div>
+        <label v-else class="ls-field">
           <span class="ls-label">Audio input</span>
           <select v-model="selectedDevice" class="ls-select" @change="handleInputSelect">
             <option value="">Select audio input</option>
@@ -402,17 +430,15 @@ onUnmounted(() => {
           Music and mic use this one input. You do not need two: test them one after the other
           below.
         </p>
-        <p v-if="audioCapture.error.value" class="ls-error">{{ audioCapture.error.value }}</p>
+        <p v-if="audioCapture.error.value && !readOnly" class="ls-error">
+          {{ audioCapture.error.value }}
+        </p>
         <ol v-if="!inputOnly" class="sc-steps" aria-live="polite">
-          <li
-            v-for="step in soundcheck.steps.value"
-            :key="step.id"
-            :class="['sc-step', step.state]"
-          >
+          <li v-for="step in shownSteps" :key="step.id" :class="['sc-step', step.state]">
             <span class="sc-state" role="img" :aria-label="STATE_LABELS[step.state]"></span>
             <span :id="`sc-name-${step.id}`" class="sc-name">{{ step.name }}</span>
             <span class="sc-detail">{{ step.detail }}</span>
-            <span v-if="isSource(step.id)" class="sc-buttons">
+            <span v-if="isSource(step.id) && !readOnly" class="sc-buttons">
               <button
                 v-if="step.state === 'running'"
                 class="ls-btn-secondary"
@@ -466,7 +492,7 @@ onUnmounted(() => {
             </span>
           </li>
         </ol>
-        <div v-if="!inputOnly" class="sc-result" aria-live="polite">
+        <div v-if="!inputOnly && !readOnly" class="sc-result" aria-live="polite">
           <p v-if="soundcheck.prompt.value" class="sc-question">
             {{ soundcheck.prompt.value }}
           </p>
@@ -485,7 +511,7 @@ onUnmounted(() => {
             {{ soundcheck.problem.value }}
           </p>
         </div>
-        <div v-if="!inputOnly" class="sc-actions">
+        <div v-if="!inputOnly && !readOnly" class="sc-actions">
           <template v-if="!soundcheck.running.value">
             <button
               v-if="soundcheck.outcome.value === 'manual' && !flow.liveTestPassed.value"
@@ -521,7 +547,7 @@ onUnmounted(() => {
           {{ soundcheck.listenError.value }}
         </p>
         <button
-          v-if="isDev && !inputOnly && !flow.liveTestPassed.value"
+          v-if="isDev && !inputOnly && !readOnly && !flow.liveTestPassed.value"
           class="ls-dev-skip"
           type="button"
           @click="markTestPassed"
@@ -684,6 +710,10 @@ onUnmounted(() => {
   color: var(--color-text);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+}
+
+.ls-value {
+  margin: 0;
 }
 
 .ls-btn-icon {

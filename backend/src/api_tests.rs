@@ -1605,3 +1605,62 @@ async fn service_switches_read_by_all_set_by_admins() {
     );
     assert_eq!(get(Some(p.host)).await, (OK, off));
 }
+
+// ── Studio log ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_host_saves_the_studio_log_and_every_login_reads_it() {
+    use crate::studio_log::{api_save_studio_log, record_listeners};
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.host), Some(p.admin)).await;
+    let s = &state;
+    const SAVED: StatusCode = StatusCode::NO_CONTENT;
+
+    let callers = [
+        None,
+        Some(p.guest),
+        Some(p.other_host),
+        Some(p.host),
+        Some(p.admin),
+    ];
+    let got = statuses(s, &callers, |h| {
+        api_save_studio_log(
+            State(s.clone()),
+            Path(1),
+            h,
+            req(json!({"soundcheck": {"input": "USB"}})),
+        )
+    })
+    .await;
+    assert_eq!(got, vec![NOBODY, DENIED, DENIED, SAVED, SAVED]);
+
+    // A panel save keeps the soundcheck; an unknown part is refused.
+    let host = headers(s, p.host).await;
+    let panel = api_save_studio_log(
+        State(s.clone()),
+        Path(1),
+        host.clone(),
+        req(json!({"on_air": {"gain": 1.2}})),
+    );
+    assert_eq!(status(panel.await), SAVED);
+    let bad = api_save_studio_log(State(s.clone()), Path(1), host, req(json!({"x": {}})));
+    assert_eq!(status(bad.await), StatusCode::BAD_REQUEST);
+
+    // The server keeps one listener count per 10 s.
+    record_listeners(&s.db, 1, 7, 1_000).await.unwrap();
+    record_listeners(&s.db, 1, 9, 5_000).await.unwrap();
+    record_listeners(&s.db, 1, 12, 20_000).await.unwrap();
+
+    let detail = api::api_show_detail(State(s.clone()), Path(1), headers(s, p.other_host).await);
+    let (code, body) = reply(detail.await).await;
+    assert_eq!(code, OK);
+    assert_eq!(
+        body["studio_log"],
+        json!({"soundcheck": {"input": "USB"}, "on_air": {"gain": 1.2}})
+    );
+    assert_eq!(
+        body["listener_samples"],
+        json!([{"at": 1000, "count": 7}, {"at": 20000, "count": 12}])
+    );
+}

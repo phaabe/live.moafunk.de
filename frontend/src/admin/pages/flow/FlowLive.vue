@@ -13,6 +13,7 @@ import {
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
 import { startLiveSession } from '@admin/liveSession';
+import { inputName, saveSoundcheck } from '@admin/studioLog';
 import { episodeDay } from '@admin/episodeRow';
 
 /**
@@ -121,6 +122,8 @@ function failGoLive(message: string) {
 async function goLive() {
   if (!show.value || !canGoLive.value || goingLive.value) return;
   const showId = show.value.id;
+  // Back on air keeps the soundcheck saved at the first Go Live.
+  const firstGoLive = !backOnAir.value;
   goingLive.value = true;
   goLiveError.value = null;
   if (backOnAir.value) {
@@ -140,6 +143,10 @@ async function goLive() {
   const socket = useStreamSocket({
     onLive: () => {
       wentLive.value = true;
+      // The input and the checks this show went live with, for the episode page.
+      if (firstGoLive) {
+        void saveSoundcheck(showId, inputName(audioCapture), soundcheck.value?.steps ?? []);
+      }
       startLiveSession(
         showId,
         props.embedded ? `/shows/${showId}` : `/stream/on-air?show=${showId}`

@@ -202,7 +202,9 @@ pub fn spawn_poller(state: Arc<AppState>) {
         loop {
             interval.tick().await;
             let snapshot = poll_once(&client, &url).await;
+            let (online, listeners) = (snapshot.online, snapshot.total_listeners);
             *cache.write().await = snapshot;
+            crate::studio_log::after_poll(&state, online, listeners).await;
         }
     });
 }

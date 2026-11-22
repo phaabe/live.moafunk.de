@@ -546,6 +546,51 @@ export interface ShowDetail {
   live_ended_at?: string | null;
   /** Whether the broadcast the host ended with End Episode was recorded. */
   live_recorded?: boolean | null;
+  /** What the host's browser saved in the Studio and the live panel. */
+  studio_log?: StudioLog | null;
+  /** Listener counts the server took while the episode was on air, oldest first. */
+  listener_samples?: { at: number; count: number }[];
+}
+
+/** The soundcheck the Studio saved at Go Live: the input and each check. */
+export interface StudioSoundcheckLog {
+  /** Unix ms when it was saved. */
+  at: number;
+  input: string;
+  checks: {
+    id: 'music' | 'mic' | 'server' | 'return';
+    name: string;
+    state: 'pending' | 'running' | 'ok' | 'warn' | 'fail' | 'skipped';
+    detail: string;
+  }[];
+}
+
+/** The live panel's values, saved every 15 s while on air and at End Episode. */
+export interface StudioOnAirLog {
+  /** Unix ms when it was saved. */
+  at: number;
+  /** Unix ms when this tab went on air. */
+  since: number;
+  /** Saved by End Episode: the values from the end. */
+  ended: boolean;
+  input: string;
+  /** 0..2 (1 = as it comes in). */
+  gain: number;
+  connection: 'stable' | 'tight' | 'too slow' | 'reconnecting…' | 'lost';
+  upload_kbps: number;
+  buffer_s: number;
+  rtt_ms: number | null;
+  /** Upload kbit/s, one sample a second, oldest first. */
+  history: number[];
+  target_kbps: number;
+  quality: 'auto' | number;
+  /** `at`: seconds on air; `markedAt`: unix ms. */
+  moments: { at: number; markedAt: number }[];
+}
+
+export interface StudioLog {
+  soundcheck?: StudioSoundcheckLog;
+  on_air?: StudioOnAirLog;
 }
 
 export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';
@@ -567,6 +612,10 @@ export const showsApi = {
   overview: () => api.get<{ shows: ShowOverviewItem[] }>('/api/shows-overview'),
 
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
+
+  /** The host's browser saves the Studio's or the live panel's values (each part replaces its own). */
+  saveStudioLog: (id: number, part: StudioLog) =>
+    api.put<void>(`/api/shows/${id}/studio-log`, part),
 
   create: (data: Partial<Show> & { template_id?: number; host_user_id?: number }) =>
     api.post<Show>('/api/shows', data),

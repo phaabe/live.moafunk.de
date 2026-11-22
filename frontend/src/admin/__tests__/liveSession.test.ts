@@ -31,7 +31,11 @@ const m = vi.hoisted(() => ({
   calls: [] as string[],
   capture: {} as Record<string, unknown>,
   flowReset: vi.fn(),
+  saveStudioLog: vi.fn(),
 }));
+
+// The panel's values go to the episode (studioLog.ts).
+vi.mock('@admin/api', () => ({ showsApi: { saveStudioLog: m.saveStudioLog } }));
 
 vi.mock('../composables/useStreamSocket', () => ({
   useStreamSocket: () => ({
@@ -84,6 +88,7 @@ beforeEach(async () => {
   m.socketCallbacks = null;
   m.captureCallbacks = null;
   m.flowReset.mockReset();
+  m.saveStudioLog.mockReset().mockResolvedValue(undefined);
   // A good line: nothing waits in the send buffer.
   m.stats = { connected: true, bufferedAmount: 0, bytesQueued: 0, rttMs: 40 };
   const bitsPerSecond: Ref<number> = ref(192000);
@@ -99,6 +104,9 @@ beforeEach(async () => {
       m.calls.push('flush');
     }),
     stopCapture: vi.fn(() => m.calls.push('stop capture')),
+    selectedDeviceId: ref('usb'),
+    devices: ref([{ deviceId: 'usb', label: 'USB Mixer' }]),
+    inputVolume: ref(1.2),
   };
   locks = [];
   Object.defineProperty(navigator, 'wakeLock', {
@@ -243,6 +251,31 @@ describe('live session', () => {
     expect(ended.value).toEqual({ showId: 7 });
     expect(m.socketCallbacks).toBeNull();
     expect(m.captureCallbacks).toBeNull();
+  });
+
+  it('saves its values to the episode every 15 s and once more at End Episode', async () => {
+    const live = start();
+    const saved = () => m.saveStudioLog.mock.calls.map(([id, part]) => [id, part.on_air.ended]);
+    expect(saved()).toEqual([[7, false]]);
+    expect(m.saveStudioLog.mock.calls[0][1].on_air).toMatchObject({
+      input: 'USB Mixer',
+      gain: 1.2,
+      connection: 'stable',
+      quality: 'auto',
+      moments: [],
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(saved()).toEqual([
+      [7, false],
+      [7, false],
+    ]);
+    // A failed save does not stop the broadcast.
+    m.saveStudioLog.mockRejectedValueOnce(new Error('offline'));
+    await live.end();
+    expect(saved().at(-1)).toEqual([7, true]);
+    // The session is gone: no more saves.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(saved()).toHaveLength(3);
   });
 
   it('ends by itself when another page stops the stream', async () => {

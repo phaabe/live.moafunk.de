@@ -24,6 +24,7 @@ for (const path of [
 }
 
 vi.mock('@admin/api', () => ({
+  showsApi: { saveStudioLog: vi.fn(() => Promise.resolve()) },
   streamApi: {
     stop: mocks.streamStop,
     metrics: vi.fn(() => Promise.resolve({ online: true, total_listeners: 3, mounts: [] })),

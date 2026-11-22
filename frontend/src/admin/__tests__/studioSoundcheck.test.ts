@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   peak: null as null | Ref<number>,
   connect: vi.fn(),
   stopStream: vi.fn(),
-  socketOptions: {} as { onError?: (message: string) => void },
+  socketOptions: {} as { onLive?: () => void; onError?: (message: string) => void },
   // Chunks the server confirmed.
   serverChunks: 0,
   recorder: null as null | FakeRecorder,
@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   captureDevice: vi.fn(),
   // GET /api/shows/:id: `on_air` opens Studio · Back on air.
   showsGet: vi.fn(),
+  // PUT /api/shows/:id/studio-log: Go Live saves the soundcheck.
+  saveStudioLog: vi.fn(),
   // The Studio's result for the browser tab: fresh in each test.
   result: null as null | SoundcheckResult,
   // The captured input's track: unplugging it ends it.
@@ -41,7 +43,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
-vi.mock('@admin/api', () => ({ showsApi: { get: mocks.showsGet } }));
+// On Air's live session is not part of the Studio.
+vi.mock('@admin/liveSession', () => ({ startLiveSession: vi.fn() }));
+vi.mock('@admin/api', () => ({
+  showsApi: { get: mocks.showsGet, saveStudioLog: mocks.saveStudioLog },
+}));
 vi.mock('@/config', () => ({
   config: { stream: { icecastTestUrl: 'https://test.example/test.mp3' } },
 }));
@@ -209,6 +215,7 @@ beforeEach(() => {
   mocks.db = ref(-21);
   mocks.peak = ref(-9);
   mocks.connect.mockReset().mockResolvedValue(undefined);
+  mocks.saveStudioLog.mockReset().mockResolvedValue(undefined);
   mocks.stopStream.mockReset();
   mocks.socketOptions = {};
   mocks.serverChunks = 4;
@@ -325,6 +332,27 @@ describe('Studio soundcheck', () => {
     expect(mocks.setAudible).not.toHaveBeenCalledWith(true);
     expect(text()).not.toContain('headphones');
     expect(goLive().disabled).toBe(false);
+  });
+
+  it('saves the input and each check to the episode when the show goes live', async () => {
+    await mount();
+    await testAll();
+    goLive().click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.saveStudioLog).not.toHaveBeenCalled();
+    mocks.socketOptions.onLive!();
+    expect(mocks.saveStudioLog).toHaveBeenCalledOnce();
+    const [id, { soundcheck }] = mocks.saveStudioLog.mock.calls[0];
+    expect(id).toBe(7);
+    expect(soundcheck.input).toBe('Focusrite USB');
+    expect(
+      soundcheck.checks.map((c: { name: string; state: string }) => [c.name, c.state])
+    ).toEqual([
+      ['Music', 'ok'],
+      ['Mic', 'ok'],
+      ['Server', 'ok'],
+      ['Return feed', 'ok'],
+    ]);
   });
 
   it('waits for the server and the relay', async () => {
@@ -750,6 +778,9 @@ describe('Studio · Back on air', () => {
     await nextTick();
     await press('Go back on air');
     expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
+    // The soundcheck saved at the first Go Live stays.
+    mocks.socketOptions.onLive!();
+    expect(mocks.saveStudioLog).not.toHaveBeenCalled();
   });
 
   it('shows the normal soundcheck when the 5 minutes ran out', async () => {

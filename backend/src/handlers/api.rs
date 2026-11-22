@@ -2056,6 +2056,11 @@ pub struct ShowDetailResponse {
     /// Whether the live broadcast the host ended with End Episode was
     /// recorded. None until one ended.
     live_recorded: Option<bool>,
+    /// What the host's browser saved in the Studio (`soundcheck`, at Go Live)
+    /// and the live panel (`on_air`, every 15 s while on air). See `studio_log`.
+    studio_log: Option<serde_json::Value>,
+    /// Listener counts the server took while this episode was on air, oldest first.
+    listener_samples: Vec<crate::studio_log::ListenerSample>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2876,7 +2881,7 @@ pub async fn api_show_detail(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
                 t.description AS series_description, t.cover_key AS series_cover_key, \
                 s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
-                s.live_recorded \
+                s.live_recorded, s.studio_log \
          FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
     )
     .bind(id)
@@ -2958,6 +2963,8 @@ pub async fn api_show_detail(
         prerecorded_duration_secs: view.prerecorded_duration_secs,
         live_ended_at: view.live_ended_at,
         live_recorded: view.live_recorded,
+        studio_log: crate::studio_log::parse(view.studio_log.as_deref()),
+        listener_samples: crate::studio_log::listener_samples(&state.db, id).await?,
     }))
 }
 
@@ -2973,6 +2980,7 @@ struct EpisodeViewRow {
     prerecorded_duration_secs: Option<i64>,
     live_ended_at: Option<String>,
     live_recorded: Option<bool>,
+    studio_log: Option<String>,
 }
 
 /// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so

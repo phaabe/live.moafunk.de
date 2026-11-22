@@ -18,6 +18,8 @@ const props = defineProps<{
   now: number;
   /** The host listens to the stream: their own player is counted too. */
   monitoring: boolean;
+  /** The counts the server took for the episode (read-only panel), not this page's. */
+  readOnly?: boolean;
 }>();
 
 // The line spans the last 40 minutes, or the time since the first count
@@ -53,9 +55,9 @@ const minutes = LISTENER_WINDOW_MS / 60_000;
       :label="`Listeners in the last ${minutes} minutes, now ${current ?? 'unknown'}`"
     />
     <p class="note">
-      Last {{ minutes }} min, since this page opened<template v-if="monitoring">
-        · your own monitor counts as one</template
-      >
+      <template v-if="readOnly">Counted by the server every 15 s while on air</template
+      ><template v-else>Last {{ minutes }} min, since this page opened</template
+      ><template v-if="monitoring"> · your own monitor counts as one</template>
     </p>
   </LivePanelCard>
 </template>

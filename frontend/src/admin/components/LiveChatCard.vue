@@ -11,6 +11,8 @@ import { formatClockTime } from '@admin/components/live-panel/onAir';
 const props = defineProps<{
   /** Keep the chat socket open while true (i.e. while on air). */
   active: boolean;
+  /** Another host's episode: read the chat, no reply. */
+  readOnly?: boolean;
 }>();
 
 const { messages, connected, error, send } = useLiveChat(toRef(props, 'active'));
@@ -92,7 +94,7 @@ const status = computed<{ text: string; tone: 'ok' | 'info' | 'muted' }>(() => {
 
     <p v-if="error || sendError" class="chat-error">{{ sendError ?? error }}</p>
 
-    <form class="chat-compose" @submit.prevent="onSend">
+    <form v-if="!readOnly" class="chat-compose" @submit.prevent="onSend">
       <label class="chat-sr" for="live-chat-reply">Reply as host</label>
       <input
         id="live-chat-reply"

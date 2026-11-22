@@ -8,27 +8,22 @@ import BoardIcon from '../BoardIcon.vue';
 import EpisodeCard from './EpisodeCard.vue';
 import type { EpisodePhase, Status, StepState } from './phase';
 
-// Soundcheck card (step 2, pre-show). Live: Open Studio; the Studio is open
-// for soundchecks at any time before the show. Pre-recorded: the uploaded set
-// with Replace file, or Upload your set. The Studio does not save the test
-// result, so the card says "tested" only for a soundcheck passed in this
-// browser tab. Its main button is yellow only while Soundcheck is the current
-// step.
+// Soundcheck card (step 2) of a pre-recorded episode: the uploaded set with
+// Replace file, or Upload your set. Its main button is yellow only while
+// Soundcheck is the current step. A live episode shows the Studio instead
+// (FlowLive, or StudioView read-only).
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
   /** Where the Soundcheck step is. */
   state: StepState;
-  /** The soundcheck passed in this tab. */
-  tested?: boolean;
   /** Another host's episode: status only, no buttons. */
   readOnly?: boolean;
   busy?: boolean;
 }>();
-const emit = defineEmits<{ openStudio: []; replaceFile: [] }>();
+const emit = defineEmits<{ replaceFile: [] }>();
 
-const prerecorded = computed(() => props.show.stream_mode === 'prerecorded');
 const hasFile = computed(() => !!props.show.prerecorded_filename);
 const variant = computed(() => (props.state === 'now' ? 'primary' : 'secondary'));
 
@@ -40,77 +35,50 @@ const setFile = computed(() => {
   return length ? `${name} · ${setLength(length)}` : name;
 });
 
-const status = computed<Status>(() => {
-  if (prerecorded.value) {
-    return hasFile.value
-      ? { tone: 'green', text: 'Set uploaded' }
-      : { tone: props.phase === 'pre' ? 'amber' : 'red', text: 'No file yet' };
-  }
-  if (props.tested) return { tone: 'green', text: 'Tested' };
-  if (props.phase !== 'pre') return { tone: 'grey', text: 'Over' };
-  return { tone: 'amber', text: 'Studio open' };
-});
+const status = computed<Status>(() =>
+  hasFile.value
+    ? { tone: 'green', text: 'Set uploaded' }
+    : { tone: props.phase === 'pre' ? 'amber' : 'red', text: 'No file yet' }
+);
 </script>
 
 <template>
   <EpisodeCard title="Soundcheck" :step="2" :state="state" :status="status">
     <template #icon><BoardIcon name="headphones" :size="16" /></template>
 
-    <template v-if="prerecorded">
-      <template v-if="hasFile">
-        <p class="ep-lead">
-          {{
-            phase === 'pre'
-              ? 'Nothing to do. The set plays at air time.'
-              : 'The set was uploaded before the show.'
-          }}
-        </p>
-        <div v-if="setFile" class="set">
-          <p class="set-file"><BoardIcon name="music" :size="16" />{{ setFile }}</p>
-          <!-- The player shows no file name, and 0:00 until its first Play. -->
-          <AudioPlayer v-if="show.prerecorded_url && !readOnly" :src="show.prerecorded_url" />
-        </div>
-      </template>
-      <p v-else class="ep-lead">Upload your set before air time. Without a file nothing plays.</p>
-    </template>
-    <template v-else>
+    <template v-if="hasFile">
       <p class="ep-lead">
         {{
           phase === 'pre'
-            ? 'Test your audio in the Studio before air time.'
-            : 'The soundcheck is done in the Studio before the show.'
+            ? 'Nothing to do. The set plays at air time.'
+            : 'The set was uploaded before the show.'
         }}
       </p>
-      <dl class="ep-kv">
-        <div v-if="tested">
-          <dt>Soundcheck</dt>
-          <dd class="ok">Passed in this browser</dd>
-        </div>
-      </dl>
+      <div v-if="setFile" class="set">
+        <p class="set-file"><BoardIcon name="music" :size="16" />{{ setFile }}</p>
+        <!-- The player shows no file name, and 0:00 until its first Play. -->
+        <AudioPlayer v-if="show.prerecorded_url && !readOnly" :src="show.prerecorded_url" />
+      </div>
     </template>
+    <p v-else class="ep-lead">Upload your set before air time. Without a file nothing plays.</p>
 
     <template v-if="!readOnly && phase === 'pre'" #actions>
-      <template v-if="prerecorded">
-        <BaseButton
-          v-if="hasFile"
-          variant="secondary"
-          :disabled="busy || !show.series_slug"
-          @click="emit('replaceFile')"
-        >
-          <BoardIcon name="upload" :size="16" />Replace file
-        </BaseButton>
-        <BaseButton
-          v-else
-          class="xl"
-          :variant="variant"
-          :disabled="busy || !show.series_slug"
-          @click="emit('replaceFile')"
-        >
-          <BoardIcon name="upload" />Upload your set
-        </BaseButton>
-      </template>
-      <BaseButton v-else class="xl" :variant="variant" :loading="busy" @click="emit('openStudio')">
-        <BoardIcon name="mic" />Open Studio
+      <BaseButton
+        v-if="hasFile"
+        variant="secondary"
+        :disabled="busy || !show.series_slug"
+        @click="emit('replaceFile')"
+      >
+        <BoardIcon name="upload" :size="16" />Replace file
+      </BaseButton>
+      <BaseButton
+        v-else
+        class="xl"
+        :variant="variant"
+        :disabled="busy || !show.series_slug"
+        @click="emit('replaceFile')"
+      >
+        <BoardIcon name="upload" />Upload your set
       </BaseButton>
     </template>
   </EpisodeCard>

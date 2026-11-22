@@ -413,6 +413,10 @@ const shownCards = () =>
     .filter(isShown)
     .map((c) => c.querySelector('h2')?.textContent?.trim());
 const shown = (selector: string) => isShown(root.querySelector(selector));
+/** The read-only live panel (Show time when this tab does not send) and its text. */
+const panel = () => root.querySelector('.on-air')?.textContent ?? '';
+/** The read-only Studio card (Soundcheck when the Studio cannot open here). */
+const studioView = () => root.querySelector('[aria-label="Studio, read-only"]');
 
 /** Each card's frame (current, done or next) and its step, in page order. */
 const frames = () =>
@@ -474,11 +478,10 @@ describe('Episode', () => {
       'Return feed: Not checked yet',
     ]);
     expect(badges(3)).toEqual(['Recording: not started', 'SoundCloud: no track yet']);
-    // The cards keep their step frames.
+    // The cards keep their step frames; Soundcheck and Show time are the
+    // Studio and the live panel.
     expect(frames()).toEqual([
       { title: 'Social media', frame: 'current', step: 'Step 1' },
-      { title: 'Soundcheck', frame: 'next', step: 'Step 2' },
-      { title: 'Show time', frame: 'next', step: 'Step 3' },
       { title: 'Recording & SoundCloud', frame: 'next', step: 'Step 4' },
     ]);
     // A tab shows its card in the main card.
@@ -489,12 +492,11 @@ describe('Episode', () => {
     // Read-only details: no form until Edit.
     expect(root.querySelector('input[type="text"], textarea, select')).toBeNull();
     expect(text()).not.toContain('Cancel booking');
-    expect(card('Soundcheck').textContent).toContain(
-      'Test your audio in the Studio before air time.'
-    );
-    expect(cardStatus('Soundcheck')).toBe('Studio open');
-    // No tested or untested claim: the Studio does not save the test.
-    expect(card('Soundcheck').textContent).not.toMatch(/tested/i);
+    // Show time is the live panel without values; Go Live waits for air time.
+    expect(panel()).toContain('Not on air · --:--:--');
+    expect(button('Go Live').disabled).toBe(true);
+    // The Studio opens here, so there is no read-only Studio card.
+    expect(studioView()).toBeNull();
     for (const part of LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram')) {
       expect(text()).not.toContain(part);
     }
@@ -549,7 +551,7 @@ describe('Episode', () => {
       vi.setSystemTime(new Date(`${FUTURE}T11:01:00Z`));
       await mount();
       expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
-      expect(shownCards()).toEqual(['Show time']);
+      expect(shown('.on-air')).toBe(true);
       expect(root.querySelector('.studio-stub')).toBeNull();
       button('Go to Soundcheck').click();
       await settle();
@@ -560,8 +562,9 @@ describe('Episode', () => {
       live.ready!.value = true;
       tab(2).click();
       await settle();
-      expect(card('Show time').textContent).not.toContain('No soundcheck');
+      expect(panel()).not.toContain('No soundcheck');
       expect(button('Go Live').classList.contains('blink')).toBe(true);
+      expect(yellow()).toContain('Go Live');
       // Go Live: this browser tab streams the episode now.
       button('Go Live').click();
       await settle();
@@ -599,8 +602,12 @@ describe('Episode', () => {
     flow.setLiveTestPassed(true);
     try {
       await mount();
-      expect(cardStatus('Soundcheck')).toBe('Tested');
-      expect(card('Soundcheck').textContent).toContain('Passed in this browser');
+      expect(badges(1)).toEqual([
+        'Music: Passed',
+        'Mic: Passed',
+        'Server: Passed',
+        'Return feed: Passed',
+      ]);
     } finally {
       flow.reset();
     }
@@ -613,12 +620,12 @@ describe('Episode', () => {
       await mount();
       expect(text()).toContain('On air · until 14:00');
       expect(text()).not.toContain('Upcoming');
-      expect(currentCards()).toEqual(['Show time']);
       expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
-      expect(cardStatus('Show time')).toBe('On air');
+      expect(shown('.on-air')).toBe(true);
+      expect(root.querySelector('.onair-badge')?.textContent).toBe('On air');
       expect(cardStatus('Recording & SoundCloud')).toBe('Rec');
       // No soundcheck Studio in Show time: Back to On Air opens it in the Soundcheck tab.
-      expect(shownCards()).toEqual(['Show time']);
+      expect(shownCards()).toEqual([]);
       expect(root.querySelector('.studio-stub')).toBeNull();
       button('Back to On Air').click();
       await settle();
@@ -637,16 +644,14 @@ describe('Episode', () => {
       // 12:10 in Berlin on the show day (winter time).
       vi.setSystemTime(new Date(`${FUTURE}T11:10:00Z`));
       await mount();
-      expect(currentCards()).toEqual(['Show time']);
-      expect(cardStatus('Show time')).toBe('Not on air yet');
+      expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
+      expect(root.querySelector('.onair-badge')?.textContent).toBe('Not on air');
       expect(text()).toContain('Show time · until 14:00');
       expect(tabClock()).toEqual({ clock: '00:10:00', sub: 'not on air yet' });
-      expect(shownCards()).toEqual(['Show time']);
+      expect(shown('.on-air')).toBe(true);
       // No soundcheck in Show time: a warning and a way to the Soundcheck tab.
-      expect(card('Show time').textContent).toContain(
-        'No soundcheck in this browser yet. Do it before you go live.'
-      );
-      expect(card('Show time').querySelector('button')?.textContent?.trim()).toBe(
+      expect(panel()).toContain('No soundcheck in this browser yet. Do it before you go live.');
+      expect(root.querySelector('.on-air .end button')?.textContent?.trim()).toBe(
         'Go to Soundcheck'
       );
       expect(root.querySelector('.studio-stub')).toBeNull();
@@ -669,24 +674,24 @@ describe('Episode', () => {
       // 11:20 in Berlin: the Studio opens at 11:30.
       vi.setSystemTime(new Date(`${FUTURE}T10:20:00Z`));
       await mount();
-      expect(card('Show time').textContent).not.toContain(warning);
+      expect(panel()).not.toContain(warning);
       app?.unmount();
       root.remove();
       // 11:45: open; the soundcheck is not done in this tab.
       vi.setSystemTime(new Date(`${FUTURE}T10:45:00Z`));
       await mount();
-      expect(card('Show time').textContent).toContain(warning);
-      expect(card('Show time').textContent).toContain('Go to Soundcheck');
+      expect(panel()).toContain(warning);
+      expect(panel()).toContain('Go to Soundcheck');
       app?.unmount();
       root.remove();
-      // Passed in this tab: no warning, and no Go Live before the start.
+      // Passed in this tab: no warning; Go Live waits for the start.
       const flow = useHostFlow();
       await flow.fetchMyShow();
       flow.selectShow(flow.shows.value.find((s) => s.id === 42)!);
       flow.setLiveTestPassed(true);
       await mount();
-      expect(card('Show time').textContent).not.toContain(warning);
-      expect(card('Show time').textContent).not.toContain('Go Live');
+      expect(panel()).not.toContain(warning);
+      expect(button('Go Live').disabled).toBe(true);
     } finally {
       vi.useRealTimers();
       useHostFlow().reset();
@@ -823,9 +828,9 @@ describe('Episode · phases', () => {
     expect(tabs().map((t) => t.state)).toEqual(['done', 'now', 'next', 'next']);
     expect(tabs()[1].selected).toBe(true);
     expect(tabClock()).toEqual({ clock: '00:20:00', sub: 'until 12:00' });
-    expect(currentCards()).toEqual(['Soundcheck']);
-    expect(yellow()).toEqual(['Open Studio']);
-    expect(cardStatus('Show time')).toBe('Starts in 20 min');
+    // The Studio is the Soundcheck tab's page; Go Live is not yellow before its step.
+    await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
+    expect(yellow()).toEqual([]);
   });
 
   it('keeps Set up social media current until both posts are set up', async () => {
@@ -842,10 +847,9 @@ describe('Episode · phases', () => {
     // More than a day before the start, the clock says the days.
     expect(tabClock()).toEqual({ clock: 'in 2 days', sub: 'until 12:00' });
     expect(currentCards()).toEqual(['Social media']);
-    // Soundcheck is not the current step yet: no yellow button. The Studio is open.
+    // Soundcheck is not the current step yet: no yellow button. Go Live waits.
     expect(yellow()).toEqual([]);
-    expect(cardStatus('Show time')).toBe('Starts in 2 days');
-    expect(cardStatus('Soundcheck')).toBe('Studio open');
+    expect(button('Go Live').disabled).toBe(true);
   });
 
   it('moves on to Soundcheck once both posts are set up, days before the start', async () => {
@@ -858,7 +862,7 @@ describe('Episode · phases', () => {
       'Pre-announcement: Scheduled · Fr 23.10. · 18:00',
       'On-air story: Scheduled',
     ]);
-    expect(frames().map((f) => f.frame)).toEqual(['done', 'current', 'next', 'next']);
+    expect(frames().map((f) => f.frame)).toEqual(['done', 'next']);
   });
 
   it('on air: shows the time on air in the Show time tab', async () => {
@@ -874,8 +878,10 @@ describe('Episode · phases', () => {
     expect(badges(0)[0]).toBe('Pre-announcement: Sent · Fr 23.10. · 18:00');
     expect(badges(2)).toEqual(['On air']);
     // Frames follow the steps: done dim yellow, current yellow, next gray.
-    expect(frames().map((f) => f.frame)).toEqual(['done', 'done', 'current', 'next']);
-    expect(card('Show time').querySelector('.big b')?.textContent).toBe('00:42:00');
+    expect(frames().map((f) => f.frame)).toEqual(['done', 'next']);
+    expect(root.querySelector('section.ep-embed.now .on-air')).not.toBeNull();
+    // Nothing saved by the host's browser yet: the time by the schedule.
+    expect(root.querySelector('.on-air-clock')?.textContent).toBe('00:42:00');
     expect(yellow()).toEqual(['Back to On Air']);
   });
 
@@ -892,7 +898,8 @@ describe('Episode · phases', () => {
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
     expect(currentCards()).toEqual(['Recording & SoundCloud']);
     expect(yellow()).toEqual(['Publish episode']);
-    expect(cardStatus('Show time')).toBe('Aired');
+    expect(root.querySelector('.onair-badge')?.textContent).toBe('Aired');
+    expect(root.querySelector('.on-air-clock')?.textContent).toBe('01:58:40');
     expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
     expect(root.querySelector('.audio-player')?.getAttribute('data-src')).toBe(
       'https://r2.example/v1.mp3'
@@ -927,9 +934,8 @@ describe('Episode · phases', () => {
   });
 
   it('keeps the one yellow button in the current card', async () => {
-    at('11:40');
-    current = day();
-    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    at('14:20');
+    current = day({ episode_status: 'wrapup_open', latest_recording: ready });
     await mount();
     const primary = [...root.querySelectorAll('button.variant-primary')];
     expect(primary).toHaveLength(1);
@@ -985,7 +991,7 @@ describe('Episode · phone', () => {
     try {
       await mount();
       expect(tabs()[2].selected).toBe(true);
-      expect(shownCards()).toEqual(['Show time']);
+      expect(shown('.on-air')).toBe(true);
       expect(root.querySelector('.studio-stub')).toBeNull();
     } finally {
       useHostFlow().reset();
@@ -1965,18 +1971,18 @@ describe('who sees what', () => {
     for (const part of ['Upcoming', 'Host: lena', 'Read only · only its hosts can edit']) {
       expect(text()).toContain(part);
     }
-    expect([...root.querySelectorAll('h2')].map((h) => h.textContent?.trim())).toEqual([
-      'Social media',
-      'Soundcheck',
-      'Show time',
-      'Recording & SoundCloud',
-    ]);
+    expect(frames().map((f) => f.title)).toEqual(['Social media', 'Recording & SoundCloud']);
     expect(text()).not.toContain("Today's show page");
     // The same four tab tiles as the owner's page; the tabs are the only buttons.
     expect(tabs()).toHaveLength(4);
     // It opens on the current step, as the owner's page does.
     expect(tabs()[1]).toMatchObject({ state: 'now', selected: true });
-    expect(shownCards()).toEqual(['Soundcheck']);
+    // The Studio card read-only: no input asked for, nothing checked yet.
+    expect(isShown(studioView())).toBe(true);
+    expect(studioView()?.textContent).toContain('Audio inputNot chosen yet');
+    expect(studioView()?.textContent).toContain('MusicNot checked yet');
+    // Show time: the live panel without values.
+    expect(panel()).toContain('Not on air · --:--:--');
     expect(root.querySelectorAll('button:not([role="tab"]), input, select, textarea')).toHaveLength(
       0
     );
@@ -1999,18 +2005,135 @@ describe('who sees what', () => {
     expect(requests.map((r) => r.url)).not.toContain('/api/shows/42/announcements');
     expect(requests.map((r) => r.url)).not.toContain('/api/shows/42/announcements/meta');
     // No tested or untested claim for another host's soundcheck.
-    expect(card('Soundcheck').textContent).not.toMatch(/tested/i);
+    expect(studioView()?.textContent).not.toMatch(/tested/i);
   });
 
   it('shows another host on air with the public stream link', async () => {
     current = episode({ on_air: true });
     await mount('host', 7);
-    await vi.waitFor(() => expect(currentCards()).toEqual(['Show time']));
-    const listen = card('Show time').querySelector('.listen') as HTMLAnchorElement;
+    await vi.waitFor(() => expect(shown('.on-air')).toBe(true));
+    expect(root.querySelector('.onair-badge')?.textContent).toBe('On air');
+    const listen = root.querySelector('.on-air .listen') as HTMLAnchorElement;
     expect(listen.textContent?.trim()).toBe('Listen live');
     expect(listen.getAttribute('href')).toBe('https://live.moafunk.de');
     expect(text()).not.toContain('Back to On Air');
     expect(root.querySelectorAll('button:not([role="tab"])')).toHaveLength(0);
+  });
+
+  it("shows what another host's browser saved: the soundcheck and the live panel, read-only", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 12:42 in Berlin; on air since 12:01, the last save 10 s ago.
+      vi.setSystemTime(new Date(`${FUTURE}T11:42:00Z`));
+      const since = Date.parse(`${FUTURE}T11:01:00Z`);
+      current = episode({
+        on_air: true,
+        studio_log: {
+          soundcheck: {
+            at: since - 60_000,
+            input: 'Focusrite USB',
+            checks: [
+              { id: 'music', name: 'Music', state: 'ok', detail: 'Good · peak −9 dB' },
+              { id: 'mic', name: 'Mic', state: 'skipped', detail: 'Not in this show' },
+              { id: 'server', name: 'Server', state: 'ok', detail: 'Received your audio' },
+              { id: 'return', name: 'Return feed', state: 'ok', detail: 'Your audio comes back' },
+            ],
+          },
+          on_air: {
+            at: Date.now() - 10_000,
+            since,
+            ended: false,
+            input: 'Focusrite USB',
+            gain: 1.2,
+            connection: 'stable',
+            upload_kbps: 201,
+            buffer_s: 0.4,
+            rtt_ms: 38,
+            history: [190, 201],
+            target_kbps: 192,
+            quality: 'auto',
+            moments: [{ at: 750, markedAt: since + 750_000 }],
+          },
+        },
+        listener_samples: [
+          { at: since + 60_000, count: 4 },
+          { at: since + 120_000, count: 9 },
+          { at: Date.now() - 5_000, count: 7 },
+        ],
+      });
+      await mount('host', 7);
+      expect(root.querySelector('.on-air-clock')?.textContent).toBe('00:41:00');
+      expect(panel()).toContain('Input Focusrite USB');
+      expect(panel()).toContain('Input gain120 %');
+      expect(panel()).toContain('Upload201 kbps');
+      expect(panel()).toContain('Auto · 192 kbps');
+      expect(root.querySelector('.bar-listeners')?.textContent).toBe('7 listening');
+      expect(panel()).toContain('Peak9');
+      expect(panel()).toContain('00:12:30');
+      // Read-only: no fader, quality buttons, reply or Mark moment.
+      expect(
+        root.querySelectorAll('button:not([role="tab"]), input, select, textarea')
+      ).toHaveLength(0);
+      // The Soundcheck tab: what the host went live with.
+      expect(badges(1)).toEqual([
+        'Music: Good · peak −9 dB',
+        'Mic: Not in this show',
+        'Server: Received your audio',
+        'Return feed: Your audio comes back',
+      ]);
+      tab(1).click();
+      await settle();
+      expect(isShown(studioView())).toBe(true);
+      expect(studioView()?.textContent).toContain('Soundcheck · saved at Go Live');
+      expect(studioView()?.textContent).toContain('Audio inputFocusrite USB');
+      expect(studioView()?.textContent).toContain('MicNot in this show');
+
+      // No save for a minute: the bar says the values may be old.
+      vi.setSystemTime(new Date(`${FUTURE}T11:43:00Z`));
+      tab(2).click();
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      await settle();
+      expect(panel()).toContain('Last update');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the values from the end after the show', async () => {
+    const since = Date.parse(`${PAST}T11:01:00Z`);
+    current = episode({
+      date: PAST,
+      episode_status: 'finished',
+      studio_log: {
+        on_air: {
+          at: since + 7_000_000,
+          since,
+          ended: true,
+          input: 'Screen audio',
+          gain: 1,
+          connection: 'tight',
+          upload_kbps: 150,
+          buffer_s: 2.5,
+          rtt_ms: 80,
+          history: [150],
+          target_kbps: 128,
+          quality: 128,
+          moments: [],
+        },
+      },
+      listener_samples: [{ at: since + 60_000, count: 3 }],
+    });
+    await mount('host', 7);
+    tab(2).click();
+    await settle();
+    expect(root.querySelector('.onair-badge')?.textContent).toBe('Aired');
+    expect(root.querySelector('.on-air-clock')?.textContent).toBe('01:56:40');
+    expect(panel()).toContain('Input Screen audio');
+    expect(panel()).toContain('128 kbps');
+    expect(panel()).toContain('No moments marked.');
+    // Nobody listens after the show; the peak stays.
+    expect(root.querySelector('.bar-listeners')).toBeNull();
+    expect(panel()).toContain('Peak3');
   });
 
   it.each([
