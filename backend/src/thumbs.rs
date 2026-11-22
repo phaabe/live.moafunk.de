@@ -76,7 +76,8 @@ pub struct ImageQuery {
 /// A copy of the stored image `k`, at most `w` pixels wide. The signature
 /// stands in for a login, like a presigned R2 link: only the API makes one, for
 /// an image the user may see. An image this backend cannot read (e.g. WebP)
-/// redirects to the original.
+/// redirects to the original. Anything that is not an image is not found, so a
+/// link made with a weak or guessed key cannot read audio or other uploads.
 pub async fn api_image(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ImageQuery>,
@@ -107,6 +108,9 @@ pub async fn api_image(
             e if e.is_not_found() => AppError::NotFound("Image not found".to_string()),
             e => AppError::Storage(format!("Failed to read image info: {e}")),
         })?;
+    if !head.content_type().is_some_and(|t| t.starts_with("image/")) {
+        return Err(AppError::NotFound("Image not found".to_string()));
+    }
     let Some(etag) = head
         .e_tag()
         .map(|t| t.trim_matches('"'))
@@ -261,7 +265,7 @@ mod tests {
     async fn serves_and_keeps_a_small_copy() {
         let (state, _temp, r2) = crate::submit_download_tests::setup(serde_json::json!({})).await;
         let key = "artists/1/pic/photo.jpg";
-        r2.insert(&state, key, &jpeg(2000, 1000, [200, 0, 0]));
+        r2.insert_typed(&state, key, &jpeg(2000, 1000, [200, 0, 0]), "image/jpeg");
         let srcset = srcset(&state, key);
 
         let response = get(&state, query(&srcset, 320)).await.unwrap();
@@ -276,6 +280,7 @@ mod tests {
         // The second request is served from the stored copy.
         let response = get(&state, query(&srcset, 320)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
         assert_eq!(r2.count(&state, "GET", key), 1);
     }
 
@@ -283,10 +288,10 @@ mod tests {
     async fn a_replaced_original_gets_a_new_copy() {
         let (state, _temp, r2) = crate::submit_download_tests::setup(serde_json::json!({})).await;
         let key = "templates/3/cover.png";
-        r2.insert(&state, key, &jpeg(1000, 1000, [255, 0, 0]));
+        r2.insert_typed(&state, key, &jpeg(1000, 1000, [255, 0, 0]), "image/png");
         get(&state, query(&srcset(&state, key), 160)).await.unwrap();
 
-        r2.insert(&state, key, &jpeg(1000, 1000, [0, 0, 255]));
+        r2.insert_typed(&state, key, &jpeg(1000, 1000, [0, 0, 255]), "image/png");
         let response = get(&state, query(&srcset(&state, key), 160)).await.unwrap();
         let small = image::load_from_memory(&body(response).await)
             .unwrap()
@@ -304,7 +309,12 @@ mod tests {
     async fn an_unreadable_image_redirects_to_the_original() {
         let (state, _temp, r2) = crate::submit_download_tests::setup(serde_json::json!({})).await;
         let key = "artists/1/pic/photo.heic";
-        r2.insert(&state, key, b"not an image this backend reads");
+        r2.insert_typed(
+            &state,
+            key,
+            b"not an image this backend reads",
+            "image/heic",
+        );
         let response = get(&state, query(&srcset(&state, key), 640)).await.unwrap();
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         let location = response.headers()[header::LOCATION].to_str().unwrap();
@@ -312,9 +322,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_link_to_anything_but_an_image_is_not_found() {
+        let (state, _temp, r2) = crate::submit_download_tests::setup(serde_json::json!({})).await;
+        let key = "artists/1/track1/song.mp3";
+        r2.insert_typed(&state, key, b"ID3 audio", "audio/mpeg");
+        let result = get(&state, query(&srcset(&state, key), 320)).await;
+        assert!(matches!(result, Err(AppError::NotFound(_))));
+        // Refused before the file is read.
+        assert_eq!(r2.count(&state, "GET", key), 0);
+    }
+
+    #[tokio::test]
     async fn refuses_a_changed_expired_or_unknown_link() {
         let (state, _temp, r2) = crate::submit_download_tests::setup(serde_json::json!({})).await;
-        r2.insert(&state, "a.jpg", &jpeg(10, 10, [0, 0, 0]));
+        r2.insert_typed(&state, "a.jpg", &jpeg(10, 10, [0, 0, 0]), "image/jpeg");
         let srcset = srcset(&state, "a.jpg");
 
         let mut other_key = query(&srcset, 320);
