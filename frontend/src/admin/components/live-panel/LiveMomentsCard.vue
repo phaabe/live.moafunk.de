@@ -24,7 +24,11 @@ import { formatHms, type Moment } from './onAir';
  * while On Air is open. Moments stay in this tab: the Recording card does not
  * get them yet.
  */
-const props = defineProps<{ moments: Moment[] }>();
+const props = defineProps<{
+  moments: Moment[];
+  /** Values only: no Mark moment (another host's or an ended episode). */
+  readOnly?: boolean;
+}>();
 const emit = defineEmits<{ mark: [] }>();
 
 /** Told to screen readers after a mark. */
@@ -47,7 +51,9 @@ function onKeydown(event: KeyboardEvent) {
   mark();
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown));
+onMounted(() => {
+  if (!props.readOnly) window.addEventListener('keydown', onKeydown);
+});
 onUnmounted(() => window.removeEventListener('keydown', onKeydown));
 </script>
 
@@ -58,7 +64,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     :status="moments.length ? `${moments.length} marked` : ''"
     tone="info"
   >
-    <template #action>
+    <template v-if="!readOnly" #action>
       <button
         type="button"
         class="mark-button"
@@ -76,10 +82,13 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
         ><span>Moment {{ i + 1 }}</span>
       </li>
     </ul>
-    <p class="note">
+    <p v-if="readOnly" class="note">
+      {{ moments.length ? 'Marked by the host.' : 'No moments marked.' }}
+    </p>
+    <p v-else class="note">
       <template v-if="!moments.length"
         >Press M or Mark moment to keep the time of a good part. </template
-      >Moments stay in this browser tab; the Recording card does not use them yet.
+      >They are saved to the episode; the Recording card does not use them yet.
     </p>
     <p class="sr" aria-live="polite">{{ announced }}</p>
   </LivePanelCard>

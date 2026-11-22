@@ -10,6 +10,9 @@
 // - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors. It also ends the
 //   show and signs in the host again, so each test starts off air.
 // - /mock/role/<role>: sign in as host or admin.
+// - /mock/viewer/<id>: sign in as user 1 (the episode's host) or another host.
+// - PUT /api/shows/1/studio-log: what the Studio and the live panel saved;
+//   GET /api/shows/1 returns it, like the backend.
 // - /mock/live: how many LIVE broadcasts are open, and the audio chunks each got.
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -22,7 +25,10 @@ const MODES = ['ok', 'no-chunks', 'no-return', 'no-cors'];
 const TAIL_CUT = /File ended prematurely|Error parsing Opus packet header/;
 let mode = 'ok';
 
-const user = { id: 1, username: 'local-host', role: 'host', has_show: true };
+const HOST_ID = 1;
+const user = { id: HOST_ID, username: 'local-host', role: 'host', has_show: true };
+/** What the host's browser saved for the episode. */
+let studioLog = {};
 
 // Like the backend: the show is on air while a LIVE broadcast is open, and
 // for 5 minutes after one dropped without "stop".
@@ -33,6 +39,7 @@ const onAir = () => live.size > 0 || Date.now() - droppedAt < GRACE_MS;
 
 function endShow() {
   const open = [...live];
+  studioLog = {};
   live.clear();
   droppedAt = -Infinity;
   for (const ws of open) ws.terminate();
@@ -62,17 +69,21 @@ function show() {
     artists: [],
     on_air: onAir(),
     // The host's own episode, so /shows/1 opens its episode page with the Studio tab.
-    host_user_id: user.id,
-    created_by: user.id,
-    host_username: user.username,
+    host_user_id: HOST_ID,
+    created_by: HOST_ID,
+    host_username: 'local-host',
     episode_status: 'upcoming',
+    studio_log: studioLog,
+    listener_samples: [],
   };
 }
 
 const routes = {
   'POST /api/auth/login': () => ({ user }),
   'GET /api/auth/me': () => user,
-  'GET /api/my-show': () => ({ assigned: true, shows: [show()] }),
+  'GET /api/my-show': () =>
+    user.id === HOST_ID ? { assigned: true, shows: [show()] } : { assigned: false, shows: [] },
+  'GET /api/shows/1/announcements/status': () => [],
   'GET /api/shows/1': () => show(),
   'GET /api/shows/1/announcements': () => [],
   'GET /api/shows/1/announcements/meta': () => ({
@@ -95,6 +106,7 @@ const server = createServer((req, res) => {
     if (MODES.includes(wanted)) mode = wanted;
     endShow();
     user.role = 'host';
+    user.id = HOST_ID;
     console.log(`mode: ${mode}`);
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`mode: ${mode}\n`);
     return;
@@ -103,6 +115,20 @@ const server = createServer((req, res) => {
     const wanted = path.slice('/mock/role/'.length);
     if (wanted === 'host' || wanted === 'admin') user.role = wanted;
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`role: ${user.role}\n`);
+    return;
+  }
+  if (path.startsWith('/mock/viewer/')) {
+    user.id = Number(path.slice('/mock/viewer/'.length)) || HOST_ID;
+    res.writeHead(200, { 'content-type': 'text/plain' }).end(`viewer: ${user.id}\n`);
+    return;
+  }
+  if (req.method === 'PUT' && path === '/api/shows/1/studio-log') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      Object.assign(studioLog, JSON.parse(body));
+      res.writeHead(204).end();
+    });
     return;
   }
   if (path === '/mock/live') {

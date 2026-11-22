@@ -30,8 +30,10 @@ const props = withDefaults(
     gain: number;
     /** The public stream to monitor; empty hides "What listeners hear". */
     monitorSrc?: string;
+    /** Values only: no Change and no gain fader (another host's or an ended episode). */
+    readOnly?: boolean;
   }>(),
-  { inputGone: false, picker: false, monitorSrc: '' }
+  { inputGone: false, picker: false, monitorSrc: '', readOnly: false }
 );
 
 const emit = defineEmits<{
@@ -138,7 +140,7 @@ function onGain(event: Event) {
     </p>
     <p v-if="!inputGone" class="source">
       Input <b>{{ inputLabel }}</b>
-      <button v-if="!picker" type="button" class="link" @click="emit('change-input')">
+      <button v-if="!picker && !readOnly" type="button" class="link" @click="emit('change-input')">
         Change
       </button>
     </p>
@@ -194,7 +196,15 @@ function onGain(event: Event) {
         <span class="fad-head"
           ><span class="label">Input gain</span><output>{{ gainPct }} %</output></span
         >
-        <input type="range" min="0" max="150" step="5" :value="gainPct" @input="onGain" />
+        <input
+          v-if="!readOnly"
+          type="range"
+          min="0"
+          max="150"
+          step="5"
+          :value="gainPct"
+          @input="onGain"
+        />
       </label>
       <label v-if="monitor" class="fad">
         <span class="fad-head"
@@ -211,7 +221,7 @@ function onGain(event: Event) {
       </label>
     </div>
 
-    <div class="guard">
+    <div v-if="!readOnly" class="guard">
       <PanelIcon name="speaker" :size="18" />
       <span class="guard-text"
         >Silence alarm on · warns after {{ ALARM_SECONDS }} s without sound</span

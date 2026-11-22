@@ -18,7 +18,8 @@ import { formatClockTime, type ConnectionVerdict } from './onAir';
  * (useUploadHealth, getStreamSocketStats); nothing here changes the socket.
  */
 const props = defineProps<{
-  connection: ConnectionVerdict;
+  /** Null: nothing measured (before the show, or nothing saved). */
+  connection: ConnectionVerdict | null;
   uploadKbps: number;
   bufferSeconds: number;
   rttMs: number | null;
@@ -29,12 +30,16 @@ const props = defineProps<{
   quality: UploadQualityMode;
   /** Auto's last switch. */
   lastStep: { from: number; to: number; at: number } | null;
+  /** Values the host's browser saved: no chunk counter (it is this tab's socket), no quality buttons. */
+  readOnly?: boolean;
 }>();
 
 const emit = defineEmits<{ 'update:quality': [mode: UploadQualityMode] }>();
 
-const status = computed<{ text: string; tone: 'ok' | 'warn' | 'bad' }>(() => {
+const status = computed<{ text: string; tone: 'ok' | 'warn' | 'bad' | 'muted' }>(() => {
   switch (props.connection) {
+    case null:
+      return { text: 'Not measured', tone: 'muted' };
     case 'stable':
       return { text: 'Stable', tone: 'ok' };
     case 'tight':
@@ -43,7 +48,7 @@ const status = computed<{ text: string; tone: 'ok' | 'warn' | 'bad' }>(() => {
       return { text: 'Too slow', tone: 'bad' };
     case 'reconnecting…':
       return { text: 'Reconnecting…', tone: 'warn' };
-    default:
+    case 'lost':
       return { text: 'Lost', tone: 'bad' };
   }
 });
@@ -64,8 +69,12 @@ const stale = computed(() => props.connection === 'reconnecting…' || props.con
 // two means audio leaves the browser but does not arrive.
 const CONFIRM_LAG_S = 4;
 const stats = ref<StreamSocketStats>(getStreamSocketStats());
-const sampler = setInterval(() => (stats.value = getStreamSocketStats()), 1000);
-onUnmounted(() => clearInterval(sampler));
+const sampler = props.readOnly
+  ? null
+  : setInterval(() => (stats.value = getStreamSocketStats()), 1000);
+onUnmounted(() => {
+  if (sampler) clearInterval(sampler);
+});
 
 const chunks = computed(() => {
   const s = stats.value;
@@ -137,7 +146,7 @@ const note = computed(() => {
           <b>{{ rttMs ?? '—' }}</b> <span>{{ rttMs === null ? 'no answer yet' : 'ms' }}</span>
         </dd>
       </div>
-      <div :class="{ late: chunks.late }">
+      <div v-if="!readOnly" :class="{ late: chunks.late }">
         <dt>Chunks</dt>
         <dd>
           <b>{{ chunks.value }}</b> <span>{{ chunks.sub }}</span>
@@ -146,7 +155,10 @@ const note = computed(() => {
     </dl>
     <div class="qual">
       <span id="upload-quality-label" class="qual-label">Upload quality</span>
-      <div class="seg" role="group" aria-labelledby="upload-quality-label">
+      <p v-if="readOnly" class="qual-value">
+        {{ quality === 'auto' ? `Auto · ${targetKbps} kbps` : `${quality} kbps` }}
+      </p>
+      <div v-else class="seg" role="group" aria-labelledby="upload-quality-label">
         <button
           type="button"
           :class="{ on: quality === 'auto' }"
@@ -166,7 +178,7 @@ const note = computed(() => {
           {{ kbps }}
         </button>
       </div>
-      <p class="note">{{ note }}</p>
+      <p v-if="!readOnly" class="note">{{ note }}</p>
     </div>
   </LivePanelCard>
 </template>
@@ -255,6 +267,12 @@ const note = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.qual-value {
+  margin: 0;
+  font: 700 15px var(--font-family);
+  color: #fff;
 }
 
 .qual-label {

@@ -1,5 +1,7 @@
 import { computed, ref } from 'vue';
 import { nextDayDateStr } from '@admin/showTime';
+import type { UploadQualityMode } from '@admin/composables';
+import type { ListenerSample } from '@admin/composables/useListeners';
 
 /** "00:42:10": time on air, a moment's timecode. */
 export function formatHms(totalSeconds: number): string {
@@ -83,4 +85,56 @@ export function useMoments(showId: number) {
 /** Forget the moments (End Episode). */
 export function forgetMoments(): void {
   kept.value = { showId: null, list: [] };
+}
+
+// ─── The live panel's values (LivePanel.vue) ────────────────────────────────
+// The host's live tab fills them from the live session; the episode page,
+// read-only, from what the host's browser saved (or nothing before the show).
+
+/** The status bar. `badge`: on air now, not on air (before the show), or aired. */
+export interface PanelBar {
+  badge: 'live' | 'off' | 'aired';
+  /** "00:42:10" */
+  clock: string;
+  rec: boolean;
+  screenOn: boolean;
+  listeners: number | null;
+  title: string;
+  /** "12:00–14:00" */
+  slot: string;
+  /** "ends in 4:12", or '' */
+  left: string;
+  soon: boolean;
+  progress: number | null;
+  alert: { chip: string; text: string } | null;
+}
+
+/** The Audio card. A null stream: no meter (another browser, or after the show). */
+export interface PanelAudio {
+  stream: MediaStream | null;
+  analyser: AnalyserNode | null;
+  inputLabel: string;
+  inputGone: boolean;
+  picker: boolean;
+  gain: number;
+  /** The public stream to monitor; '' hides "What listeners hear". */
+  monitorSrc: string;
+}
+
+/** The Connection card; `connection` null: nothing measured. */
+export interface PanelLink {
+  connection: ConnectionVerdict | null;
+  uploadKbps: number;
+  bufferSeconds: number;
+  rttMs: number | null;
+  history: number[];
+  targetKbps: number;
+  quality: UploadQualityMode;
+  lastStep: { from: number; to: number; at: number } | null;
+}
+
+export interface PanelListeners {
+  current: number | null;
+  peak: ListenerSample | null;
+  samples: ListenerSample[];
 }
