@@ -226,6 +226,13 @@ describe('nav', () => {
     expect(root.querySelector('.mobile-menu-links')?.textContent).not.toContain('Radio');
   });
 
+  it('links the logo and Admin to the Dashboard', async () => {
+    await mount(NavBar, 'host');
+    const brand = root.querySelector('a.nav-brand');
+    expect(brand?.getAttribute('href')).toBe('/dashboard');
+    expect(brand?.querySelector('img.logo')).not.toBeNull();
+  });
+
   it('keeps the admin items', async () => {
     await mount(NavBar, 'admin');
     expect(links('.nav-links').map(([label]) => label)).toEqual([

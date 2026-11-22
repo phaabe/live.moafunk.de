@@ -118,10 +118,10 @@ watch(
 <template>
   <nav class="nav-bar">
     <div class="nav-content">
-      <div class="nav-brand">
+      <router-link to="/dashboard" class="nav-brand">
         <img src="/assets/brand/moafunk.png" alt="Moafunk" class="logo" />
         <span class="brand-text">Admin</span>
-      </div>
+      </router-link>
 
       <!-- Desktop nav links -->
       <div class="nav-links desktop-only">

@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 22,
+  "rev": 23,
   "screens": [
     {
       "id": "dashboard",
@@ -10,8 +10,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "60a47e42",
-      "notesHash": "4a66ed6e",
+      "hash": "59e405cd",
+      "notesHash": "d53aaf8a",
       "elements": [
         {
           "k": "h1",
@@ -44,6 +44,11 @@
           "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
           "meta": "Upcoming · Pre-recorded",
           "to": "episode-pre"
+        },
+        {
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -93,8 +98,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/schedule",
-      "hash": "49407601",
-      "notesHash": "67e71cb5",
+      "hash": "6fc48ba6",
+      "notesHash": "1c83e12d",
       "elements": [
         {
           "k": "h1",
@@ -140,6 +145,11 @@
           "text": "So 15.11. · 12:00–14:00",
           "meta": "Free",
           "to": "book-slot"
+        },
+        {
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -189,8 +199,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "868f9bba",
-      "notesHash": "ea6f100c",
+      "hash": "f5a0f035",
+      "notesHash": "6799cc90",
       "elements": [
         {
           "k": "h1",
@@ -213,6 +223,11 @@
           "text": "New show",
           "to": "new-show",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -2071,8 +2086,8 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "e0e462bc",
-      "notesHash": "d0328353",
+      "hash": "02a3e12b",
+      "notesHash": "70e29443",
       "elements": [
         {
           "k": "back",
@@ -2133,6 +2148,11 @@
           "text": "Copy invite link",
           "to": "submission",
           "primary": false
+        },
+        {
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
