@@ -60,6 +60,11 @@ function show() {
     status: 'scheduled',
     artists: [],
     on_air: onAir(),
+    // The host's own episode, so /shows/1 opens its episode page with the Studio tab.
+    host_user_id: user.id,
+    created_by: user.id,
+    host_username: user.username,
+    episode_status: 'upcoming',
   };
 }
 
@@ -68,6 +73,12 @@ const routes = {
   'GET /api/auth/me': () => user,
   'GET /api/my-show': () => ({ assigned: true, shows: [show()] }),
   'GET /api/shows/1': () => show(),
+  'GET /api/shows/1/announcements': () => [],
+  'GET /api/shows/1/announcements/meta': () => ({
+    paused: false,
+    needs_approval: false,
+    services: { soundcloud: true, instagram: true },
+  }),
   'GET /api/stream/status': () => ({ active: false }),
   'GET /api/stream/metrics': () => ({ online: true, total_listeners: 0, mounts: [] }),
   'GET /api/recording/status': () => ({ is_recording: false }),
