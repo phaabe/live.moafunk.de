@@ -761,11 +761,11 @@ impl PeaksBuilder {
             self.carry = None;
             data = &data[1..];
         }
-        let mut pairs = data.chunks_exact(2);
-        for pair in &mut pairs {
-            self.sample(i16::from_le_bytes([pair[0], pair[1]]));
+        let (pairs, rest) = data.as_chunks::<2>();
+        for pair in pairs {
+            self.sample(i16::from_le_bytes(*pair));
         }
-        if let [low] = pairs.remainder() {
+        if let [low] = rest {
             self.carry = Some(*low);
         }
     }
