@@ -1,7 +1,7 @@
 import { createRouter, createWebHashHistory, type LocationQuery, type Router } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { hostPage } from './hostPage';
-import { berlinToUtcDate, isShowEnded } from './showTime';
+import { isShowEnded } from './showTime';
 import { setUnauthorizedHandler, type MyShowInfo } from './api';
 
 // Lazy-loaded route components
@@ -80,9 +80,6 @@ export async function sendHostToEpisode(
   next(flow.show.value ? `/shows/${flow.show.value.id}` : '/shows');
 }
 
-/** The Studio opens this long before the start. */
-export const STUDIO_OPENS_MS = 30 * 60 * 1000;
-
 type FlowGuardNext = (target?: string | { path: string; query?: LocationQuery }) => void;
 
 /**
@@ -101,7 +98,7 @@ async function selectFlowShow(query: LocationQuery): Promise<string | null> {
       mine = flow.shows.value.find((s) => s.id === wanted);
     }
     if (!mine) return `/shows/${wanted}`;
-    flow.setLiveTestPassed(false);
+    // The soundcheck result stays: it tests this browser's setup, not the episode.
     // The flow hands out readonly copies; selectShow only stores it.
     flow.selectShow(mine as MyShowInfo);
   }
@@ -120,10 +117,10 @@ async function isOnAir(showId: number): Promise<boolean> {
 }
 
 /**
- * The Studio (/stream/live) opens 30 min before the start and closes at the
- * end time, unless the episode is still on air: then a host who reloaded or
- * lost the connection can go live again. A closed Studio, and a pre-recorded
- * episode, send the user to the episode. Live in this tab: On Air.
+ * The Studio (/stream/live) is open for soundchecks at any time and closes at
+ * the end time, unless the episode is still on air: then a host who reloaded
+ * or lost the connection can go live again. A closed Studio, and a
+ * pre-recorded episode, send the user to the episode. Live in this tab: On Air.
  */
 export async function studioGate(
   to: { query: LocationQuery },
@@ -144,13 +141,6 @@ export async function studioGate(
     return;
   }
   if (show.prerecorded_confirmed_at) {
-    next(episode);
-    return;
-  }
-  if (
-    show.start_time &&
-    Date.now() < berlinToUtcDate(show.date, show.start_time).getTime() - STUDIO_OPENS_MS
-  ) {
     next(episode);
     return;
   }

@@ -2,24 +2,24 @@
 import { computed } from 'vue';
 import { BaseButton } from '@shared/components';
 import type { ShowDetail } from '../../api';
-import { episodeDay, setLength } from '../../episodeRow';
+import { setLength } from '../../episodeRow';
 import AudioPlayer from '../AudioPlayer.vue';
 import BoardIcon from '../BoardIcon.vue';
 import EpisodeCard from './EpisodeCard.vue';
-import { berlinTime, episodeTimes, type EpisodePhase, type Status, type StepState } from './phase';
+import type { EpisodePhase, Status, StepState } from './phase';
 
-// Soundcheck card (step 2, pre-show). Live: the Studio and Open Studio.
-// Pre-recorded: the uploaded set with Replace file, or Upload your set. The
-// Studio does not save the test result, so the card says "tested" only for a
-// soundcheck passed in this browser tab. Its main button is yellow only while
-// Soundcheck is the current step.
+// Soundcheck card (step 2, pre-show). Live: Open Studio; the Studio is open
+// for soundchecks at any time before the show. Pre-recorded: the uploaded set
+// with Replace file, or Upload your set. The Studio does not save the test
+// result, so the card says "tested" only for a soundcheck passed in this
+// browser tab. Its main button is yellow only while Soundcheck is the current
+// step.
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
   /** Where the Soundcheck step is. */
   state: StepState;
-  now: number;
   /** The soundcheck passed in this tab. */
   tested?: boolean;
   /** Another host's episode: status only, no buttons. */
@@ -30,10 +30,6 @@ const emit = defineEmits<{ openStudio: []; replaceFile: [] }>();
 
 const prerecorded = computed(() => props.show.stream_mode === 'prerecorded');
 const hasFile = computed(() => !!props.show.prerecorded_filename);
-const openMs = computed(() => episodeTimes(props.show).openMs);
-const studioOpen = computed(
-  () => !!props.show.on_air || (openMs.value !== null && props.now >= openMs.value)
-);
 const variant = computed(() => (props.state === 'now' ? 'primary' : 'secondary'));
 
 /** "brunchtime-0811.mp3 · 1:58:40" */
@@ -44,16 +40,6 @@ const setFile = computed(() => {
   return length ? `${name} · ${setLength(length)}` : name;
 });
 
-/** "Open since 11:30", "Opens 11:30", "Opens So 25.10. · 11:30". */
-const studio = computed(() => {
-  if (openMs.value === null) return '';
-  const at = berlinTime(openMs.value);
-  if (props.phase !== 'pre') return `Opened ${at}`;
-  if (studioOpen.value) return `Open since ${at}`;
-  const today = new Date(props.now).toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
-  return props.show.date === today ? `Opens ${at}` : `Opens ${episodeDay(props.show.date)} · ${at}`;
-});
-
 const status = computed<Status>(() => {
   if (prerecorded.value) {
     return hasFile.value
@@ -62,8 +48,7 @@ const status = computed<Status>(() => {
   }
   if (props.tested) return { tone: 'green', text: 'Tested' };
   if (props.phase !== 'pre') return { tone: 'grey', text: 'Over' };
-  if (studioOpen.value) return { tone: 'amber', text: 'Studio open' };
-  return { tone: 'grey', text: 'Studio closed' };
+  return { tone: 'amber', text: 'Studio open' };
 });
 </script>
 
@@ -92,15 +77,11 @@ const status = computed<Status>(() => {
       <p class="ep-lead">
         {{
           phase === 'pre'
-            ? 'Test your audio before air time. The Studio opens 30 min before the start.'
+            ? 'Test your audio in the Studio before air time.'
             : 'The soundcheck is done in the Studio before the show.'
         }}
       </p>
       <dl class="ep-kv">
-        <div v-if="studio">
-          <dt>Studio</dt>
-          <dd>{{ studio }}</dd>
-        </div>
         <div v-if="tested">
           <dt>Soundcheck</dt>
           <dd class="ok">Passed in this browser</dd>
@@ -128,14 +109,7 @@ const status = computed<Status>(() => {
           <BoardIcon name="upload" />Upload your set
         </BaseButton>
       </template>
-      <BaseButton
-        v-else
-        class="xl"
-        :variant="variant"
-        :disabled="!studioOpen"
-        :loading="busy"
-        @click="emit('openStudio')"
-      >
+      <BaseButton v-else class="xl" :variant="variant" :loading="busy" @click="emit('openStudio')">
         <BoardIcon name="mic" />Open Studio
       </BaseButton>
     </template>

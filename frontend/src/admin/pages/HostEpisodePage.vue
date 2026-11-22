@@ -22,7 +22,6 @@ import EpisodeHeading from '../components/episode/EpisodeHeading.vue';
 import EpisodeTabs from '../components/episode/EpisodeTabs.vue';
 import ShowTimeCard from '../components/episode/ShowTimeCard.vue';
 import SoundcheckCard from '../components/episode/SoundcheckCard.vue';
-import { episodeTimes } from '../components/episode/phase';
 import {
   EPISODE_TABS,
   recordingItems,
@@ -89,12 +88,6 @@ const tested = computed(
   () => !!show.value && hostFlow.showId.value === show.value.id && hostFlow.liveTestPassed.value
 );
 const { now, phase, recording, segments, step } = useEpisode(show, announcements, tested);
-
-const studioOpen = computed(() => {
-  if (!show.value) return false;
-  const { openMs } = episodeTimes(show.value);
-  return !!show.value.on_air || (openMs !== null && now.value >= openMs);
-});
 
 /** End Episode on On Air opens the Wrap-up, also while the recording is
  * still being saved (the episode can be on air for a moment). */
@@ -232,7 +225,6 @@ const studioAllowed = computed(() => {
     isMine.value &&
     s.stream_mode !== 'prerecorded' &&
     !s.prerecorded_confirmed_at &&
-    studioOpen.value &&
     phase.value !== 'post' &&
     !liveHere.value &&
     !otherLive.value
@@ -298,7 +290,6 @@ async function selectForStudio(): Promise<boolean> {
       mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     }
     if (!mine) throw new Error('This episode is not assigned to you');
-    if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
     return true;
@@ -477,7 +468,6 @@ async function publish() {
           :show="show"
           :phase="phase"
           :state="step(1)"
-          :now="now"
           :tested="tested"
           :busy="busy"
           @open-studio="picked = 1"

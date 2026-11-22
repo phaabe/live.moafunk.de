@@ -13,12 +13,14 @@ import {
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
 import { startLiveSession } from '@admin/liveSession';
+import { episodeDay } from '@admin/episodeRow';
 
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
- * Go Live. Nothing goes live by itself. The router gate opens it 30 min
- * before the start. At the start time the countdown turns into Go Live, which
- * blinks until clicked once the soundcheck is confirmed. Every show is recorded.
+ * Go Live. Nothing goes live by itself. The Studio is open for soundchecks
+ * at any time before the end. At the start time the countdown turns into Go
+ * Live, which blinks until clicked once the soundcheck is confirmed. Every
+ * show is recorded.
  *
  * Studio · Back on air (`studio-backonair`): the episode is still on air but
  * no tab sends audio, e.g. after a reload. The server keeps it on air for
@@ -47,13 +49,21 @@ const secondsToStart = computed(() => {
   return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
 });
 
-/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. Null at the start. */
+/**
+ * The pill: "Soundcheck · show starts in 18:42" (or 2:18:42), the clock drawn
+ * big. A day or more before, it reads "show starts So 25.10. · 12:00". Null at the start.
+ */
 const countdown = computed(() => {
   const left = secondsToStart.value;
   if (left <= 0) return null;
-  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  const s = show.value;
+  if (s?.start_time && left >= 24 * 3600) {
+    return { label: 'Soundcheck · show starts ', clock: `${episodeDay(s.date)} · ${s.start_time}` };
+  }
+  const h = Math.floor(left / 3600);
+  const mm = String(Math.floor((left % 3600) / 60)).padStart(2, '0');
   const ss = String(left % 60).padStart(2, '0');
-  return { label: 'Soundcheck · show starts in ', clock: `${mm}:${ss}` };
+  return { label: 'Soundcheck · show starts in ', clock: h ? `${h}:${mm}:${ss}` : `${mm}:${ss}` };
 });
 
 // The soundcheck card. Its test broadcast uses the socket that Go Live needs.

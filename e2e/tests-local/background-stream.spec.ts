@@ -3,7 +3,7 @@
 // sending audio, and the live session keeps the screen on and remembers a gone
 // input (ticket 1063, https://github.com/phaabe/live.moafunk.de/issues/1063).
 import { test, expect, type Page } from '@playwright/test';
-import { pickInput, runSoundcheck, soundcheckAndGoLive } from '../lib/studio';
+import { open, pickInput, runSoundcheck, soundcheckAndGoLive, unplugInput } from '../lib/studio';
 
 const MOCK = process.env.STUDIO_MOCK_URL ?? 'http://localhost:8000';
 const DEVICE_ENDED = 'Audio device is no longer active. Re-select your device.';
@@ -19,17 +19,6 @@ interface MockLive {
 
 async function mockLive(page: Page): Promise<MockLive> {
   return (await page.request.get(`${MOCK}/mock/live`)).json();
-}
-
-/** Open an app page as a link does: the router, no page load. */
-async function open(page: Page, path: string): Promise<void> {
-  await page.evaluate(async (to) => {
-    type Router = { push(to: string): Promise<unknown> };
-    const app = document.querySelector('#app') as unknown as {
-      __vue_app__: { config: { globalProperties: { $router: Router } } };
-    };
-    await app.__vue_app__.config.globalProperties.$router.push(to);
-  }, path);
 }
 
 /** Stay on the page; the one LIVE broadcast must get new chunks. Logs the counts. */
@@ -78,24 +67,6 @@ function countPolls(page: Page): { count: number } {
     if (path === '/api/stream/metrics' || path === '/api/recording/status') polls.count++;
   });
   return polls;
-}
-
-/** The input is unplugged: its track stops and fires 'ended', as a real device does. */
-async function unplugInput(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    const url = performance
-      .getEntriesByType('resource')
-      .map((entry) => entry.name)
-      .find((name) => name.includes('/composables/useAudioCapture.ts'));
-    if (!url) throw new Error('useAudioCapture module not found');
-    const capture = (await import(url)) as {
-      useAudioCapture(): { mediaStream: { value: MediaStream | null } };
-    };
-    const track = capture.useAudioCapture().mediaStream.value?.getAudioTracks()[0];
-    if (!track) throw new Error('no capture track');
-    track.stop();
-    track.dispatchEvent(new Event('ended'));
-  });
 }
 
 async function endEpisode(page: Page): Promise<void> {

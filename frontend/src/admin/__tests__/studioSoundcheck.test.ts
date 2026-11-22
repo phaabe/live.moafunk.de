@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent, h, nextTick, ref, type App, type Ref } from 'vue';
+import { createSoundcheckResult, type SoundcheckResult } from '../composables/useSoundcheck';
 
 // The Studio's soundcheck (flow screens `studio`, `studio-ready`,
 // `studio-checking`, `studio-problem`): the host tests the music and the mic,
@@ -33,6 +34,10 @@ const mocks = vi.hoisted(() => ({
   captureDevice: vi.fn(),
   // GET /api/shows/:id: `on_air` opens Studio · Back on air.
   showsGet: vi.fn(),
+  // The Studio's result for the browser tab: fresh in each test.
+  result: null as null | SoundcheckResult,
+  // The captured input's track: unplugging it ends it.
+  track: null as null | (EventTarget & { readyState: string }),
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -53,6 +58,9 @@ vi.mock('@admin/composables', async () => {
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
     streamRecordingMimeType: () => 'audio/webm',
     useSoundcheck: real.useSoundcheck,
+    get studioSoundcheckResult() {
+      return mocks.result;
+    },
     createReturnFeed: () => ({
       peakDb: () => mocks.feedPeak,
       playing: () => mocks.feedPlaying,
@@ -79,7 +87,7 @@ vi.mock('@admin/composables', async () => {
       selectedDeviceId: ref('usb'),
       isCapturing: mocks.capturing,
       error: ref(null),
-      mediaStream: ref({ getAudioTracks: () => [{ readyState: 'live' }] }),
+      mediaStream: ref({ getAudioTracks: () => [mocks.track] }),
       processedStream: ref(null),
       refreshDevices: vi.fn(async () => {}),
       listDevices: vi.fn(),
@@ -211,6 +219,8 @@ beforeEach(() => {
   mocks.closeFeed.mockReset();
   mocks.captureDevice.mockReset().mockResolvedValue(true);
   mocks.showsGet.mockReset().mockResolvedValue({ on_air: false });
+  mocks.result = createSoundcheckResult();
+  mocks.track = Object.assign(new EventTarget(), { readyState: 'live' });
   vi.stubGlobal('navigator', {
     ...navigator,
     mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
@@ -668,6 +678,54 @@ describe('Studio soundcheck', () => {
     expect(goLive().disabled).toBe(false);
     await press('Not OK');
     expect(goLive().disabled).toBe(true);
+  });
+
+  /** Leave the Studio (another page or tab of the app), then open it again. */
+  async function leaveAndReturn() {
+    app!.unmount();
+    root.remove();
+    await mount();
+  }
+
+  it('keeps the result when the host leaves the Studio and comes back', async () => {
+    await mount();
+    await testAll();
+    const checked = rows();
+    await leaveAndReturn();
+    expect(rows()).toEqual(checked);
+    expect(text()).toContain('Sounds good — ready to go live');
+    expect(goLive().disabled).toBe(false);
+  });
+
+  it('forgets the result when the input is lost', async () => {
+    await mount();
+    await testAll();
+    expect(goLive().disabled).toBe(false);
+    // Unplugged, or the screen share stopped.
+    mocks.track!.readyState = 'ended';
+    mocks.track!.dispatchEvent(new Event('ended'));
+    await nextTick();
+    expect(rows()).toEqual({
+      Music: 'Waiting: Not checked yet',
+      Mic: 'Waiting: Not checked yet',
+      Server: 'Waiting: Not checked yet',
+      'Return feed': 'Waiting: Not checked yet',
+    });
+    expect(mocks.passed!.value).toBe(false);
+    expect(goLive().disabled).toBe(true);
+    // The same input can be picked again.
+    expect(root.querySelector('select')!.value).toBe('');
+  });
+
+  it('forgets a kept result when the input was lost while the Studio was closed', async () => {
+    await mount();
+    await testAll();
+    app!.unmount();
+    root.remove();
+    mocks.track!.readyState = 'ended';
+    await mount();
+    expect(rows().Music).toBe('Waiting: Not checked yet');
+    expect(mocks.passed!.value).toBe(false);
   });
 });
 

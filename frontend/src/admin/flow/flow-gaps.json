@@ -484,10 +484,8 @@
         "h2: Recording",
         "button: Upload to SoundCloud",
         "h1: Brunchtime #31",
-        "h2: Soundcheck",
         "pill: Upcoming",
-        "button: Edit",
-        "row: Studio | Opens So 25.10. · 11:30"
+        "button: Edit"
       ],
       "why": "Redesign #1052 (approved in the issue): one layout for every phase. The details move into a read-only heading box (title as the heading, date and time, status pill, mode, host) with Edit, which opens the form with Save and Cancel booking; four step icons Set up social media › Soundcheck › Show time › Publish recording, coloured by state (current yellow, done dim yellow, next gray); four status cards in step order Social media, Soundcheck, Show time and Recording & SoundCloud replace Next step, Details, Promotion · Instagram and Recording. Upload to SoundCloud shows once there is a recording. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -551,10 +549,8 @@
         "pill: Upcoming",
         "link: live.moafunk.de",
         "row: 1 · Set up social media | 0 of 2 posts ready",
-        "row: 2 · Soundcheck | Studio from 19:30",
         "row: 3 · Show time | 20:00–22:00",
         "row: 4 · Publish recording | after 22:00",
-        "row: Studio | Opens Di 27.10. · 19:30",
         "row: Mode | Live from the Studio",
         "row: SoundCloud | After the show"
       ],
@@ -679,6 +675,20 @@
       "screen": "studio-problem",
       "items": ["check: Record this show", "button: Go Live"],
       "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": [
+        "button: Open Studio"
+      ],
+      "why": "Studio always open (Anton's go, 2026-11-22): the Studio is open for soundchecks at any time before the end, not only from 30 min before the start. The Soundcheck tab shows the Studio instead of Open Studio. Soundcheck still becomes the current step 30 min before the start; until then its step reads “before 20:00”. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-view",
+      "items": [
+        "row: 2 · Soundcheck | before 20:00"
+      ],
+      "why": "Studio always open (Anton's go, 2026-11-22): the Studio is open for soundchecks at any time before the end, not only from 30 min before the start. The Soundcheck tab shows the Studio instead of Open Studio. Soundcheck still becomes the current step 30 min before the start; until then its step reads “before 20:00”. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }

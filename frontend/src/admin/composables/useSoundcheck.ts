@@ -106,16 +106,35 @@ const freshStep = (id: SoundcheckStepId): SoundcheckStep => ({
 
 const CANCELLED = Symbol('cancelled');
 
-export function useSoundcheck(deps: SoundcheckDeps) {
+/** What the checks found. It can outlive the component that ran them. */
+export function createSoundcheckResult() {
+  return {
+    steps: ref<SoundcheckStep[]>((Object.keys(NAMES) as SoundcheckStepId[]).map(freshStep)),
+    outcome: ref<SoundcheckOutcome | null>(null),
+    /** The first problem, with its fix. */
+    problem: ref<string | null>(null),
+    /** The server received audio, so the host may confirm against the proposal. */
+    canOverride: ref(false),
+    /** The problem each check found, so a re-run of one check keeps the others'. */
+    notes: {} as Partial<Record<SoundcheckStepId, string>>,
+  };
+}
+export type SoundcheckResult = ReturnType<typeof createSoundcheckResult>;
+
+/**
+ * The Studio's result in this browser tab. It stays when the host leaves the
+ * Studio or the page; a new audio input, a lost input or a reload ends it.
+ */
+export const studioSoundcheckResult = createSoundcheckResult();
+
+export function useSoundcheck(
+  deps: SoundcheckDeps,
+  result: SoundcheckResult = createSoundcheckResult()
+) {
   const wait = deps.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
-  const steps = ref<SoundcheckStep[]>((Object.keys(NAMES) as SoundcheckStepId[]).map(freshStep));
+  const { steps, outcome, problem, canOverride, notes } = result;
   const running = ref(false);
-  const outcome = ref<SoundcheckOutcome | null>(null);
-  /** The first problem, with its fix. */
-  const problem = ref<string | null>(null);
-  /** The server received audio, so the host may confirm against the proposal. */
-  const canOverride = ref(false);
   /** What the host should do now. */
   const prompt = ref<string | null>(null);
   const listening = ref(false);
@@ -126,8 +145,6 @@ export function useSoundcheck(deps: SoundcheckDeps) {
   let epoch = 0;
   let broadcasting = false;
   let feed: ReturnFeed | null = null;
-  // The problem each check found, so a re-run of one check keeps the others'.
-  const notes: Partial<Record<SoundcheckStepId, string>> = {};
 
   const step = (id: SoundcheckStepId) => steps.value.find((s) => s.id === id)!;
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The Studio opens 30 min before the start and closes at the end time
+// The Studio is open for soundchecks at any time and closes at the end time
 // unless the episode is still on air. On Air needs a live broadcast in
 // this tab. Times: 2026-11-15 12:00–14:00 Berlin = 11:00–13:00 UTC.
 
@@ -71,12 +71,8 @@ afterEach(() => {
 });
 
 describe('Studio gate', () => {
-  it('sends the host to the episode until 30 min before the start', async () => {
-    expect(await gate(studioGate, '2026-11-15T10:29:00Z')).toHaveBeenCalledWith('/shows/7');
-  });
-
-  it('opens 30 min before the start, in live mode', async () => {
-    const next = await gate(studioGate, '2026-11-15T10:30:00Z');
+  it('is open at any time before the start, in live mode', async () => {
+    const next = await gate(studioGate, '2026-11-12T08:00:00Z');
     expect(next).toHaveBeenCalledWith();
     expect(stub.selectMode).toHaveBeenCalledWith('live');
   });
@@ -108,7 +104,8 @@ describe('Studio gate', () => {
     });
     const next = await gate(studioGate, '2026-11-15T11:30:00Z', { show: '7' });
     expect(stub.selectShow).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }));
-    expect(stub.setLiveTestPassed).toHaveBeenCalledWith(false);
+    // The soundcheck tests this browser's setup: another episode keeps it.
+    expect(stub.setLiveTestPassed).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith();
   });
 
