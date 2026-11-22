@@ -3,6 +3,7 @@
 //! and only the owner or an admin books its episodes. The list and the edit
 //! route only see the caller's own series; another user's slug is a 404 there.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -422,6 +423,20 @@ pub struct EpisodeItem {
     has_file: bool,
     /// "public" | "private" once the recording is on SoundCloud, else null.
     soundcloud: Option<&'static str>,
+    /// Where its Instagram posts are (no drafts), pre → onair → post.
+    instagram: Vec<PostReading>,
+}
+
+/// One Instagram post of an episode, without text, image or error: what every
+/// host may see (like GET /api/shows/:id/announcements/status).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PostReading {
+    #[serde(skip)]
+    show_id: i64,
+    slot: String,
+    state: String,
+    scheduled_at: Option<String>,
+    sent_at: Option<String>,
 }
 
 /// A host of a series. Today that is its owner; a series may get more later.
@@ -474,6 +489,20 @@ pub async fn api_get_series(
     .fetch_all(&state.db)
     .await?;
 
+    let mut posts: HashMap<i64, Vec<PostReading>> = HashMap::new();
+    let readings: Vec<PostReading> = sqlx::query_as(
+        "SELECT a.show_id, a.slot, a.state, a.scheduled_at, a.sent_at \
+         FROM announcements a JOIN shows s ON s.id = a.show_id \
+         WHERE s.template_id = ? AND a.channel = 'instagram' AND a.state <> 'draft' \
+         ORDER BY CASE a.slot WHEN 'pre' THEN 0 WHEN 'onair' THEN 1 ELSE 2 END",
+    )
+    .bind(row.id)
+    .fetch_all(&state.db)
+    .await?;
+    for reading in readings {
+        posts.entry(reading.show_id).or_default().push(reading);
+    }
+
     let on_air = on_air_show_id(&state).await;
     let now = Utc::now();
     let episodes = rows
@@ -511,6 +540,7 @@ pub async fn api_get_series(
                     (true, true) => Some("public"),
                     (true, false) => Some("private"),
                 },
+                instagram: posts.remove(&e.id).unwrap_or_default(),
             }
         })
         .collect();

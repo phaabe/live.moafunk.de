@@ -756,3 +756,57 @@ async fn the_owner_edits_a_series_and_keeps_its_slug() {
         Err(AppError::BadRequest(_))
     ));
 }
+
+/// The Show page shows each episode's Instagram posts: slot and state, pre →
+/// onair → post, without drafts and without other channels.
+#[tokio::test]
+async fn series_detail_lists_the_instagram_posts_of_each_episode() {
+    let (state, _temp) = state().await;
+    let lena = add_user(&state, "lena", "host").await;
+    let id = create(&state, lena, BRUNCHTIME).await.unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    let posted = episode(&state, id, "2020-01-05", "live").await;
+    let bare = episode(&state, id, "2020-01-12", "live").await;
+    for (slot, channel, post_state, scheduled, sent) in [
+        ("post", "instagram", "waiting_soundcloud", None, None),
+        ("onair", "instagram", "draft", None, None),
+        (
+            "pre",
+            "instagram",
+            "sent",
+            Some("2020-01-03T17:00:00Z"),
+            Some("2020-01-03T17:00:05Z"),
+        ),
+        ("pre", "telegram", "failed", None, None),
+    ] {
+        sqlx::query(
+            "INSERT INTO announcements (show_id, slot, channel, state, scheduled_at, sent_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(posted)
+        .bind(slot)
+        .bind(channel)
+        .bind(post_state)
+        .bind(scheduled)
+        .bind(sent)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+
+    let body = get(&state, lena, "brunchtime").await.unwrap();
+    let episodes = body["episodes"].as_array().unwrap();
+    let of = |id: i64| episodes.iter().find(|e| e["id"] == id).unwrap()["instagram"].clone();
+    assert_eq!(
+        of(posted),
+        json!([
+            {
+                "slot": "pre", "state": "sent",
+                "scheduled_at": "2020-01-03T17:00:00Z", "sent_at": "2020-01-03T17:00:05Z"
+            },
+            { "slot": "post", "state": "waiting_soundcloud", "scheduled_at": null, "sent_at": null },
+        ])
+    );
+    assert_eq!(of(bare), json!([]));
+}
