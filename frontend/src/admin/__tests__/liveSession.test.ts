@@ -252,7 +252,7 @@ describe('live session', () => {
     await vi.advanceTimersByTimeAsync(1000);
     const { session, ended } = mod.useLiveSession();
     expect(session.value).toBeNull();
-    // Not an End Episode: the episode page is not sent to the Wrap-up.
+    // Not an End Episode: the episode page is not sent to its Recording tab.
     expect(ended.value).toBeNull();
     expect(locks[0].release).toHaveBeenCalled();
     expect(document.title).toBe('Moafunk Admin');

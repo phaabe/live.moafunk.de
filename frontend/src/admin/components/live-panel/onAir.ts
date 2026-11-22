@@ -56,8 +56,8 @@ export function slotWindow(
 
 // ─── Moments ────────────────────────────────────────────────────────────────
 // Mark moment keeps an on-air timecode. Kept in this tab, across remounts of
-// On Air like its clock. There is no server side yet, so Wrap-up does not see
-// them (its Instagram moments are a later release).
+// On Air like its clock. There is no server side yet, so the Recording card
+// does not see them (its Instagram moments are a later release).
 
 export interface Moment {
   /** Seconds on air. */

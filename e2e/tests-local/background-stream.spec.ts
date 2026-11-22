@@ -227,11 +227,11 @@ test('episode page: the stream and the bar go on across admin pages, the Show ti
   expect(lockOtherTab).toBe(true);
   expect(lockAway).toBe(true);
 
-  // End Episode in the bar, on another tab of this episode: the Wrap-up opens.
+  // End Episode in the bar, on another tab of this episode: the Recording tab opens.
   await page.getByRole('tab', { name: /Social media/ }).click();
   await expectBar(page);
   await endEpisode(page);
-  await expect(page.getByRole('heading', { level: 1, name: 'Wrap-up' })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Recording/ })).toHaveAttribute('aria-selected', 'true');
   await expect(onAirBar(page)).toHaveCount(0);
 });
 

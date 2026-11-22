@@ -176,10 +176,6 @@ function announcement(slot: AnnouncementSlot, overrides: Partial<Announcement> =
 
 /** Fr 23.10. · 18:00 Berlin (summer time). */
 const FR_2310_1800 = '2026-10-23T16:00:00Z';
-/** Mo 26.10. · 18:00 Berlin (winter time). */
-const MO_2610_1800 = '2026-10-26T17:00:00Z';
-/** Mi 28.10. · 18:00 Berlin: the post default, 3 days after So 25.10. */
-const MI_2810_1800 = '2026-10-28T17:00:00Z';
 
 let app: App | undefined;
 let root: HTMLDivElement;
@@ -404,12 +400,6 @@ const tabClock = () => ({
   sub: tab(2).querySelector('.s')?.textContent?.replace(' · ', '').trim(),
 });
 
-/** The step strip on another host's page: each step's state. */
-const strip = () =>
-  [...root.querySelectorAll('.segs li')].map((li) =>
-    ['done', 'now', 'next'].find((c) => li.classList.contains(c))
-  );
-
 /** Not hidden by v-show (the tab panel shows one card at a time). */
 function isShown(el: Element | null): boolean {
   for (let e = el; e; e = e.parentElement) {
@@ -550,7 +540,7 @@ describe('Episode', () => {
     }
   });
 
-  it('shows the live panel in the Show time tab after Go Live, and the Wrap-up after End Episode', async () => {
+  it('shows the live panel in the Show time tab after Go Live, and Recording after End Episode', async () => {
     const { useHostFlow } = await import('../composables');
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -593,7 +583,8 @@ describe('Episode', () => {
       live.showId = null;
       button('End Episode').click();
       await settle();
-      expect(root.querySelector('h1')?.textContent).toBe('Wrap-up');
+      expect(tabs()[3].selected).toBe(true);
+      expect(shownCards()).toEqual(['Recording & SoundCloud']);
     } finally {
       vi.useRealTimers();
       useHostFlow().reset();
@@ -768,8 +759,6 @@ describe('Episode', () => {
   ])('locks Edit %s', async (_name, overrides, label) => {
     current = episode(overrides);
     await mount();
-    if ('episode_status' in overrides) button('< Episode').click();
-    await settle();
     expect(editButton().textContent?.trim()).toBe(label);
     expect(editButton().disabled).toBe(true);
   });
@@ -894,8 +883,7 @@ describe('Episode · phases', () => {
     at('14:20');
     current = day({ episode_status: 'wrapup_open', latest_recording: ready });
     await mount();
-    button('< Episode').click();
-    await settle();
+    expect(text()).not.toContain('Wrap-up');
     expect(tabs().map((t) => t.state)).toEqual(['done', 'done', 'done', 'now']);
     expect(tabs()[3].selected).toBe(true);
     expect(tabClock()).toEqual({ clock: '1:58:40', sub: '12:00–14:00' });
@@ -903,15 +891,18 @@ describe('Episode · phases', () => {
     expect(badges(3)).toEqual(['Recording: ready', 'SoundCloud: no track yet']);
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
     expect(currentCards()).toEqual(['Recording & SoundCloud']);
-    expect(yellow()).toEqual(['Open Wrap-up']);
+    expect(yellow()).toEqual(['Publish episode']);
     expect(cardStatus('Show time')).toBe('Aired');
     expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
     expect(root.querySelector('.audio-player')?.getAttribute('data-src')).toBe(
       'https://r2.example/v1.mp3'
     );
-    button('Open Wrap-up').click();
-    await settle();
-    expect(root.querySelector('h1')?.textContent).toBe('Wrap-up');
+    // Publish episode closes the episode in place: Finished, the button goes.
+    button('Publish episode').click();
+    await vi.waitFor(() => expect(text()).not.toContain('Publish episode'));
+    expect(requests.some((r) => r.url === '/api/shows/42/publish')).toBe(true);
+    expect(tabs().map((t) => t.state)).toEqual(['done', 'done', 'done', 'done']);
+    expect(tabs()[3].selected).toBe(true);
   });
 
   it('post-show: shows the public track and the sent post', async () => {
@@ -930,8 +921,6 @@ describe('Episode · phases', () => {
       }),
     ];
     await mount();
-    button('< Episode').click();
-    await settle();
     expect(badges(3)).toEqual(['Recording: ready', 'SoundCloud: public track']);
     expect(badges(0)[2]).toBe('Post-announcement: Sent · So 25.10. · 14:10');
     expect(cardStatus('Recording & SoundCloud')).toBe('Public on SoundCloud');
@@ -1127,7 +1116,7 @@ describe('Episode · Pre-recorded', () => {
       ...overrides,
     });
 
-  it('shows the set in the Soundcheck card and the Wrap-up only after the show', async () => {
+  it('shows the set in the Soundcheck card and Publish episode only after the show', async () => {
     current = prerecorded();
     await mount();
     for (const part of [
@@ -1141,27 +1130,24 @@ describe('Episode · Pre-recorded', () => {
       expect(text()).toContain(part);
     }
     const leftOut = LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram');
-    for (const part of [...leftOut, 'Cancel booking', 'Open Studio', 'Open Wrap-up']) {
+    for (const part of [...leftOut, 'Cancel booking', 'Open Studio', 'Publish episode']) {
       expect(text()).not.toContain(part);
     }
     expect(cardStatus('Soundcheck')).toBe('Set uploaded');
     expect(cardStatus('Recording & SoundCloud')).toBe('Set ready');
   });
 
-  it('opens the Wrap-up from the Recording card after the show', async () => {
+  it('opens on the Recording card after the show, with Publish episode', async () => {
     current = prerecorded({ date: PAST, episode_status: 'wrapup_open' });
     await mount();
-    expect(root.querySelector('h1')?.textContent).toBe('Wrap-up');
-    expect(text()).toContain('Recording ready · 1:58:40');
-    button('< Episode').click();
-    await settle();
+    expect(text()).not.toContain('Wrap-up');
+    expect(shownCards()).toEqual(['Recording & SoundCloud']);
     expect(currentCards()).toEqual(['Recording & SoundCloud']);
+    expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
     expect(text()).not.toContain('Replace file');
     expect(cardStatus('Show time')).toBe('Aired');
     expect(card('Show time').querySelector('.big b')?.textContent).toBe('1:58:40');
-    button('Open Wrap-up').click();
-    await settle();
-    expect(root.querySelector('h1')?.textContent).toBe('Wrap-up');
+    expect(yellow()).toEqual(['Publish episode']);
   });
   it('names the booked set and its length next to the player', async () => {
     current = prerecorded();
@@ -1198,8 +1184,8 @@ describe('Episode · Pre-recorded', () => {
   });
 });
 
-describe('Wrap-up and Done', () => {
-  it('opens on the wrap-up of an ended episode and publishes it', async () => {
+describe('Recording card after the show (no Wrap-up page)', () => {
+  it('publishes an ended episode in the Recording card', async () => {
     current = episode({
       date: PAST,
       episode_status: 'wrapup_open',
@@ -1212,28 +1198,19 @@ describe('Wrap-up and Done', () => {
       },
     });
     const router = await mount();
-    expect(text()).toContain('< Episode');
-    expect(text()).toContain('Wrap-up');
-    expect(text()).toContain('Recording ready · 1:58:40');
-    for (const part of LEFT_OUT) expect(text()).not.toContain(part);
-
-    button('Publish').click();
-    await vi.waitFor(() => expect(text()).toContain('Episode published'));
-    expect(text()).not.toContain('SoundCloud');
-    button('Back to Show').click();
-    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
-  });
-
-  it('switches between the wrap-up and the episode on one path', async () => {
-    current = episode({ date: PAST, episode_status: 'wrapup_open' });
-    await mount();
-    button('< Episode').click();
-    await nextTick();
+    expect(text()).not.toContain('Wrap-up');
     expect(text()).toContain('Finished · wrap-up open');
-    expect(currentCards()).toEqual(['Recording & SoundCloud']);
-    button('Open Wrap-up').click();
-    await nextTick();
-    expect(root.querySelector('h1')?.textContent).toBe('Wrap-up');
+    expect(shownCards()).toEqual(['Recording & SoundCloud']);
+    expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
+    const leftOut = LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram');
+    for (const part of leftOut) expect(text()).not.toContain(part);
+
+    button('Publish episode').click();
+    await vi.waitFor(() => expect(text()).not.toContain('Publish episode'));
+    expect(requests.filter((r) => r.url === '/api/shows/42/publish')).toHaveLength(1);
+    expect(text()).not.toContain('Episode published');
+    expect(shownCards()).toEqual(['Recording & SoundCloud']);
+    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
   });
 
   it('waits while the recording converts', async () => {
@@ -1243,8 +1220,8 @@ describe('Wrap-up and Done', () => {
       latest_recording: { id: 1, version: 'v1', status: 'raw' },
     });
     await mount();
-    expect(text()).toContain('Recording processing…');
-    expect(button('Publish').disabled).toBe(true);
+    expect(card('Recording & SoundCloud').textContent).toContain('Processing…');
+    expect(button('Publish episode').disabled).toBe(true);
   });
 
   it.each([
@@ -1254,20 +1231,22 @@ describe('Wrap-up and Done', () => {
       'No usable recording · Shorter than 1 minute',
     ],
     ['no recording long after the end', undefined, 'No usable recording · Nothing was recorded.'],
-  ])('lets %s be published', async (_name, latest_recording, pill) => {
+  ])('lets %s be published', async (_name, latest_recording, line) => {
     current = episode({ date: PAST, episode_status: 'wrapup_open', latest_recording });
     await mount();
-    expect(text()).toContain(pill);
-    expect(button('Publish').disabled).toBe(false);
+    expect(card('Recording & SoundCloud').textContent).toContain(line);
+    expect(button('Publish episode').disabled).toBe(false);
   });
 
-  it('opens the wrap-up after End Episode, while the recording is still saved', async () => {
+  it('opens Recording after End Episode, while the recording is still saved', async () => {
     // Ended before its scheduled end, and the session is still closing.
     current = episode({ on_air: true });
     await mount('host', 1, { episodeEnded: 42 });
-    expect(text()).toContain('Wrap-up');
-    expect(text()).toContain('Recording processing…');
-    expect(button('Publish').disabled).toBe(true);
+    expect(text()).not.toContain('Wrap-up');
+    expect(tabs()[3].selected).toBe(true);
+    expect(shownCards()).toEqual(['Recording & SoundCloud']);
+    // Publish episode comes once the episode is off air.
+    expect(text()).not.toContain('Publish episode');
   });
 
   it.each([
@@ -1279,13 +1258,13 @@ describe('Wrap-up and Done', () => {
       'an older saved version',
       { id: 1, version: 'v1', status: 'raw' as const, download_url: 'https://r2.example/v1.mp3' },
     ],
-  ])('waits while on air, also with %s', async (_name, latest_recording) => {
+  ])('offers no Publish while on air, also with %s', async (_name, latest_recording) => {
     // A restart mid-show leaves an older version; the server refuses Publish
     // until the current session is saved.
     current = episode({ on_air: true, latest_recording });
     await mount('host', 1, { episodeEnded: 42 });
-    expect(text()).toContain('Recording processing…');
-    expect(button('Publish').disabled).toBe(true);
+    expect(tabs()[3].selected).toBe(true);
+    expect(text()).not.toContain('Publish episode');
   });
 
   it('counts the recording wait from an early End Episode', async () => {
@@ -1296,7 +1275,7 @@ describe('Wrap-up and Done', () => {
     });
     await mount('host', 1, { episodeEnded: 42 });
     expect(text()).toContain('No usable recording · Nothing was recorded.');
-    expect(button('Publish').disabled).toBe(false);
+    expect(button('Publish episode').disabled).toBe(false);
   });
 
   it('still waits right after an early End Episode', async () => {
@@ -1305,15 +1284,15 @@ describe('Wrap-up and Done', () => {
       live_ended_at: new Date(Date.now() - 60 * 1000).toISOString(),
     });
     await mount('host', 1, { episodeEnded: 42 });
-    expect(text()).toContain('Recording processing…');
-    expect(button('Publish').disabled).toBe(true);
+    expect(card('Recording & SoundCloud').textContent).toContain('Processing…');
+    expect(button('Publish episode').disabled).toBe(true);
   });
 
   it('says when "Record this show" was off', async () => {
     current = episode({ episode_status: 'wrapup_open', live_recorded: false });
     await mount('host', 1, { episodeEnded: 42 });
     expect(text()).toContain('No usable recording · Record this show was off.');
-    expect(button('Publish').disabled).toBe(false);
+    expect(button('Publish episode').disabled).toBe(false);
   });
 
   it('opens a finished episode on its Recording card, where the track can go public', async () => {
@@ -1322,7 +1301,7 @@ describe('Wrap-up and Done', () => {
       episode_status: 'finished',
       soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31',
       soundcloud_public: false,
-      // A live episode with a recording: not the Wrap-up either.
+      // A live episode with a recording.
       latest_recording: {
         id: 1,
         version: 'v1',
@@ -1337,7 +1316,7 @@ describe('Wrap-up and Done', () => {
     expect(tabs().map((t) => t.state)).toEqual(['done', 'done', 'done', 'done']);
     expect(tabs().map((t) => t.selected)).toEqual([false, false, false, true]);
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
-    expect(text()).not.toContain('Open Wrap-up');
+    expect(text()).not.toContain('Publish episode');
     button('Make track public').click();
     await vi.waitFor(() => expect(text()).toContain('Public on SoundCloud'));
   });
@@ -1553,7 +1532,7 @@ describe('Episode · Social media card', () => {
   it('sets up the post-announcement after the show', async () => {
     current = episode({ date: PAST, episode_status: 'wrapup_open' });
     await mount();
-    button('< Episode').click();
+    tab(0).click();
     await settle();
     expect(buttons('Pre-announcement')).toEqual([]);
     button('Set up post-announcement').click();
@@ -1962,58 +1941,13 @@ describe('Pre-announcement composer', () => {
   });
 });
 
-describe('Wrap-up · Post-announcement', () => {
-  const wrapup = (overrides: Partial<ShowDetail> = {}) =>
-    episode({ date: '2026-10-25', episode_status: 'wrapup_open', ...overrides });
-  const postRow = () => root.querySelector('.post-slot li')?.textContent ?? '';
-
-  it('waits for the public track and does not hold up Publish', async () => {
-    current = wrapup({ live_recorded: false });
-    const router = await mount();
-    // Default: 3 days after the episode at 18:00.
-    expect(postRow()).toContain('Mi 28.10. · 18:00 · waits for the public track');
-    expect(button('Publish').disabled).toBe(false);
-    button('Set up post-announcement').click();
-    await vi.waitFor(() =>
-      expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement')
-    );
-    expect(router.currentRoute.value.fullPath).toBe('/shows/42');
-  });
-
-  it('shows a set-up post with Edit and Cancel once the track is public', async () => {
-    current = wrapup({ soundcloud_public: true });
-    announcements = [announcement('post', { scheduled_at: MO_2610_1800 })];
-    await mount();
-    expect(postRow()).toContain('Scheduled · Mo 26.10. · 18:00');
-    expect(button('Edit post-announcement')).toBeTruthy();
-    expect(button('Cancel post-announcement')).toBeTruthy();
-  });
-
-  it.each([
-    ['no post slot', [], false, 'Instagram · no post-announcement'],
-    [
-      'a private track',
-      [announcement('post')],
-      false,
-      'Instagram · waits for the public SoundCloud track',
-    ],
-  ])('says on Done when there is %s', async (_name, list, isPublic, pill) => {
-    current = wrapup({ soundcloud_public: isPublic });
-    announcements = list;
-    await mount();
-    button('Publish').click();
-    await vi.waitFor(() => expect(text()).toContain('Episode published'));
-    expect(text()).toContain(pill);
-  });
-});
-
 describe('who sees what', () => {
   it("keeps today's page for admins", async () => {
     await mount('admin', 9);
     await vi.waitFor(() => expect(text()).toContain("Today's show page"));
   });
 
-  it("shows another host's episode read-only: the same cards, no buttons", async () => {
+  it("shows another host's episode as the same page read-only: tabs, no buttons", async () => {
     current = episode({ episode_status_label: 'Upcoming' });
     announcements = [
       announcement('pre', {
@@ -2038,8 +1972,16 @@ describe('who sees what', () => {
       'Recording & SoundCloud',
     ]);
     expect(text()).not.toContain("Today's show page");
-    expect(root.querySelectorAll('button, input, select, textarea')).toHaveLength(0);
-    expect(root.querySelector('a')?.getAttribute('href')).toBe('/dashboard');
+    // The same four tab tiles as the owner's page; the tabs are the only buttons.
+    expect(tabs()).toHaveLength(4);
+    // It opens on the current step, as the owner's page does.
+    expect(tabs()[1]).toMatchObject({ state: 'now', selected: true });
+    expect(shownCards()).toEqual(['Soundcheck']);
+    expect(root.querySelectorAll('button:not([role="tab"]), input, select, textarea')).toHaveLength(
+      0
+    );
+    expect(text()).not.toContain('Edit');
+    expect(root.querySelector('a')?.getAttribute('href')).toBe('/shows/brunchtime');
     expect(router.currentRoute.value.fullPath).toBe('/shows/42');
     // Social media from the status endpoint: the link of the sent post, no caption.
     await vi.waitFor(() =>
@@ -2068,7 +2010,7 @@ describe('who sees what', () => {
     expect(listen.textContent?.trim()).toBe('Listen live');
     expect(listen.getAttribute('href')).toBe('https://live.moafunk.de');
     expect(text()).not.toContain('Back to On Air');
-    expect(root.querySelectorAll('button')).toHaveLength(0);
+    expect(root.querySelectorAll('button:not([role="tab"])')).toHaveLength(0);
   });
 
   it.each([
@@ -2095,9 +2037,11 @@ describe('who sees what', () => {
       expect(!!root.querySelector('a[href^="https://soundcloud.com"]')).toBe(linked);
       // The recording file itself stays with the episode's hosts.
       expect(root.querySelector('.audio-player')).toBeNull();
-      // Another host's page keeps the step strip (no tabs).
-      expect(strip()).toEqual(['done', 'done', 'done', 'done']);
-      expect(currentCards()).toEqual([]);
+      // The same tabs as the owner's page: a finished episode opens on Recording.
+      expect(tabs().map((t) => t.state)).toEqual(['done', 'done', 'done', 'done']);
+      expect(tabs()[3].selected).toBe(true);
+      expect(shownCards()).toEqual(['Recording & SoundCloud']);
+      expect(text()).not.toContain('Publish episode');
     }
   );
 });
@@ -2105,13 +2049,6 @@ describe('flow', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-  const recordingReady: ShowDetail['latest_recording'] = {
-    id: 1,
-    version: 'v1',
-    status: 'raw',
-    duration_ms: 7120000,
-    download_url: 'https://r2.example/v1.mp3',
-  };
 
   it('Episode matches the flow', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -2180,29 +2117,5 @@ describe('flow', () => {
     });
     await mount();
     await expectFlow('episode-pre-nofile', root);
-  });
-
-  it('Wrap-up matches the flow', async () => {
-    current = episode({
-      date: '2026-10-25',
-      episode_status: 'wrapup_open',
-      latest_recording: recordingReady,
-    });
-    await mount();
-    await expectFlow('wrapup', root);
-  });
-
-  it('Published matches the flow', async () => {
-    current = episode({
-      date: '2026-10-25',
-      episode_status: 'wrapup_open',
-      latest_recording: recordingReady,
-      soundcloud_public: true,
-    });
-    announcements = [announcement('post', { scheduled_at: MI_2810_1800 })];
-    await mount();
-    button('Publish').click();
-    await vi.waitFor(() => expect(root.textContent).toContain('Episode published'));
-    await expectFlow('done', root);
   });
 });

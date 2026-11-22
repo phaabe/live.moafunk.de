@@ -29,7 +29,7 @@ async function endEpisode() {
   ending.value = true;
   const id = await live.value.end();
   // On this episode's own page the push changes nothing: the page watches the
-  // session's end and opens the Wrap-up itself.
+  // session's end and opens the Recording tab itself.
   await router.push({ path: `/shows/${id}`, state: { episodeEnded: id } });
 }
 </script>

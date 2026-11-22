@@ -32,8 +32,8 @@ import {
  * screen shows it again when it opens.
  *
  * `embedded`: the live panel as the Show time tab of the host's episode page
- * (#1052). It has no title. After End Episode the page shows the Wrap-up (it
- * watches the session's end; the page is already on the episode's path).
+ * (#1052). It has no title. After End Episode the page shows the Recording tab
+ * (it watches the session's end; the page is already on the episode's path).
  * `shown`: false while the page shows another tab; the on-air bar then shows.
  */
 const props = withDefaults(defineProps<{ embedded?: boolean; shown?: boolean }>(), {

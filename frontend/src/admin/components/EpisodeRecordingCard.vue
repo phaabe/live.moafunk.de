@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { BaseButton } from '@shared/components';
-import { showsApi, type ShowDetail } from '../api';
+import { seriesApi, showsApi, type ShowDetail } from '../api';
 import AudioPlayer from './AudioPlayer.vue';
 import EpisodeCard from './episode/EpisodeCard.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
@@ -14,21 +14,23 @@ import type { RecordingPill } from './episode/useEpisode';
 // uploads at once and becomes the episode recording; Upload to SoundCloud
 // sends it as a private track. Only an admin upload starts SoundCloud on its
 // own. Hosts and admins switch the track public or private; public unlocks
-// the post-announcement. Other hosts see the status and a public track's link.
+// the post-announcement. After the show it holds what the Wrap-up had:
+// Publish episode turns "Finished · wrap-up open" into "Finished". Other hosts
+// see the status and a public track's link.
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
   /** Where the Publish recording step is. */
   state: StepState;
-  /** Where the recording is, as the Wrap-up says it. */
+  /** Where the recording is after the show. */
   recording: RecordingPill;
   /** An admin turned SoundCloud off. */
   soundcloudOff?: boolean;
   /** Another host's episode: status and public links only. */
   readOnly?: boolean;
 }>();
-const emit = defineEmits<{ uploaded: []; changed: []; openWrapup: [] }>();
+const emit = defineEmits<{ uploaded: []; changed: [] }>();
 
 const uploading = ref(false);
 const progress = ref('');
@@ -36,6 +38,7 @@ const sending = ref(false);
 const trackUrl = ref<string | null>(null);
 const error = ref<string | null>(null);
 const switching = ref(false);
+const publishing = ref(false);
 /** Set after a switch here, until the parent reloads the show. */
 const publicNow = ref<boolean | null>(null);
 
@@ -134,6 +137,20 @@ async function sendToSoundCloud() {
   }
 }
 
+/** Close the episode; the server waits for the final recording (processing). */
+async function publish() {
+  publishing.value = true;
+  error.value = null;
+  try {
+    await seriesApi.publish(props.show.id);
+    emit('changed');
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not publish the episode';
+  } finally {
+    publishing.value = false;
+  }
+}
+
 async function switchPublic() {
   const makePublic = !isPublic.value;
   switching.value = true;
@@ -210,8 +227,10 @@ async function switchPublic() {
       <BaseButton
         v-if="phase === 'post' && show.episode_status !== 'finished'"
         class="xl"
-        @click="emit('openWrapup')"
-        >Open Wrap-up</BaseButton
+        :disabled="recording.state === 'processing'"
+        :loading="publishing"
+        @click="publish"
+        >Publish episode</BaseButton
       >
       <BaseButton
         v-if="hasRecording"

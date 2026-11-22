@@ -21,8 +21,8 @@ import { formatHms, type Moment } from './onAir';
 /**
  * Moments of the live panel (#1053): Mark moment (or the M key, while no
  * text field has the focus) keeps the on-air timecode. The key works only
- * while On Air is open. Moments stay in this tab: Wrap-up does not get them
- * yet.
+ * while On Air is open. Moments stay in this tab: the Recording card does not
+ * get them yet.
  */
 const props = defineProps<{ moments: Moment[] }>();
 const emit = defineEmits<{ mark: [] }>();
@@ -79,7 +79,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     <p class="note">
       <template v-if="!moments.length"
         >Press M or Mark moment to keep the time of a good part. </template
-      >Moments stay in this browser tab; Wrap-up does not use them yet.
+      >Moments stay in this browser tab; the Recording card does not use them yet.
     </p>
     <p class="sr" aria-live="polite">{{ announced }}</p>
   </LivePanelCard>

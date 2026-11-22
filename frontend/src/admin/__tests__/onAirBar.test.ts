@@ -130,7 +130,7 @@ describe('On-air bar', () => {
     expect(live.end).not.toHaveBeenCalled();
   });
 
-  it('End Episode, asked and confirmed, ends the session and opens the Wrap-up', async () => {
+  it('End Episode, asked and confirmed, ends the session and opens the episode', async () => {
     const live = fakeSession();
     m.session!.value = live;
     await mountBar();

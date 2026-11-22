@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 25,
+  "rev": 26,
   "screens": [
     {
       "id": "dashboard",
@@ -341,7 +341,7 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "6397301d",
+      "hash": "81b1521f",
       "notesHash": "6a095ac4",
       "elements": [
         {
@@ -422,7 +422,7 @@
           "k": "row",
           "text": "So 18.10. · Live",
           "meta": "Finished · wrap-up open",
-          "to": "wrapup"
+          "to": "episode"
         },
         {
           "k": "row",
@@ -549,8 +549,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "a324a409",
-      "notesHash": "4020b388",
+      "hash": "d5c47a07",
+      "notesHash": "db2b7658",
       "elements": [
         {
           "k": "back",
@@ -669,7 +669,7 @@
         {
           "k": "row",
           "text": "Post · feed post 4:5",
-          "meta": "Set up in Wrap-up when the SoundCloud track is public",
+          "meta": "Set up when the SoundCloud track is public",
           "to": null
         },
         {
@@ -686,6 +686,51 @@
           "text": "Upload to SoundCloud",
           "to": null,
           "primary": false
+        },
+        {
+          "k": "field",
+          "text": "Track title",
+          "value": "Brunchtime #31 · 25.10.2026"
+        },
+        {
+          "k": "check",
+          "text": "Upload as private track",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "Add to playlist “Brunchtime”",
+          "meta": "",
+          "on": true
+        },
+        {
+          "k": "text",
+          "text": "3 moments for Instagram"
+        },
+        {
+          "k": "check",
+          "text": "00:12:30",
+          "meta": "Opening track",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "00:31:05",
+          "meta": "Guest talk",
+          "on": true
+        },
+        {
+          "k": "check",
+          "text": "01:20:44",
+          "meta": "Closing set",
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
         }
       ]
     },
@@ -820,7 +865,7 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/43",
-      "hash": "2867c7b5",
+      "hash": "71f40e7b",
       "notesHash": "5efe2392",
       "elements": [
         {
@@ -843,7 +888,7 @@
         },
         {
           "k": "text",
-          "text": "Nothing to do. The set plays at air time. Wrap-up opens after 14:00."
+          "text": "Nothing to do. The set plays at air time."
         },
         {
           "k": "media",
@@ -855,12 +900,6 @@
           "text": "Replace file",
           "to": "upload",
           "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Open Wrap-up",
-          "to": "wrapup",
-          "primary": true
         },
         {
           "k": "h2",
@@ -993,13 +1032,13 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/44",
-      "hash": "e507e038",
-      "notesHash": "6b0e97cd",
+      "hash": "daadd459",
+      "notesHash": "be434b90",
       "elements": [
         {
           "k": "back",
-          "text": "Dashboard",
-          "to": "dashboard"
+          "text": "Night Shift",
+          "to": "show"
         },
         {
           "k": "media",
@@ -1731,7 +1770,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "029901f4",
+      "hash": "67b13e6a",
       "notesHash": "1ddc7d23",
       "elements": [
         {
@@ -1795,7 +1834,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
+          "to": "episode",
           "primary": true
         }
       ]
@@ -1929,8 +1968,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "3be5b037",
-      "notesHash": "18daec00",
+      "hash": "f2b760cb",
+      "notesHash": "9d7e61e2",
       "elements": [
         {
           "k": "pill",
@@ -1954,128 +1993,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
-          "primary": true
-        }
-      ]
-    },
-    {
-      "id": "wrapup",
-      "title": "Wrap-up",
-      "who": "host",
-      "lane": "showday",
-      "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "831e0603",
-      "notesHash": "d4b89a34",
-      "elements": [
-        {
-          "k": "back",
-          "text": "Episode",
-          "to": "episode"
-        },
-        {
-          "k": "h1",
-          "text": "Wrap-up"
-        },
-        {
-          "k": "pill",
-          "tone": "ok",
-          "text": "Recording ready · 1:58:40"
-        },
-        {
-          "k": "h2",
-          "text": "SoundCloud"
-        },
-        {
-          "k": "field",
-          "text": "Track title",
-          "value": "Brunchtime #31 · 25.10.2026"
-        },
-        {
-          "k": "check",
-          "text": "Upload as private track",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "Add to playlist “Brunchtime”",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "h2",
-          "text": "Post-announcement"
-        },
-        {
-          "k": "row",
-          "text": "Post · feed post 4:5",
-          "meta": "Mi 28.10. · 18:00 · waits for the public track",
-          "to": "announce"
-        },
-        {
-          "k": "button",
-          "text": "Set up post-announcement",
-          "to": "announce",
-          "primary": false
-        },
-        {
-          "k": "h2",
-          "text": "3 moments for Instagram"
-        },
-        {
-          "k": "check",
-          "text": "00:12:30",
-          "meta": "Opening track",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "00:31:05",
-          "meta": "Guest talk",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "01:20:44",
-          "meta": "Closing set",
-          "on": false
-        },
-        {
-          "k": "button",
-          "text": "Publish",
-          "to": "done",
-          "primary": true
-        }
-      ]
-    },
-    {
-      "id": "done",
-      "title": "Published",
-      "who": "host",
-      "lane": "showday",
-      "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "bed29c37",
-      "notesHash": "5dce5f9d",
-      "elements": [
-        {
-          "k": "h1",
-          "text": "Episode published"
-        },
-        {
-          "k": "pill",
-          "tone": "ok",
-          "text": "SoundCloud · private track uploaded"
-        },
-        {
-          "k": "pill",
-          "tone": "ok",
-          "text": "Instagram · post-announcement Mi 28.10. · 18:00"
-        },
-        {
-          "k": "button",
-          "text": "Back to Schedule",
-          "to": "schedule",
+          "to": "episode",
           "primary": true
         }
       ]
