@@ -403,3 +403,11 @@ test('every file the backend Dockerfile copies triggers an image build', () => {
   assert.deepEqual(uncoveredSources(sources, workflow.on.push.paths, isDir), []);
   assert.ok(workflow.on.push.paths.includes('.github/workflows/backend.yml'));
 });
+
+test('the backend Dockerfile pulls every base image from mirror.gcr.io', () => {
+  // Anonymous ECR Public pulls fail on shared runner IPs (429: rate and data limits).
+  const dockerfile = readFileSync(path.resolve(__dirname, '../../../backend/Dockerfile'), 'utf8');
+  const images = [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].map((match) => match[1]);
+  assert.ok(images.length > 0);
+  for (const image of images) assert.match(image, /^mirror\.gcr\.io\/library\//);
+});
