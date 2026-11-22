@@ -53,14 +53,14 @@ test('an uploaded set starts by itself and is published', async () => {
     await toneBack(SET_STARTS_S);
   });
 
-  await test.step('after its end: Wrap-up, Publish, Finished', async () => {
+  await test.step('after its end: Publish episode, Finished', async () => {
     await page.waitForTimeout(Math.max(0, end.getTime() - Date.now()) + 5_000);
-    // After its end the episode is "wrapup_open": the page opens the Wrap-up.
+    // After its end the episode is "wrapup_open": the page opens on its Recording card.
     await page.reload();
-    const publish = page.getByRole('button', { name: 'Publish' });
+    const publish = page.getByRole('button', { name: 'Publish episode' });
     await expect(publish).toBeEnabled({ timeout: 60_000 });
     await publish.click();
-    await expect(page.getByRole('heading', { name: 'Episode published' })).toBeVisible();
+    await expect(publish).toHaveCount(0);
     await page.goto(`/#/shows/${show!.slug}`);
     await expect(page.getByText('Finished', { exact: true })).toBeVisible();
   });

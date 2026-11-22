@@ -1,6 +1,6 @@
 {
   "screen": "episode-view",
-  "hash": "e507e038",
+  "hash": "daadd459",
   "status": "drift",
   "leftOut": [],
   "missing": [
@@ -12,19 +12,13 @@
   "extra": [
     "h1: Night Shift",
     "h2: Social media",
-    "h2: Soundcheck",
-    "h2: Show time",
-    "h2: Recording & SoundCloud",
     "pill: Upcoming",
-    "link: live.moafunk.de",
-    "row: 1 · Set up social media | 0 of 2 posts ready",
-    "row: 2 · Soundcheck | before 20:00",
-    "row: 3 · Show time | 20:00–22:00",
-    "row: 4 · Publish recording | after 22:00",
+    "button: 1 · Social media",
+    "button: 2 · Soundcheck",
+    "button: 3 · Show time · in 7 days · until 20:00",
+    "button: 4 · Recording",
     "row: Pre-announcement · Instagram feed post · before the show | Not set up",
     "row: On-air story · Instagram story · at go-live | Not set up",
-    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up",
-    "row: Mode | Live from the Studio",
-    "row: SoundCloud | After the show"
+    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
   ]
 }

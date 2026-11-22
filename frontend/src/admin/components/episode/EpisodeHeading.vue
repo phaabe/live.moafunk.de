@@ -6,18 +6,15 @@ import { episodeDay } from '../../episodeRow';
 import BoardIcon from '../BoardIcon.vue';
 import EpisodeDetailsCard from '../EpisodeDetailsCard.vue';
 import EpisodeIcon from './EpisodeIcon.vue';
-import EpisodeProgress from './EpisodeProgress.vue';
-import { timeRange, type EpisodePhase, type Segment } from './phase';
+import { timeRange, type EpisodePhase } from './phase';
 
 // Heading box of the episode page (#1052): cover, date and time, title,
-// description, status, mode and hosts as read-only text, then the four step
-// icons. Edit (the episode's hosts, before the start) turns it into the form.
+// description, status, mode and hosts as read-only text. Edit (the episode's
+// hosts, before the start) turns it into the form.
 
 const props = defineProps<{
   show: ShowDetail;
   phase: EpisodePhase;
-  /** The step icons. Left out on the host's own page, where the tab tiles show the steps. */
-  segments?: Segment[];
   /** One of the episode's hosts: may edit before the start. */
   canEdit?: boolean;
 }>();
@@ -112,7 +109,6 @@ function saved() {
           ><BoardIcon name="eye" :size="16" />Read only · only its hosts can edit</span
         >
       </div>
-      <EpisodeProgress v-if="segments" :segments="segments" />
     </template>
   </section>
 </template>

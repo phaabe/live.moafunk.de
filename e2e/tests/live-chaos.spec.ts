@@ -106,18 +106,18 @@ test('a live show recovers by itself and ends in one recording', async () => {
     });
   }
 
-  await test.step('End Episode, Wrap-up, Publish, Finished', async () => {
+  await test.step('End Episode, Publish episode, Finished', async () => {
     // End Episode asks once: the second click ends the broadcast.
     await page.getByRole('button', { name: 'End Episode' }).click();
     await expect(page.getByText('End the episode?')).toBeVisible();
     await page.getByRole('button', { name: 'End Episode' }).click();
     onAirMs = Date.now() - live - offAirMs;
     await page.waitForURL(new RegExp(`#/shows/${episode}$`));
-    const publish = page.getByRole('button', { name: 'Publish' });
-    // The wrap-up waits while the recording converts.
+    // The episode opens on its Recording card, which waits while the recording converts.
+    const publish = page.getByRole('button', { name: 'Publish episode' });
     await expect(publish).toBeEnabled({ timeout: 5 * 60_000 });
     await publish.click();
-    await expect(page.getByRole('heading', { name: 'Episode published' })).toBeVisible();
+    await expect(publish).toHaveCount(0);
     await page.goto(`/#/shows/${show!.slug}`);
     await expect(page.getByText('Finished', { exact: true })).toBeVisible();
   });

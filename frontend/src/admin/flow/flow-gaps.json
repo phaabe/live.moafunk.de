@@ -77,29 +77,22 @@
       "items": ["button: Create guest link"]
     },
     {
-      "screen": "wrapup",
+      "screen": "episode",
       "release": "R2",
       "items": [
-        "h2: SoundCloud",
         "field: Track title",
         "check: Upload as private track",
         "check: Add to playlist “Brunchtime”"
       ]
     },
     {
-      "screen": "wrapup",
+      "screen": "episode",
       "release": "R4",
       "items": [
-        "h2: 3 moments for Instagram",
         "check: 00:12:30 | Opening track",
         "check: 00:31:05 | Guest talk",
         "check: 01:20:44 | Closing set"
       ]
-    },
-    {
-      "screen": "done",
-      "release": "R2",
-      "items": ["pill: SoundCloud · private track uploaded"]
     },
     {
       "screen": "studio-onair",
@@ -480,7 +473,7 @@
         "button: Cancel booking",
         "h2: Promotion · Instagram",
         "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
-        "row: Post · feed post 4:5 | Set up in Wrap-up when the SoundCloud track is public",
+        "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
         "h2: Recording",
         "button: Upload to SoundCloud",
         "h1: Brunchtime #31",
@@ -495,7 +488,6 @@
         "h1: So 08.11. · Brunchtime",
         "pill: Pre-recorded & confirmed · plays at 12:00",
         "h2: Next step",
-        "button: Open Wrap-up",
         "h2: Details",
         "field: Title",
         "field: Description",
@@ -542,27 +534,10 @@
         "h2: Details",
         "row: Host | jonas",
         "h1: Night Shift",
-        "h2: Soundcheck",
-        "h2: Show time",
-        "h2: Recording & SoundCloud",
         "h2: Social media",
-        "pill: Upcoming",
-        "link: live.moafunk.de",
-        "row: 1 · Set up social media | 0 of 2 posts ready",
-        "row: 3 · Show time | 20:00–22:00",
-        "row: 4 · Publish recording | after 22:00",
-        "row: Mode | Live from the Studio",
-        "row: SoundCloud | After the show"
+        "pill: Upcoming"
       ],
       "why": "Redesign #1052 (approved in the issue): another host's episode is the same page read-only: the heading box with the host and \"Read only\", the step icons and the four cards with every status and the public links, no Edit and no buttons. The title is the heading; the Details card and its Host row go. Update the flow in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "done",
-      "items": [
-        "button: Back to Schedule",
-        "button: Back to Show"
-      ],
-      "why": "Redesign #1048 (Schedule merged into the Show page in #1051, approved in the issue): Published goes Back to Show, the episode's Show page. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "new-show",
@@ -686,9 +661,17 @@
     {
       "screen": "episode-view",
       "items": [
-        "row: 2 · Soundcheck | before 20:00"
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 20:00",
+        "button: 4 · Recording"
       ],
-      "why": "Studio always open (Anton's go, 2026-11-22): the Studio is open for soundchecks at any time before the end, not only from 30 min before the start. The Soundcheck tab shows the Studio instead of Open Studio. Soundcheck still becomes the current step 30 min before the start; until then its step reads “before 20:00”. Update the flow in Flow Lab, then pin the new rev."
+      "why": "One episode page (Anton, 2026-11-22): another host's episode is the owner's page read-only, with the same four tab tiles above one main card. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": ["button: Publish episode"],
+      "why": "One episode page (Anton, 2026-11-22): the Wrap-up page is gone and Publish episode sits in the Recording card. It shows only after the show, so this pre-show check does not see it."
     }
   ]
 }

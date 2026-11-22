@@ -65,9 +65,7 @@ export function nextStep(e: SeriesEpisode, now: number): string {
     if (e.has_file === false)
       return 'Upload your set before air time. Without a file nothing plays.';
     if (started) return 'The set is playing.';
-    return e.end_time
-      ? `Nothing to do. The set plays at air time. Wrap-up opens after ${e.end_time}.`
-      : 'Nothing to do. The set plays at air time.';
+    return 'Nothing to do. The set plays at air time.';
   }
   if (started) return 'The Studio is open.';
   return 'Test your audio in the Studio before air time.';

@@ -880,7 +880,7 @@ describe('On Air', () => {
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
-  it('End Episode, asked and confirmed, stops the stream and opens the Wrap-up', async () => {
+  it('End Episode, asked and confirmed, stops the stream and opens the episode', async () => {
     mocks.socketState!.value = 'error';
     await mountOnAir();
     await press('End Episode');

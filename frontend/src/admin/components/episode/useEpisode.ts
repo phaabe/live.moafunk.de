@@ -11,7 +11,7 @@ export const RECORDING_GRACE_MS = 15 * 60 * 1000;
 
 export type RecordingPill = { state: 'ok' | 'processing' | 'failed'; text: string };
 
-/** Where the recording of an episode is, as the Wrap-up says it. */
+/** Where the recording of an episode is, as the Recording card says it. */
 export function recordingPill(s: ShowDetail | null, now: number): RecordingPill {
   if (!s) return { state: 'processing', text: 'Recording processing…' };
   if (s.stream_mode === 'prerecorded') {

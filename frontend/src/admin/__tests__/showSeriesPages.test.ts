@@ -382,9 +382,7 @@ describe('Show page helpers', () => {
     const [prerecorded, live] = BRUNCHTIME.episodes;
     const friday = Date.parse(FRIDAY);
     expect(nextStep(live, friday)).toBe('Test your audio in the Studio before air time.');
-    expect(nextStep(prerecorded, friday)).toBe(
-      'Nothing to do. The set plays at air time. Wrap-up opens after 14:00.'
-    );
+    expect(nextStep(prerecorded, friday)).toBe('Nothing to do. The set plays at air time.');
     expect(nextStep({ ...prerecorded, has_file: false }, friday)).toBe(
       'Upload your set before air time. Without a file nothing plays.'
     );
