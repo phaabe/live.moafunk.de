@@ -52,6 +52,8 @@ vi.mock('@admin/components/DbMeter.vue', () => ({
   default: { props: ['label'], render: (p: { label: string }) => h('div', p.label) },
 }));
 vi.mock('@admin/api', () => ({
+  // The Studio and the live panel save their values to the episode.
+  showsApi: { saveStudioLog: vi.fn(() => Promise.resolve()) },
   streamApi: {
     metrics: vi.fn(() =>
       Promise.resolve({

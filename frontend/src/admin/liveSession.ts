@@ -27,8 +27,11 @@ import {
   forgetMoments,
   formatHms,
   formatLeft,
+  useMoments,
   type ConnectionVerdict,
 } from '@admin/components/live-panel/onAir';
+import type { StudioOnAirLog } from '@admin/api';
+import { STUDIO_LOG_SAVE_MS, inputName, saveStudioLog } from '@admin/studioLog';
 
 /** After a drop of more than 10 minutes (the browser keeps 10 minutes of audio). */
 export const AUDIO_DROPPED_MESSAGE =
@@ -252,7 +255,33 @@ function sessionIn(showId: number, panelPath: string): LiveSession {
     return true;
   }
 
+  // The panel's values go to the episode, for other hosts and for after the show.
+  const moments = useMoments(showId);
+  function saveValues(ended: boolean): Promise<void> {
+    const on_air: StudioOnAirLog = {
+      at: Date.now(),
+      since,
+      ended,
+      input: inputName(capture),
+      gain: capture.inputVolume.value,
+      connection: connection.value,
+      upload_kbps: health.uploadKbps.value,
+      buffer_s: health.bufferSeconds.value,
+      rtt_ms: health.rttMs.value,
+      history: health.history.value,
+      target_kbps: targetKbps.value,
+      quality: quality.value,
+      moments: moments.list.value,
+    };
+    return saveStudioLog(showId, { on_air });
+  }
+  void saveValues(false);
+  const saver = setInterval(() => void saveValues(false), STUDIO_LOG_SAVE_MS);
+  onScopeDispose(() => clearInterval(saver));
+
   async function end(): Promise<number> {
+    // The values from the end, taken before the capture and the moments go.
+    void saveValues(true);
     // Send the recorder's last chunk before "stop" closes the stream.
     await capture.stopRecordingAndFlush();
     // "stop" ends the stream and the recording on the backend.
