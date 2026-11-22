@@ -1,6 +1,6 @@
 {
   "screen": "episode",
-  "hash": "d5c47a07",
+  "hash": "87560358",
   "status": "drift",
   "leftOut": [
     {
@@ -54,6 +54,7 @@
     "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
     "h2: Recording",
     "field: Recording file",
+    "button: Edit recording",
     "button: Upload to SoundCloud",
     "button: Publish episode"
   ],

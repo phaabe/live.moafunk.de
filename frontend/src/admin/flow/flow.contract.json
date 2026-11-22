@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 28,
+  "rev": 29,
   "screens": [
     {
       "id": "dashboard",
@@ -674,8 +674,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "d5c47a07",
-      "notesHash": "d5dda964",
+      "hash": "87560358",
+      "notesHash": "345acfd7",
       "elements": [
         {
           "k": "back",
@@ -805,6 +805,12 @@
           "k": "field",
           "text": "Recording file",
           "value": "MP3 or WAV"
+        },
+        {
+          "k": "button",
+          "text": "Edit recording",
+          "to": "edit-recording",
+          "primary": false
         },
         {
           "k": "button",
@@ -1192,6 +1198,291 @@
           "text": "Host",
           "meta": "jonas",
           "to": null
+        }
+      ]
+    },
+    {
+      "id": "edit-recording",
+      "title": "Edit recording · Snippets",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
+      "hash": "4b0e93bd",
+      "notesHash": "4c475838",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Edit recording"
+        },
+        {
+          "k": "button",
+          "text": "Zoom out",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Zoom in",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Show all",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Snippets",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Start & end",
+          "to": "edit-recording-start-end",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Volume",
+          "to": "edit-recording-volume",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "For the Instagram post"
+        },
+        {
+          "k": "text",
+          "text": "Snippets are short clips from your set, up to 30 s each. They go into the Instagram post that announces the recording, so pick the moments that make people want to listen."
+        },
+        {
+          "k": "button",
+          "text": "Next: start & end",
+          "to": "edit-recording-start-end",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Discard",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Apply edit",
+          "to": "episode",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "edit-recording-start-end",
+      "title": "Edit recording · Start & end",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
+      "hash": "4b6ebb92",
+      "notesHash": "4ae96776",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Edit recording"
+        },
+        {
+          "k": "button",
+          "text": "Zoom out",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Zoom in",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Show all",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Snippets",
+          "to": "edit-recording",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Start & end",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Volume",
+          "to": "edit-recording-volume",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Cut the set"
+        },
+        {
+          "k": "text",
+          "text": "Set where your set starts and ends. Everything before and after is cut, like the soundcheck or the silence at the end, and the cuts get a short fade. Here you also set the volume of the whole set."
+        },
+        {
+          "k": "field",
+          "text": "Start",
+          "value": "0:06:09.6"
+        },
+        {
+          "k": "field",
+          "text": "End",
+          "value": "1:53:50.4"
+        },
+        {
+          "k": "button",
+          "text": "Set to playhead",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "field",
+          "text": "Volume of the whole set",
+          "value": "+2.5 dB"
+        },
+        {
+          "k": "button",
+          "text": "Next: volume",
+          "to": "edit-recording-volume",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Discard",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Apply edit",
+          "to": "episode",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "edit-recording-volume",
+      "title": "Edit recording · Volume",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
+      "hash": "2a22c908",
+      "notesHash": "270e386d",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Edit recording"
+        },
+        {
+          "k": "button",
+          "text": "Zoom out",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Zoom in",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Show all",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Snippets",
+          "to": "edit-recording",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Start & end",
+          "to": "edit-recording-start-end",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Volume",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Fix loud or quiet parts"
+        },
+        {
+          "k": "text",
+          "text": "Mark a part that is too loud or too quiet, like a talk break or one loud track, and change only its volume. The rest of the set stays as it is. The volume changes smoothly at the edges, so there are no clicks."
+        },
+        {
+          "k": "button",
+          "text": "Add section",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Discard",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Apply edit",
+          "to": "episode",
+          "primary": true
         }
       ]
     },

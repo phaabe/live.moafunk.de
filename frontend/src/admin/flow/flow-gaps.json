@@ -130,6 +130,65 @@
       "screen": "my-shows",
       "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
+    },
+    {
+      "screen": "edit-recording",
+      "items": [
+        "button: Whole set",
+        "button: Waveform",
+        "button: Select snippet 1",
+        "button: Snippet 1 0.1 seconds earlier",
+        "button: Snippet 1 0.1 seconds later",
+        "button: Snippet 1 1 second shorter",
+        "button: Snippet 1 1 second longer",
+        "button: Play snippet 1",
+        "button: Remove snippet 1",
+        "button: Select snippet 2",
+        "button: Snippet 2 0.1 seconds earlier",
+        "button: Snippet 2 0.1 seconds later",
+        "button: Snippet 2 1 second shorter",
+        "button: Snippet 2 1 second longer",
+        "button: Play snippet 2",
+        "button: Remove snippet 2",
+        "button: Select snippet 3",
+        "button: Snippet 3 0.1 seconds earlier",
+        "button: Snippet 3 0.1 seconds later",
+        "button: Snippet 3 1 second shorter",
+        "button: Snippet 3 1 second longer",
+        "button: Play snippet 3",
+        "button: Remove snippet 3"
+      ],
+      "why": "The flow notes describe the whole-set map and the waveform (both clickable) and each snippet row: −.1, start time, +.1, length − and +, Play and Remove; picking a row is its own button."
+    },
+    {
+      "screen": "edit-recording-start-end",
+      "items": [
+        "button: Whole set",
+        "button: Waveform",
+        "button: Start 0.1 seconds earlier",
+        "button: Start 0.1 seconds later",
+        "button: End 0.1 seconds earlier",
+        "button: End 0.1 seconds later",
+        "button: Whole set 0.5 dB quieter",
+        "button: Whole set 0.5 dB louder"
+      ],
+      "why": "The flow notes describe the whole-set map and the waveform (both clickable), −.1 and +.1 next to Start and End, and − and + for the volume of the whole set."
+    },
+    {
+      "screen": "edit-recording-volume",
+      "items": [
+        "button: Whole set",
+        "button: Waveform",
+        "button: Section 1 0.5 dB quieter",
+        "button: Section 1 0.5 dB louder",
+        "button: Play section 1",
+        "button: Remove section 1",
+        "button: Section 2 0.5 dB quieter",
+        "button: Section 2 0.5 dB louder",
+        "button: Play section 2",
+        "button: Remove section 2"
+      ],
+      "why": "The flow notes describe the whole-set map and the waveform (both clickable) and each section row: − and + volume, Play and Remove."
     }
   ],
   "drift": [
@@ -618,6 +677,11 @@
       "screen": "episode",
       "items": ["button: Publish episode"],
       "why": "One episode page (Anton, 2026-11-22): the Wrap-up page is gone and Publish episode sits in the Recording card. It shows only after the show, so this pre-show check does not see it."
+    },
+    {
+      "screen": "episode",
+      "items": ["button: Edit recording"],
+      "why": "Edit recording (#883) sits in the Recording card and shows only after the show, once the episode has a recording, so this pre-show check does not see it."
     }
   ]
 }
