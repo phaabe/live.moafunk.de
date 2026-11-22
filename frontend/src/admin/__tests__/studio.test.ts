@@ -152,10 +152,6 @@ async function mountPage(page: Component) {
 const text = () => root.textContent ?? '';
 const goLiveButton = () =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Go Live'))!;
-const recordBox = () =>
-  [...root.querySelectorAll('label')]
-    .find((l) => l.textContent?.includes('Record this show'))!
-    .querySelector('input')!;
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -240,34 +236,37 @@ describe('Studio', () => {
     await mountPage(FlowLive);
   }
 
-  it('shows the soundcheck and keeps Go Live closed before the start', async () => {
+  it('shows the soundcheck and the countdown before the start, no Go Live and no record choice', async () => {
     await mountStudio('2026-11-15T11:41:18Z');
     for (const part of [
       '< Episode',
       'Studio',
       'Soundcheck · show starts in 18:42',
       'Audio input',
-      'Record this show',
-      'Go Live',
     ]) {
       expect(text()).toContain(part);
     }
     expect(root.querySelector('a')!.getAttribute('data-to')).toBe('/shows/7');
-    expect(recordBox().checked).toBe(true);
+    expect(text()).not.toContain('Record this show');
 
     mocks.passed!.value = true;
     await nextTick();
-    expect(goLiveButton().disabled).toBe(true);
+    expect(goLiveButton()).toBeUndefined();
   });
 
-  it('opens Go Live at the start once the soundcheck is confirmed', async () => {
+  it('turns the countdown into Go Live at the start; it blinks once the soundcheck is confirmed', async () => {
     await mountStudio('2026-11-15T11:59:58Z');
     await vi.advanceTimersByTimeAsync(2000);
+    expect(text()).not.toContain('show starts in');
+    expect(text()).toContain('It is air time · confirm the soundcheck first');
     expect(goLiveButton().disabled).toBe(true);
+    expect(goLiveButton().classList.contains('ready')).toBe(false);
 
     mocks.passed!.value = true;
     await nextTick();
     expect(goLiveButton().disabled).toBe(false);
+    expect(goLiveButton().classList.contains('ready')).toBe(true);
+    expect(text()).toContain('It is air time · start your show');
   });
 
   it('never goes live by itself', async () => {
@@ -277,16 +276,13 @@ describe('Studio', () => {
     expect(mocks.connect).not.toHaveBeenCalled();
   });
 
-  it('goes live with the record choice, then opens On Air', async () => {
+  it('goes live, always recorded, then opens On Air', async () => {
     mocks.passed!.value = true;
     await mountStudio('2026-11-15T12:00:30Z');
-    recordBox().click();
-    await nextTick();
-    expect(mocks.record!.value).toBe(false);
 
     goLiveButton().click();
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, false);
+    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
     expect(mocks.capture.startRecording).toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
 

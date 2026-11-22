@@ -46,8 +46,9 @@ import {
 // The host's own episode on one path (/shows/<id>), #1052: a heading box, then
 // the four steps as tab tiles (Social media, Soundcheck, Show time, Recording)
 // above one main card, in one layout for pre-show, on air and post-show. The
-// Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab;
-// the live panel is the Show time tab while this browser tab is live. The flow
+// Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab.
+// Show time has no soundcheck: it starts the show with the Studio's Go Live,
+// or warns and leads to Soundcheck, then shows the live panel. The flow
 // screens `wrapup` and `done` stay their own screens on the same path. Another
 // host's episode gets the cards read-only (HostEpisodeView).
 
@@ -245,7 +246,13 @@ const onAirHere = computed(() => liveHere.value && hostFlow.showId.value === sho
 
 /** Mounted on first open, then kept: the checks and the audio input survive a tab switch. */
 const studioMounted = ref(false);
-const studio = ref<{ checks: SoundcheckStep[] | null } | null>(null);
+const studio = ref<{
+  checks: SoundcheckStep[] | null;
+  canGoLive: boolean;
+  goingLive: boolean;
+  goLiveError: string | null;
+  goLive: () => Promise<void>;
+} | null>(null);
 watch(
   studioTab,
   async (want) => {
@@ -301,7 +308,7 @@ async function selectForStudio(): Promise<boolean> {
   }
 }
 
-/** Go Live worked in the Studio tab: Show time shows the live panel. */
+/** Go Live worked (Studio or Show time tab): Show time shows the live panel. */
 function wentLive() {
   picked.value = null;
   void load(false);
@@ -483,7 +490,12 @@ async function publish() {
           :state="step(2)"
           :now="now"
           :busy="busy"
+          :tested="tested"
+          :ready="!!studio?.canGoLive"
+          :starting="!!studio?.goingLive"
+          :error="studio?.goLiveError"
           @open-studio="picked = 1"
+          @go-live="studio?.goLive()"
         />
         <EpisodeRecordingCard
           v-show="tab === 3"

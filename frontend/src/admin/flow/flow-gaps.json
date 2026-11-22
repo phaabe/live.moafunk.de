@@ -659,6 +659,26 @@
         "button: 4 · Recording"
       ],
       "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-checking",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-ready",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-problem",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
     }
   ]
 }
