@@ -125,8 +125,11 @@ async function mount(at = '2026-11-15T12:00:30Z') {
 }
 
 const text = () => root.textContent ?? '';
+// Go Live is the countdown at the start: its name is the big line, under the label.
 const button = (name: string) =>
-  [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
+  [...root.querySelectorAll('button')].find(
+    (b) => (b.querySelector('.countdown-clock') ?? b).textContent?.trim() === name
+  );
 const goLive = () => button('Go Live')!;
 const rows = () =>
   Object.fromEntries(
@@ -696,7 +699,7 @@ describe('Studio · Back on air', () => {
     await mount();
     await press('Go back on air');
     expect(mocks.connect).not.toHaveBeenCalled();
-    expect(text()).toContain('Soundcheck · it is air time');
+    expect(text()).toContain('It is air time · confirm the soundcheck first');
     expect(goLive().disabled).toBe(true);
   });
 

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { BaseButton } from '@shared/components';
 import { showsApi } from '@admin/api';
 import {
   useHostFlow,
@@ -18,8 +17,8 @@ import { startLiveSession } from '@admin/liveSession';
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
  * Go Live. Nothing goes live by itself. The router gate opens it 30 min
- * before the start. Go Live works from the start time once the soundcheck
- * is confirmed.
+ * before the start. At the start time the countdown turns into Go Live, which
+ * blinks until clicked once the soundcheck is confirmed. Every show is recorded.
  *
  * Studio · Back on air (`studio-backonair`): the episode is still on air but
  * no tab sends audio, e.g. after a reload. The server keeps it on air for
@@ -48,23 +47,17 @@ const secondsToStart = computed(() => {
   return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
 });
 
-/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. */
+/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. Null at the start. */
 const countdown = computed(() => {
   const left = secondsToStart.value;
-  if (left <= 0) return { label: 'Soundcheck · it is air time', clock: '' };
+  if (left <= 0) return null;
   const mm = String(Math.floor(left / 60)).padStart(2, '0');
   const ss = String(left % 60).padStart(2, '0');
   return { label: 'Soundcheck · show starts in ', clock: `${mm}:${ss}` };
 });
 
-const record = computed({
-  get: () => flow.recordStream.value,
-  set: (value: boolean) => flow.setRecordStream(value),
-});
-
 // The soundcheck card. Its test broadcast uses the socket that Go Live needs.
 const soundcheck = ref<{ stopTest?: () => void; steps?: SoundcheckStep[] } | null>(null);
-defineExpose({ checks: computed(() => soundcheck.value?.steps ?? null) });
 
 const goingLive = ref(false);
 const wentLive = ref(false);
@@ -95,6 +88,19 @@ const canGoLive = computed(
     audioCapture.isCapturing.value &&
     secondsToStart.value <= 0
 );
+
+const goLiveName = computed(() =>
+  goingLive.value ? 'Going live…' : backOnAir.value ? 'Go back on air' : 'Go Live'
+);
+
+/** The line above Go Live once the countdown is over. */
+const goLiveLabel = computed(() => {
+  if (backOnAir.value)
+    return canGoLive.value ? 'Go back on air now' : 'Pick your input, then go back on air';
+  return canGoLive.value
+    ? 'It is air time · start your show'
+    : 'It is air time · confirm the soundcheck first';
+});
 
 function failGoLive(message: string) {
   goLiveError.value = message;
@@ -148,7 +154,8 @@ async function goLive() {
       goLiveError.value = message;
     });
     flow.setShowStarted();
-    await socket.connect(false, showId, false, flow.recordStream.value);
+    // Every show is recorded.
+    await socket.connect(false, showId, false, true);
     audioCapture.setOnData((data, first) => socket.send(data, first));
     if (!audioCapture.startRecording()) {
       socket.stopStream();
@@ -158,6 +165,15 @@ async function goLive() {
     failGoLive(err instanceof Error ? err.message : 'Failed to go live');
   }
 }
+
+// The episode page's Show time tab starts the show with these too.
+defineExpose({
+  checks: computed(() => soundcheck.value?.steps ?? null),
+  canGoLive,
+  goingLive,
+  goLiveError,
+  goLive,
+});
 
 onUnmounted(() => {
   clearInterval(clock);
@@ -186,29 +202,29 @@ onUnmounted(() => {
         Your show is still on air, but no audio arrives. Listeners hear silence.
       </p>
     </template>
-    <p v-else class="pill status-banner warn countdown">
+    <p v-else-if="countdown" class="pill status-banner warn countdown">
       <span class="countdown-label"
         ><span class="dot" aria-hidden="true"></span>{{ countdown.label }}</span
-      ><span v-if="countdown.clock" class="countdown-clock">{{ countdown.clock }}</span>
+      ><span class="countdown-clock">{{ countdown.clock }}</span>
     </p>
-    <div class="cols">
-      <div class="main">
-        <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
-      </div>
-      <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
-      <aside class="side go-live">
-        <label v-if="!backOnAir" class="check">
-          <input v-model="record" type="checkbox" />
-          Record this show
-        </label>
-        <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
-        <BaseButton class="block xl" :disabled="!canGoLive" :loading="goingLive" @click="goLive"
-          ><BoardIcon name="broadcast" :size="20" />{{
-            backOnAir ? 'Go back on air' : 'Go Live'
-          }}</BaseButton
-        >
-      </aside>
-    </div>
+    <!-- At the start the countdown turns into Go Live; it blinks until clicked. -->
+    <button
+      v-if="backOnAir || !countdown"
+      type="button"
+      :class="['status-banner', 'warn', 'countdown', 'go-live', { ready: canGoLive && !goingLive }]"
+      :disabled="!canGoLive || goingLive"
+      :aria-label="goLiveName"
+      aria-describedby="go-live-label"
+      @click="goLive"
+    >
+      <span id="go-live-label" class="countdown-label"
+        ><span class="dot" aria-hidden="true"></span>{{ goLiveLabel }}</span
+      ><span class="countdown-clock"
+        ><BoardIcon name="broadcast" :size="36" />{{ goLiveName }}</span
+      >
+    </button>
+    <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
+    <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
   </div>
 </template>
 
@@ -251,25 +267,62 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+/* The countdown as Go Live: a button the width of the page. */
 .go-live {
-  position: sticky;
-  top: var(--spacing-md);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  background: var(--color-surface);
-  border: 1px solid #2a2a42;
-  border-radius: var(--radius-xl);
+  width: 100%;
+  color: #fff;
+  font: inherit;
+  font-weight: var(--font-weight-bold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.go-live .countdown-label,
+.go-live .countdown-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+}
+
+.go-live:disabled {
+  cursor: not-allowed;
+}
+
+.go-live:disabled .countdown-clock {
+  color: #8e8ea4;
+}
+
+.go-live:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+/* Ready: it blinks until the host clicks it. */
+.go-live.ready {
+  border-color: var(--color-primary);
+  border-left-color: var(--color-primary);
+  animation: go-live-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes go-live-blink {
+  50% {
+    background-color: var(--color-primary);
+    color: #0f0f23;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .go-live.ready {
+    animation: none;
+    background-color: var(--color-primary);
+    color: #0f0f23;
+  }
 }
 
 @media (max-width: 640px) {
-  .go-live {
-    top: auto;
-    bottom: 0;
-    gap: var(--spacing-sm);
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    background: #05050f;
+  .go-live .countdown-clock {
+    font-size: 2.25rem;
   }
 }
 </style>

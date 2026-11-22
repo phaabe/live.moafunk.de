@@ -10,6 +10,7 @@ import {
   airedSecs,
   berlinTime,
   elapsed,
+  episodeTimes,
   untilStart,
   type EpisodePhase,
   type Status,
@@ -18,7 +19,9 @@ import {
 
 // Show time card (step 3, during the show): the countdown, then On air with
 // its clock and Back to On Air, then the aired time. A pre-recorded set reads
-// "Plays at 12:00".
+// "Plays at 12:00". It has no soundcheck: at the start Go Live blinks until
+// clicked; without a soundcheck passed in this tab it warns and leads to the
+// Soundcheck tab.
 
 const LISTEN = 'https://live.moafunk.de';
 
@@ -31,10 +34,40 @@ const props = defineProps<{
   /** Another host's episode: status and the public stream link only. */
   readOnly?: boolean;
   busy?: boolean;
+  /** The soundcheck passed in this tab. */
+  tested?: boolean;
+  /** The Studio can go live now: soundcheck passed, input on, air time. */
+  ready?: boolean;
+  /** Go Live is connecting. */
+  starting?: boolean;
+  /** Why the last Go Live failed. */
+  error?: string | null;
 }>();
-const emit = defineEmits<{ openStudio: [path: '/stream/live' | '/stream/on-air'] }>();
+const emit = defineEmits<{
+  openStudio: [path: '/stream/live' | '/stream/on-air'];
+  goLive: [];
+}>();
 
 const prerecorded = computed(() => props.show.stream_mode === 'prerecorded');
+const studioOpen = computed(() => {
+  const { openMs } = episodeTimes(props.show);
+  return openMs !== null && props.now >= openMs;
+});
+/** Own live show, not on air, Studio open: Go Live, or the soundcheck warning. */
+const startable = computed(
+  () =>
+    !props.readOnly &&
+    !prerecorded.value &&
+    !props.show.on_air &&
+    props.phase !== 'post' &&
+    studioOpen.value
+);
+const warn = computed(() => {
+  if (!startable.value || props.ready || props.starting) return '';
+  if (!props.tested) return 'No soundcheck in this browser yet. Do it before you go live.';
+  if (props.phase === 'live') return 'Your audio input is off. Pick it in the Soundcheck tab.';
+  return '';
+});
 const air = computed(() => elapsed(props.show, props.now));
 const aired = computed(() => airedSecs(props.show));
 const endedAt = computed(() =>
@@ -65,8 +98,8 @@ const status = computed<Status>(() => {
         <b>{{ air.clock }}</b
         ><span>since {{ show.start_time }} · until {{ show.end_time }}</span>
       </div>
-      <p v-if="!show.on_air && !prerecorded" class="ep-lead">
-        The show started at {{ show.start_time }}. Open the Studio to go live.
+      <p v-if="!show.on_air && !prerecorded && !readOnly && ready" class="ep-lead">
+        It is air time. Go Live starts your show.
       </p>
       <p v-else-if="prerecorded" class="ep-lead">
         The uploaded set plays until {{ show.end_time }}.
@@ -87,6 +120,9 @@ const status = computed<Status>(() => {
       </div>
       <p v-if="prerecorded" class="ep-lead">Plays at {{ show.start_time }}.</p>
     </template>
+
+    <p v-if="warn" class="warn" role="alert">{{ warn }}</p>
+    <p v-if="error && startable" class="field-error" role="alert">{{ error }}</p>
 
     <dl class="ep-kv">
       <div v-if="phase === 'post'">
@@ -111,7 +147,7 @@ const status = computed<Status>(() => {
       </div>
     </dl>
 
-    <template v-if="phase === 'live' && (readOnly ? show.on_air : !prerecorded)" #actions>
+    <template v-if="(phase === 'live' && (readOnly ? show.on_air : !prerecorded)) || warn" #actions>
       <a v-if="readOnly" class="listen" :href="LISTEN" target="_blank" rel="noopener"
         >Listen live<EpisodeIcon name="external"
       /></a>
@@ -123,8 +159,23 @@ const status = computed<Status>(() => {
       >
         <BoardIcon name="broadcast" />Back to On Air
       </BaseButton>
-      <BaseButton v-else class="xl" :loading="busy" @click="emit('openStudio', '/stream/live')">
-        <BoardIcon name="mic" />Open Studio
+      <BaseButton
+        v-else-if="warn"
+        variant="secondary"
+        class="xl"
+        @click="emit('openStudio', '/stream/live')"
+      >
+        <BoardIcon name="mic" />Go to Soundcheck
+      </BaseButton>
+      <!-- At the start it blinks until clicked. -->
+      <BaseButton
+        v-else
+        :class="['xl', { blink: ready && !starting }]"
+        :disabled="!ready"
+        :loading="starting"
+        @click="emit('goLive')"
+      >
+        <BoardIcon name="broadcast" />Go Live
       </BaseButton>
     </template>
   </EpisodeCard>
@@ -167,6 +218,33 @@ const status = computed<Status>(() => {
 
 .listen:hover {
   border-color: #fff;
+}
+
+.warn {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #5a4416;
+  border-left: 4px solid var(--color-warning);
+  border-radius: var(--radius-lg);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fde7b0;
+  font-weight: 600;
+}
+
+.blink {
+  animation: go-live-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes go-live-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
 }
 
 @media (max-width: 640px) {

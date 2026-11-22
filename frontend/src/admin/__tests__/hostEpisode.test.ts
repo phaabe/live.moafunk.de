@@ -39,14 +39,19 @@ vi.mock('../components/AudioPlayer.vue', () => ({
 
 // The Studio and the live panel have their own tests (studio*.test.ts). Here
 // they are stand-ins that show where the page puts them; `live.showId` is the
-// episode this browser tab streams.
-const live = vi.hoisted(() => ({ showId: null as number | null }));
+// episode this browser tab streams. `live.ready` is the Studio's Go Live state
+// (soundcheck passed, input on, air time); its goLive streams episode 42.
+const live = vi.hoisted(() => ({
+  showId: null as number | null,
+  ready: null as import('vue').Ref<boolean> | null,
+}));
 vi.mock('../composables', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../composables')>()),
   liveStreamShowId: () => live.showId,
 }));
 vi.mock('../pages/flow/FlowLive.vue', async () => {
-  const { defineComponent, h } = await import('vue');
+  const { defineComponent, h, ref } = await import('vue');
+  live.ready = ref(false);
   return {
     __esModule: true,
     default: defineComponent({
@@ -60,12 +65,16 @@ vi.mock('../pages/flow/FlowLive.vue', async () => {
             { id: 'server', name: 'Server', state: 'pending', detail: 'Not checked yet' },
             { id: 'return', name: 'Return feed', state: 'pending', detail: 'Not checked yet' },
           ],
+          canGoLive: live.ready,
+          goingLive: false,
+          goLiveError: null,
+          goLive: async () => {
+            live.showId = 42;
+            emit('live');
+          },
         });
         return () =>
-          h('div', { class: 'studio-stub' }, [
-            props.embedded ? 'Studio · embedded' : 'Studio',
-            h('button', { type: 'button', onClick: () => emit('live') }, 'Go Live'),
-          ]);
+          h('div', { class: 'studio-stub' }, props.embedded ? 'Studio · embedded' : 'Studio');
       },
     }),
   };
@@ -291,6 +300,7 @@ afterEach(() => {
   app = undefined;
   root.remove();
   live.showId = null;
+  if (live.ready) live.ready.value = false;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -539,18 +549,25 @@ describe('Episode', () => {
     const { useHostFlow } = await import('../composables');
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
-      // 12:01 in Berlin: the start passed, so Show time is current; its card leads to the Studio.
+      // 12:01 in Berlin: the start passed, so Show time is current; without a
+      // soundcheck in this tab it warns and leads to the Soundcheck tab.
       vi.setSystemTime(new Date(`${FUTURE}T11:01:00Z`));
       await mount();
       expect(tabs()[2]).toMatchObject({ state: 'now', selected: true });
       expect(shownCards()).toEqual(['Show time']);
       expect(root.querySelector('.studio-stub')).toBeNull();
-      button('Open Studio').click();
+      button('Go to Soundcheck').click();
       await settle();
       expect(tabs()[1].selected).toBe(true);
       await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
+      // The soundcheck passed: Show time has Go Live, blinking until clicked.
+      useHostFlow().setLiveTestPassed(true);
+      live.ready!.value = true;
+      tab(2).click();
+      await settle();
+      expect(card('Show time').textContent).not.toContain('No soundcheck');
+      expect(button('Go Live').classList.contains('blink')).toBe(true);
       // Go Live: this browser tab streams the episode now.
-      live.showId = 42;
       button('Go Live').click();
       await settle();
       expect(shown('.onair-stub')).toBe(true);
@@ -629,13 +646,51 @@ describe('Episode', () => {
       expect(text()).toContain('Show time · until 14:00');
       expect(tabClock()).toEqual({ clock: '00:10:00', sub: 'not on air yet' });
       expect(shownCards()).toEqual(['Show time']);
-      expect(card('Show time').querySelector('button')?.textContent?.trim()).toBe('Open Studio');
+      // No soundcheck in Show time: a warning and a way to the Soundcheck tab.
+      expect(card('Show time').textContent).toContain(
+        'No soundcheck in this browser yet. Do it before you go live.'
+      );
+      expect(card('Show time').querySelector('button')?.textContent?.trim()).toBe(
+        'Go to Soundcheck'
+      );
       expect(root.querySelector('.studio-stub')).toBeNull();
       // The Soundcheck tab holds the Studio, also after the start.
       tab(1).click();
       await settle();
       await vi.waitFor(() => expect(shown('.studio-stub')).toBe(true));
       expect(shownCards()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      useHostFlow().reset();
+    }
+  });
+
+  it('warns in Show time before the start only while the Studio is open and no soundcheck passed', async () => {
+    const { useHostFlow } = await import('../composables');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const warning = 'No soundcheck in this browser yet. Do it before you go live.';
+    try {
+      // 11:20 in Berlin: the Studio opens at 11:30.
+      vi.setSystemTime(new Date(`${FUTURE}T10:20:00Z`));
+      await mount();
+      expect(card('Show time').textContent).not.toContain(warning);
+      app?.unmount();
+      root.remove();
+      // 11:45: open; the soundcheck is not done in this tab.
+      vi.setSystemTime(new Date(`${FUTURE}T10:45:00Z`));
+      await mount();
+      expect(card('Show time').textContent).toContain(warning);
+      expect(card('Show time').textContent).toContain('Go to Soundcheck');
+      app?.unmount();
+      root.remove();
+      // Passed in this tab: no warning, and no Go Live before the start.
+      const flow = useHostFlow();
+      await flow.fetchMyShow();
+      flow.selectShow(flow.shows.value.find((s) => s.id === 42)!);
+      flow.setLiveTestPassed(true);
+      await mount();
+      expect(card('Show time').textContent).not.toContain(warning);
+      expect(card('Show time').textContent).not.toContain('Go Live');
     } finally {
       vi.useRealTimers();
       useHostFlow().reset();
