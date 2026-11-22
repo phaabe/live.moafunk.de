@@ -8,8 +8,9 @@
 //   each pong, like the backend.
 // - /test.mp3: the test broadcast as MP3 (through ffmpeg), like the relay.
 // - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors. It also ends the
-//   show, so each test starts off air.
-// - /mock/live: how many LIVE broadcasts are open.
+//   show and signs in the host again, so each test starts off air.
+// - /mock/role/<role>: sign in as host or admin.
+// - /mock/live: how many LIVE broadcasts are open, and the audio chunks each got.
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -93,12 +94,22 @@ const server = createServer((req, res) => {
     const wanted = path.slice('/mock/mode/'.length);
     if (MODES.includes(wanted)) mode = wanted;
     endShow();
+    user.role = 'host';
     console.log(`mode: ${mode}`);
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`mode: ${mode}\n`);
     return;
   }
+  if (path.startsWith('/mock/role/')) {
+    const wanted = path.slice('/mock/role/'.length);
+    if (wanted === 'host' || wanted === 'admin') user.role = wanted;
+    res.writeHead(200, { 'content-type': 'text/plain' }).end(`role: ${user.role}\n`);
+    return;
+  }
   if (path === '/mock/live') {
-    res.writeHead(200, { 'content-type': 'application/json' }).end(`{"live":${live.size}}`);
+    const chunks = [...live].map((ws) => ws.chunks);
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ live: live.size, chunks }));
     return;
   }
   if (path === '/test.mp3') {
@@ -119,6 +130,7 @@ const sockets = new WebSocketServer({ server, path: '/ws/stream' });
 sockets.on('connection', (ws, req) => {
   const test = new URL(req.url, 'http://x').searchParams.get('test') === 'true';
   let chunks = 0;
+  ws.chunks = 0;
   let bytes = 0;
   let stream = null;
   let ended = false;
@@ -157,7 +169,7 @@ sockets.on('connection', (ws, req) => {
     if (isBinary) {
       // no-chunks: the socket is up, but the audio never arrives.
       if (mode === 'no-chunks') return;
-      chunks++;
+      ws.chunks = ++chunks;
       bytes += data.length;
       relay ??= startRelay();
       relay.stdin.write(data);
