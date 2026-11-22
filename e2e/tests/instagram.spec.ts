@@ -115,20 +115,25 @@ test('a host announces an episode on Instagram', async () => {
     await sent('pre', 3 * 60_000);
   });
 
-  await test.step('switch the on-air story on', async () => {
+  await test.step('set up the on-air story', async () => {
+    // A booking no longer arms it: the host sets it up on the Social media tab.
     await page.goto(`/#/shows/${episode}`);
+    await page.getByRole('tab', { name: /Social media/ }).click();
+    await page.getByRole('button', { name: 'Set up on-air story' }).click();
     const saved = page.waitForResponse(
       (r) => r.url().endsWith('/announcements/onair') && r.request().method() === 'PUT'
     );
-    await page.getByRole('checkbox', { name: /On air · story/ }).check();
-    expect((await saved).ok(), 'PUT onair').toBe(true);
+    await page.getByRole('button', { name: 'Schedule story' }).click();
+    const res = await saved;
+    expect(res.ok(), `PUT onair: ${res.status()} ${await res.text()}`).toBe(true);
     expect((await announcement('onair'))?.state).toBe('armed');
   });
 
   await test.step('Go Live sends the on-air story', async () => {
     // Go Live opens at the start; the soundcheck helper waits 3 minutes for it.
     await page.waitForTimeout(Math.max(0, start.getTime() - 150_000 - Date.now()));
-    await page.getByRole('button', { name: 'Open Studio' }).click();
+    // The Studio on its own page: the episode page keeps it in its Soundcheck tab.
+    await page.goto(`/#/stream/live?show=${episode}`);
     await soundcheckAndGoLive(page);
     await sent('onair', 3 * 60_000);
   });
