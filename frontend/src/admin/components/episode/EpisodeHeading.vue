@@ -29,6 +29,11 @@ const when = computed(() =>
 );
 const description = computed(() => props.show.description || props.show.series_description);
 const cover = computed(() => props.show.series_cover_url ?? props.show.cover_url ?? null);
+const coverSrcset = computed(
+  () =>
+    (props.show.series_cover_url ? props.show.series_cover_srcset : props.show.cover_srcset) ??
+    undefined
+);
 const showName = computed(() => props.show.series_name ?? props.show.title);
 const mode = computed(() => (props.show.stream_mode === 'prerecorded' ? 'Pre-recorded' : 'Live'));
 
@@ -77,7 +82,13 @@ function saved() {
     <template v-else>
       <div class="top">
         <div class="cover ep-cover">
-          <img v-if="cover" :src="cover" :alt="`Cover of ${showName}`" />
+          <img
+            v-if="cover"
+            :src="cover"
+            :srcset="coverSrcset"
+            sizes="140px"
+            :alt="`Cover of ${showName}`"
+          />
           <BoardIcon v-else name="image" :size="40" />
         </div>
         <div class="text">

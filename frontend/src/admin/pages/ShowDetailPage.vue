@@ -429,6 +429,7 @@ async function pollForCover(changeTime: string) {
     if (coverIsNewer || coverDeleted) {
       if (show.value) {
         show.value.cover_url = updated.cover_url;
+        show.value.cover_srcset = updated.cover_srcset;
         show.value.cover_generated_at = updated.cover_generated_at;
       }
       return; // Done - cover updated
@@ -1033,6 +1034,8 @@ async function uploadCoverFile(file: File) {
     const result = await showsApi.uploadCover(show.value.id, file);
     if (result.cover_url && show.value) {
       show.value.cover_url = result.cover_url;
+      // The small copies' links still show the old cover until the next load.
+      show.value.cover_srcset = null;
       show.value.cover_generated_at = result.cover_generated_at;
     }
     flash.success('Cover uploaded successfully');
@@ -1410,7 +1413,13 @@ onUnmounted(() => {
         <div v-if="isUnheard" class="card cover-card">
           <h2 class="section-title">Cover</h2>
           <div v-if="show.cover_url" class="show-cover-preview">
-            <img :src="show.cover_url" alt="Show Cover" class="show-cover-img" />
+            <img
+              :src="show.cover_url"
+              :srcset="show.cover_srcset ?? undefined"
+              sizes="(max-width: 640px) 100vw, 600px"
+              alt="Show Cover"
+              class="show-cover-img"
+            />
           </div>
           <p v-else class="empty-state">Cover appears after artists are assigned and processed.</p>
         </div>
@@ -1678,6 +1687,8 @@ onUnmounted(() => {
               <img
                 v-if="artist.pic_url"
                 :src="artist.pic_url"
+                :srcset="artist.pic_srcset ?? undefined"
+                sizes="48px"
                 :alt="artist.name"
                 class="artist-thumb"
                 crossorigin="anonymous"
@@ -1808,6 +1819,8 @@ onUnmounted(() => {
           <img
             v-if="show?.cover_url"
             :src="show.cover_url"
+            :srcset="show.cover_srcset ?? undefined"
+            sizes="(max-width: 640px) 100vw, 600px"
             alt="Show cover"
             class="ig-preview-img"
           />

@@ -26,6 +26,7 @@ mod stream_bridge;
 mod stream_metrics;
 mod telegram;
 mod telegram_notify;
+mod thumbs;
 mod video;
 
 #[cfg(test)]
@@ -694,6 +695,8 @@ async fn main() -> anyhow::Result<()> {
             "/api/shows/:id/announcements/:slot/image.jpg",
             get(announcement_image::api_announcement_image),
         )
+        // Small copies of stored images (signed links, see thumbs.rs)
+        .route("/api/img", get(thumbs::api_image))
         .route(
             "/api/shows/:id/overlays",
             get(handlers::api::api_list_show_overlays),

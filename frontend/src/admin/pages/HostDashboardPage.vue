@@ -35,10 +35,12 @@ const streamActive = ref(false);
 const listeners = ref<number | null>(null);
 const now = ref(Date.now());
 
-/** Cover of each Show, by slug, from the Shows grid. */
-const covers = computed(() => new Map(shows.value.map((s) => [s.slug, s.cover_url])));
+/** Each Show of the Shows grid, by slug: its cover for the episode cards. */
+const bySlug = computed(() => new Map(shows.value.map((s) => [s.slug, s])));
 const coverOf = (e: UpcomingEpisode | null) =>
-  e ? (covers.value.get(e.series_slug) ?? null) : null;
+  e ? (bySlug.value.get(e.series_slug)?.cover_url ?? null) : null;
+const coverSrcsetOf = (e: UpcomingEpisode | null) =>
+  e ? (bySlug.value.get(e.series_slug)?.cover_srcset ?? null) : null;
 
 /** The episode on air: the stream is live and its time is now. */
 const onAir = computed(
@@ -141,6 +143,7 @@ onUnmounted(() => {
             :episode="onAir"
             :next="nextEpisode"
             :cover-url="coverOf(onAir)"
+            :cover-srcset="coverSrcsetOf(onAir)"
             :username="username"
             :now="now"
             :listeners="listeners"
@@ -148,6 +151,7 @@ onUnmounted(() => {
           <NextShowCard
             :episode="myNext"
             :cover-url="coverOf(myNext)"
+            :cover-srcset="coverSrcsetOf(myNext)"
             :error="upcomingError"
             :loaded="episodesLoaded"
             :now="now"

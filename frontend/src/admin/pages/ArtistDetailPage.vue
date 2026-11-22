@@ -526,7 +526,8 @@ async function onPresetChange(event: Event) {
                   </button>
                 </div>
                 <div v-if="artist.shows[0].cover_url" class="show-cover-preview">
-                  <img :src="artist.shows[0].cover_url" alt="Show Cover" class="show-cover-img" />
+                  <img :src="artist.shows[0].cover_url" :srcset="artist.shows[0].cover_srcset ?? undefined"
+                    sizes="300px" alt="Show Cover" class="show-cover-img" />
                 </div>
                 <p v-else class="text-muted cover-hint">Cover generates after assignment is processed.</p>
               </div>
@@ -728,7 +729,8 @@ async function onPresetChange(event: Event) {
           <!-- View Mode -->
           <template v-else>
             <div class="profile-picture-container">
-              <img v-if="artist.file_urls.pic" :src="artist.file_urls.pic" alt="Artist picture" class="profile-picture"
+              <img v-if="artist.file_urls.pic" :src="artist.file_urls.pic" :srcset="artist.file_urls.pic_srcset"
+                sizes="(max-width: 640px) 100vw, 600px" alt="Artist picture" class="profile-picture"
                 crossorigin="anonymous" />
               <p v-else class="text-muted">No picture uploaded</p>
             </div>
@@ -916,7 +918,8 @@ async function onPresetChange(event: Event) {
             <div class="ig-carousel-slide">
               <!-- Slide 0: Artist image -->
               <template v-if="carouselIndex === 0">
-                <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" alt="Artist image" class="ig-preview-img"
+                <img v-if="artist?.file_urls.pic" :src="artist.file_urls.pic" :srcset="artist.file_urls.pic_srcset"
+                  sizes="(max-width: 640px) 100vw, 600px" alt="Artist image" class="ig-preview-img"
                   crossorigin="anonymous" />
                 <div v-else class="ig-preview-placeholder">No image</div>
               </template>

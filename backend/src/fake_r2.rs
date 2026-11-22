@@ -20,6 +20,8 @@ type Parts = BTreeMap<u32, Vec<u8>>;
 pub(crate) struct FakeR2 {
     /// Objects by `<bucket>/<key>`.
     pub(crate) objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    /// Content-Type sent when an object was written, by `<bucket>/<key>`.
+    content_types: Arc<Mutex<HashMap<String, String>>>,
     /// While set, every write fails like an R2 that refuses writes.
     refuse_writes: Arc<AtomicBool>,
     /// Writes to this `<bucket>/<key>` fail.
@@ -70,6 +72,22 @@ impl FakeR2 {
         self.objects.lock().unwrap().insert(path, data.to_vec());
     }
 
+    /// Like [`Self::insert`], with the Content-Type R2 then sends back.
+    pub(crate) fn insert_typed(
+        &self,
+        state: &AppState,
+        key: &str,
+        data: &[u8],
+        content_type: &str,
+    ) {
+        self.insert(state, key, data);
+        let path = path(state, key);
+        self.content_types
+            .lock()
+            .unwrap()
+            .insert(path, content_type.to_string());
+    }
+
     /// Keys in `bucket` that start with `prefix`.
     pub(crate) fn keys_in(&self, bucket: &str, prefix: &str) -> Vec<String> {
         let start = format!("{bucket}/{prefix}");
@@ -91,6 +109,14 @@ impl FakeR2 {
         let requests = self.requests.lock().unwrap();
         requests.iter().filter(|r| **r == request).count()
     }
+}
+
+/// An ETag that changes with the content, like R2's.
+fn etag(data: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    format!("\"{:x}\"", hasher.finish())
 }
 
 fn path(state: &AppState, key: &str) -> String {
@@ -224,6 +250,7 @@ async fn fake_r2_request(
     }
 
     let mut objects = r2.objects.lock().unwrap();
+    let mut types = r2.content_types.lock().unwrap();
     match method {
         Method::PUT => {
             if let Some(source) = headers.get("x-amz-copy-source") {
@@ -231,7 +258,11 @@ async fn fake_r2_request(
                 let Some(data) = objects.get(&source).cloned() else {
                     return error(StatusCode::NOT_FOUND, "NoSuchKey");
                 };
-                objects.insert(key, data);
+                objects.insert(key.clone(), data);
+                match types.get(&source).cloned() {
+                    Some(content_type) => types.insert(key, content_type),
+                    None => types.remove(&key),
+                };
                 return xml(
                     StatusCode::OK,
                     "<?xml version=\"1.0\"?><CopyObjectResult><ETag>\"e\"</ETag>\
@@ -239,17 +270,32 @@ async fn fake_r2_request(
                         .to_string(),
                 );
             }
+            match headers.get("content-type").and_then(|t| t.to_str().ok()) {
+                Some(content_type) => types.insert(key.clone(), content_type.to_string()),
+                None => types.remove(&key),
+            };
             objects.insert(key, payload(&headers, body));
             (StatusCode::OK, [("etag", "\"e\"")]).into_response()
         }
         // The server sends no body for HEAD, only its length.
         Method::GET | Method::HEAD => match objects.get(&key) {
-            Some(data) => (StatusCode::OK, data.clone()).into_response(),
+            Some(data) => {
+                let mut response =
+                    (StatusCode::OK, [("etag", etag(data))], data.clone()).into_response();
+                // Like R2: the type the object was written with.
+                if let Some(content_type) = types.get(&key) {
+                    response
+                        .headers_mut()
+                        .insert("content-type", content_type.parse().unwrap());
+                }
+                response
+            }
             None if method == Method::HEAD => StatusCode::NOT_FOUND.into_response(),
             None => error(StatusCode::NOT_FOUND, "NoSuchKey"),
         },
         Method::DELETE => {
             objects.remove(&key);
+            types.remove(&key);
             StatusCode::NO_CONTENT.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),

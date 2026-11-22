@@ -17,6 +17,7 @@ const props = defineProps<{
   /** The next episode of any host, for the card when nothing is on air. */
   next: UpcomingEpisode | null;
   coverUrl: string | null;
+  coverSrcset?: string | null;
   username: string | undefined;
   /** The clock, in ms since the epoch. */
   now: number;
@@ -48,6 +49,7 @@ const nextLine = computed(() => {
       <template v-if="active && episode">
         <EpisodeHead
           :cover-url="coverUrl"
+          :cover-srcset="coverSrcset"
           :name="episode.show_name"
           :line="line"
           :time="timeRange(episode) ?? ''"

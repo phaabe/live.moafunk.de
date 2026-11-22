@@ -89,6 +89,7 @@ const SHOWS: SeriesOverviewItem[] = [
   host_username: host as string,
   finished_episodes: n as number,
   cover_url: cover as string | null,
+  cover_srcset: cover ? `${cover}?w=320 320w, ${cover}?w=640 640w` : null,
 }));
 
 /** A stand-in for the chat bridge socket: tests open it and push frames. */
@@ -510,6 +511,19 @@ describe('Dashboard shows', () => {
     ]);
     (root.querySelector('.show-tiles a[href="/shows/night-shift"]') as HTMLAnchorElement).click();
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/night-shift'));
+  });
+
+  it('loads small copies of the covers, not the full uploads', async () => {
+    await mount();
+    await vi.waitFor(() => expect(root.querySelectorAll('.show-tiles img')).toHaveLength(2));
+    const tile = root.querySelector('.show-tiles a[href="/shows/brunchtime"] img')!;
+    expect(tile.getAttribute('srcset')).toBe(
+      '/covers/brunchtime.jpg?w=320 320w, /covers/brunchtime.jpg?w=640 640w'
+    );
+    expect(tile.getAttribute('sizes')).toBe('(max-width: 640px) 50vw, 300px');
+    const head = card('.next-show-card').querySelector('.show-cover img')!;
+    expect(head.getAttribute('srcset')).toBe(tile.getAttribute('srcset'));
+    expect(head.getAttribute('sizes')).toBe('84px');
   });
 
   it('says so when the Shows cannot load', async () => {

@@ -424,6 +424,8 @@ pub struct ShowBrief {
     title: String,
     date: String,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     cover_generated_at: Option<String>,
 }
 
@@ -498,6 +500,7 @@ pub async fn api_artist_detail(
     if let Some(key) = pic_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("pic".to_string(), url);
+            file_urls.insert("pic_srcset".to_string(), crate::thumbs::srcset(&state, key));
         }
     }
     // Expose the untouched original image separately (for overlay editor)
@@ -602,19 +605,23 @@ pub async fn api_artist_detail(
         shows: {
             let mut show_briefs = Vec::new();
             for s in shows {
+                let cover_key = format!("shows/{}/cover.png", s.id);
                 let cover_url = if s.cover_generated_at.is_some() {
-                    let cover_key = format!("shows/{}/cover.png", s.id);
                     storage::get_presigned_url(&state, &cover_key, 3600)
                         .await
                         .ok()
                 } else {
                     None
                 };
+                let cover_srcset = cover_url
+                    .as_ref()
+                    .map(|_| crate::thumbs::srcset(&state, &cover_key));
                 show_briefs.push(ShowBrief {
                     id: s.id,
                     title: s.title,
                     date: s.date,
                     cover_url,
+                    cover_srcset,
                     cover_generated_at: s.cover_generated_at,
                 });
             }
@@ -1994,6 +2001,8 @@ pub struct ShowDetailResponse {
     available_artists: Vec<ArtistWithPronouns>,
     artists_left: i32,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     collage_url: Option<String>,
     cover_generated_at: Option<String>,
     active_overlay_preset_id: Option<i64>,
@@ -2030,6 +2039,7 @@ pub struct ShowDetailResponse {
     /// The Show's description and cover, for hosts who view another host's episode.
     series_description: Option<String>,
     series_cover_url: Option<String>,
+    series_cover_srcset: Option<String>,
     /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
     episode_status: crate::series::EpisodeStatus,
     /// "Upcoming" | "Finished · wrap-up open" | "Finished"
@@ -2097,6 +2107,8 @@ pub struct AssignedArtistInfo {
     name: String,
     pronouns: String,
     pic_url: Option<String>,
+    /// Small copies of the picture, see `thumbs::srcset`.
+    pic_srcset: Option<String>,
     voice_url: Option<String>,
     track1_url: Option<String>,
     track2_url: Option<String>,
@@ -2645,6 +2657,7 @@ pub async fn api_show_detail(
         } else {
             None
         };
+        let pic_srcset = pic_key.map(|key| crate::thumbs::srcset(&state, key));
         let voice_url = if let Some(key) = &a.voice_message_key {
             storage::get_presigned_url(&state, key, 3600).await.ok()
         } else {
@@ -2691,6 +2704,7 @@ pub async fn api_show_detail(
             pronouns: a.pronouns,
             has_pic: pic_key.is_some(),
             pic_url,
+            pic_srcset,
             voice_url,
             track1_url,
             track2_url,
@@ -2769,14 +2783,17 @@ pub async fn api_show_detail(
     };
 
     // Only return cover URL if cover was actually generated
+    let cover_key = format!("shows/{}/cover.png", id);
     let cover_url = if show.cover_generated_at.is_some() {
-        let cover_key = format!("shows/{}/cover.png", id);
         storage::get_presigned_url(&state, &cover_key, 3600)
             .await
             .ok()
     } else {
         None
     };
+    let cover_srcset = cover_url
+        .as_ref()
+        .map(|_| crate::thumbs::srcset(&state, &cover_key));
 
     // Presigned URL for the plain collage (may not exist for legacy shows)
     let collage_url = if show.cover_generated_at.is_some() {
@@ -2885,6 +2902,10 @@ pub async fn api_show_detail(
         Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
         None => None,
     };
+    let series_cover_srcset = view
+        .series_cover_key
+        .as_deref()
+        .map(|key| crate::thumbs::srcset(&state, key));
 
     Ok(Json(ShowDetailResponse {
         id: show.id,
@@ -2902,6 +2923,7 @@ pub async fn api_show_detail(
         available_artists,
         artists_left,
         cover_url,
+        cover_srcset,
         collage_url,
         cover_generated_at: show.cover_generated_at,
         active_overlay_preset_id: show.active_overlay_preset_id,
@@ -2929,6 +2951,7 @@ pub async fn api_show_detail(
         series_name: view.series_name,
         series_description: view.series_description,
         series_cover_url,
+        series_cover_srcset,
         episode_status,
         episode_status_label: episode_status.label(),
         on_air,
@@ -3657,6 +3680,10 @@ pub async fn api_show_assign_artist(
         name: artist.name,
         pronouns: artist.pronouns,
         pic_url,
+        pic_srcset: artist
+            .pic_cropped_key
+            .as_deref()
+            .map(|key| crate::thumbs::srcset(&state, key)),
         voice_url,
         track1_url,
         track2_url,
@@ -4595,6 +4622,8 @@ pub struct RecordingArtistInfo {
     pub name: String,
     pub pronouns: String,
     pub pic_url: Option<String>,
+    /// Small copies of the picture, see `thumbs::srcset`.
+    pub pic_srcset: Option<String>,
     pub voice_url: Option<String>,
     pub voice_key: Option<String>,
     pub track1_url: Option<String>,
@@ -4669,6 +4698,10 @@ pub async fn api_show_with_artists(
         } else {
             None
         };
+        let pic_srcset = a
+            .pic_key
+            .as_deref()
+            .map(|key| crate::thumbs::srcset(&state, key));
         let voice_url = if let Some(key) = &a.voice_message_key {
             storage::get_presigned_url(&state, key, 3600).await.ok()
         } else {
@@ -4689,6 +4722,7 @@ pub async fn api_show_with_artists(
             name: a.name,
             pronouns: a.pronouns,
             pic_url,
+            pic_srcset,
             voice_url,
             voice_key: a.voice_message_key.clone(),
             track1_url,

@@ -54,6 +54,11 @@ const started = computed(
 );
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' }).format(new Date());
 const cover = computed(() => props.show.series_cover_url ?? props.show.cover_url ?? null);
+const coverSrcset = computed(
+  () =>
+    (props.show.series_cover_url ? props.show.series_cover_srcset : props.show.cover_srcset) ??
+    undefined
+);
 
 /** The chosen date and time, or null while the free time is not valid. */
 const slot = computed<SeriesSlot | null>(() => {
@@ -137,7 +142,13 @@ async function save() {
     </div>
     <div class="top">
       <div class="cover ep-edit-cover">
-        <img v-if="cover" :src="cover" alt="Cover of the show" />
+        <img
+          v-if="cover"
+          :src="cover"
+          :srcset="coverSrcset"
+          sizes="140px"
+          alt="Cover of the show"
+        />
         <BoardIcon v-else name="image" :size="40" />
       </div>
       <div class="form">

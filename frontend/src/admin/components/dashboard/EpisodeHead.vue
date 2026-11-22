@@ -2,12 +2,18 @@
 import ShowCover from './ShowCover.vue';
 
 // Cover, name and two short lines: the top of the On air and My next show cards.
-defineProps<{ coverUrl: string | null | undefined; name: string; line: string; time: string }>();
+defineProps<{
+  coverUrl: string | null | undefined;
+  coverSrcset?: string | null;
+  name: string;
+  line: string;
+  time: string;
+}>();
 </script>
 
 <template>
   <div class="episode-head">
-    <ShowCover :url="coverUrl" class="head-cover" />
+    <ShowCover :url="coverUrl" :srcset="coverSrcset" sizes="84px" class="head-cover" />
     <div class="head-text">
       <p class="head-name">{{ name }}</p>
       <p class="head-line">{{ line }}</p>

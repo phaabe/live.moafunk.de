@@ -34,7 +34,12 @@ const tiles = computed(() =>
     <ul v-if="tiles.length" class="show-tiles">
       <li v-for="s in tiles" :key="s.slug">
         <router-link :to="`/shows/${s.slug}`" class="show-tile">
-          <ShowCover :url="s.cover_url" class="tile-cover" />
+          <ShowCover
+            :url="s.cover_url"
+            :srcset="s.cover_srcset"
+            sizes="(max-width: 640px) 50vw, 300px"
+            class="tile-cover"
+          />
           <span class="tile-name"
             >{{ s.name
             }}<span v-if="s.mine" class="yours"><span class="sep"> · </span>Yours</span></span

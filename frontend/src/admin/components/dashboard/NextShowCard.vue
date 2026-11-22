@@ -11,6 +11,7 @@ import { airWindow, dayAndTime, hostsOf, modeAndHosts, startsIn } from './dashbo
 const props = defineProps<{
   episode: UpcomingEpisode | null;
   coverUrl: string | null;
+  coverSrcset?: string | null;
   /** The episodes could not load. */
   error: string | null;
   loaded: boolean;
@@ -34,6 +35,7 @@ const countdown = computed(() => {
       <template v-else-if="episode">
         <EpisodeHead
           :cover-url="coverUrl"
+          :cover-srcset="coverSrcset"
           :name="episode.title"
           :line="modeAndHosts(episode.mode_label, hostsOf(episode))"
           :time="dayAndTime(episode)"
