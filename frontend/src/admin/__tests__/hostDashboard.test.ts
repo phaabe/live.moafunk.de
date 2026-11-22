@@ -5,8 +5,7 @@ import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-
 import { useAuthStore } from '../stores/auth';
 import NavBar from '@shared/components/NavBar.vue';
 import HostDashboardPage from '../pages/HostDashboardPage.vue';
-import type { PastEpisode, SeriesOverviewItem, UpcomingEpisode } from '../api';
-import type { ChatMessage } from '../composables/useLiveChat';
+import type { ChalkNote, PastEpisode, SeriesOverviewItem, UpcomingEpisode } from '../api';
 import { byEpisodes, progressOf, startsIn } from '../components/dashboard/dashboard';
 import { expectFlow } from '../flow/expectFlow';
 
@@ -92,31 +91,6 @@ const SHOWS: SeriesOverviewItem[] = [
   cover_srcset: cover ? `${cover}?w=320 320w, ${cover}?w=640 640w` : null,
 }));
 
-/** A stand-in for the chat bridge socket: tests open it and push frames. */
-class FakeSocket {
-  static OPEN = 1;
-  static last: FakeSocket | null = null;
-  readyState = 0;
-  sent: string[] = [];
-  onopen: (() => void) | null = null;
-  onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  constructor(public url: string) {
-    FakeSocket.last = this;
-  }
-  send(text: string) {
-    this.sent.push(text);
-  }
-  close() {
-    this.readyState = 3;
-  }
-  open(history: ChatMessage[]) {
-    this.readyState = FakeSocket.OPEN;
-    this.onopen?.();
-    this.onmessage?.({ data: JSON.stringify({ type: 'history', messages: history }) });
-  }
-}
-
 let app: App | undefined;
 let root: HTMLDivElement;
 let streamActive: boolean;
@@ -124,6 +98,10 @@ let streamActive: boolean;
 let listening: number | null;
 let upcoming: UpcomingEpisode[];
 let past: PastEpisode[];
+/** The chalkboard's notes, as /api/chalkboard answers them. */
+let notes: ChalkNote[];
+/** Texts POSTed to /api/chalkboard. */
+let posted: string[];
 /** API paths that answer 500 in this test. */
 let failing: string[];
 
@@ -133,17 +111,26 @@ beforeEach(() => {
   upcoming = [...UPCOMING];
   past = [...PAST];
   failing = [];
-  FakeSocket.last = null;
+  notes = [];
+  posted = [];
   root = document.createElement('div');
   document.body.appendChild(root);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
-  vi.stubGlobal('WebSocket', FakeSocket);
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string) => {
+    vi.fn(async (url: string, init?: RequestInit) => {
       if (failing.includes(url)) return Response.json({ error: 'boom' }, { status: 500 });
+      if (url === '/api/chalkboard' && init?.method === 'POST') {
+        const { text } = JSON.parse(String(init.body)) as { text: string };
+        posted.push(text);
+        const note = { id: 100 + posted.length, author: 'lena', text, ts: NOW.getTime() / 1000 };
+        notes = [...notes, note];
+        return Response.json(note, { status: 201 });
+      }
       switch (url) {
+        case '/api/chalkboard':
+          return Response.json({ notes });
         case '/api/stream/status':
           return Response.json({ active: streamActive, recording: false });
         case '/api/stream/metrics':
@@ -232,10 +219,11 @@ describe('Dashboard', () => {
       'On air',
       'My next show',
       'Episodes',
-      'Chat',
+      'Chalkboard',
       'Shows',
     ]);
     expect(root.textContent).not.toContain('Last show');
+    expect(root.textContent).not.toContain('Telegram');
   });
 });
 
@@ -535,49 +523,62 @@ describe('Dashboard shows', () => {
   });
 });
 
-describe('Dashboard chat', () => {
+describe('Dashboard chalkboard', () => {
   const at = (hhmm: string) => new Date(`2026-10-23T${hhmm}:00+02:00`).getTime() / 1000;
-  const HISTORY: ChatMessage[] = [
-    { id: 1, author: 'jonas', text: 'Can someone take Di 03.11.?', ts: at('10:03'), host: false },
-    { id: 2, author: 'lena', text: 'I can do it.', ts: at('10:20'), host: true },
-    { id: 3, author: 'mira', text: 'Dub Kitchen is on, enjoy!', ts: at('18:01'), host: true },
+  const NOTES: ChalkNote[] = [
+    { id: 1, author: 'jonas', text: 'Can someone take Di 03.11.?', ts: at('10:03') },
+    { id: 2, author: 'lena', text: 'I can do it.', ts: at('10:20') },
+    { id: 3, author: 'mira', text: 'Mic 2 is broken, use mic 1.', ts: at('18:01') },
   ];
-
-  it('shows the group’s messages and marks the host’s own', async () => {
-    await mount();
-    expect(FakeSocket.last?.url).toMatch(/\/ws\/chat$/);
-    FakeSocket.last!.open(HISTORY);
-    await nextTick();
-    const messages = [...root.querySelectorAll('.chat-msg')].map((m) => ({
-      author: text(m.querySelector('.chat-author')),
-      time: text(m.querySelector('.chat-time')),
-      text: text(m.querySelector('.chat-text')),
+  const board = () =>
+    [...root.querySelectorAll('.chalk-note')].map((m) => ({
+      author: text(m.querySelector('.chalk-author')),
+      time: text(m.querySelector('.chalk-time')),
+      text: text(m.querySelector('.chalk-text')),
       mine: m.classList.contains('mine'),
     }));
-    expect(messages).toEqual([
+
+  it('shows the notes of all hosts and marks the host’s own', async () => {
+    notes = [...NOTES];
+    await mount();
+    await vi.waitFor(() => expect(board()).toHaveLength(3));
+    expect(board()).toEqual([
       { author: 'jonas', time: '10:03', text: 'Can someone take Di 03.11.?', mine: false },
       { author: 'lena · you', time: '10:20', text: 'I can do it.', mine: true },
-      { author: 'mira', time: '18:01', text: 'Dub Kitchen is on, enjoy!', mine: false },
+      { author: 'mira', time: '18:01', text: 'Mic 2 is broken, use mic 1.', mine: false },
     ]);
   });
 
-  it('sends a message to the group', async () => {
+  it('writes a note on the board', async () => {
     await mount();
-    const input = root.querySelector('#dashboard-chat-input') as HTMLInputElement;
-    const send = root.querySelector('.chat-send') as HTMLButtonElement;
-    expect(input.disabled).toBe(true);
-    FakeSocket.last!.open([]);
-    await nextTick();
-    expect(root.textContent).toContain('No messages yet.');
-    expect(send.disabled).toBe(true);
-    input.value = 'See you on Sunday';
+    await vi.waitFor(() => expect(root.textContent).toContain('The board is empty.'));
+    const input = root.querySelector('#dashboard-chalk-input') as HTMLInputElement;
+    const post = root.querySelector('.chalk-post') as HTMLButtonElement;
+    expect(post.disabled).toBe(true);
+    input.value = '  See you on Sunday ';
     input.dispatchEvent(new Event('input'));
     await nextTick();
-    expect(send.disabled).toBe(false);
-    root.querySelector('.chat-compose')!.dispatchEvent(new Event('submit'));
-    await nextTick();
-    expect(FakeSocket.last!.sent).toEqual(['See you on Sunday']);
+    expect(post.disabled).toBe(false);
+    root.querySelector('.chalk-compose')!.dispatchEvent(new Event('submit'));
+    await vi.waitFor(() => expect(board()).toHaveLength(1));
+    expect(posted).toEqual(['See you on Sunday']);
+    expect(board()[0]).toMatchObject({ author: 'lena · you', text: 'See you on Sunday' });
     expect(input.value).toBe('');
+  });
+
+  it('keeps the draft when the note is not saved', async () => {
+    failing = ['/api/chalkboard'];
+    await mount();
+    await vi.waitFor(() =>
+      expect(text(card('.chalkboard-card [role="alert"]'))).toBe('Could not load the chalkboard.')
+    );
+    const input = root.querySelector('#dashboard-chalk-input') as HTMLInputElement;
+    input.value = 'Hello';
+    input.dispatchEvent(new Event('input'));
+    await nextTick();
+    root.querySelector('.chalk-compose')!.dispatchEvent(new Event('submit'));
+    await vi.waitFor(() => expect(root.textContent).toContain('The note was not saved.'));
+    expect(input.value).toBe('Hello');
   });
 });
 

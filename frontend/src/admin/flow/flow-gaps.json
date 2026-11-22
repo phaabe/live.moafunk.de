@@ -271,11 +271,11 @@
     {
       "screen": "dashboard",
       "items": [
-        "h2: Chat",
-        "field: Message to the group",
-        "button: Send"
+        "h2: Chalkboard",
+        "field: Note for all hosts",
+        "button: Post"
       ],
-      "why": "Redesign #1049 (approved in the issue): new card “Chat”: the hosts' Telegram group (chat bridge). Update the Dashboard in Flow Lab, then pin the new rev."
+      "why": "Redesign #1049 (approved in the issue): new card “Chalkboard”: short notes that all hosts and admins see, stored by the backend (no Telegram). Update the Dashboard in Flow Lab, then pin the new rev."
     },
     {
       "screen": "dashboard",

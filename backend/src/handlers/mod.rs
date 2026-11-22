@@ -2,6 +2,7 @@ pub mod announcements;
 pub mod api;
 pub mod backup_trigger;
 pub mod booking;
+pub mod chalkboard;
 pub mod chat_ws;
 pub mod download;
 pub mod recording;

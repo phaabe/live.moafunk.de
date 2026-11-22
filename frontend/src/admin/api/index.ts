@@ -1194,6 +1194,20 @@ export const seriesApi = {
   overview: () => api.get<{ series: SeriesOverviewItem[] }>('/api/series-overview'),
 };
 
+/** A note on the Dashboard's chalkboard. `ts` is seconds since the epoch. */
+export interface ChalkNote {
+  id: number;
+  author: string;
+  text: string;
+  ts: number;
+}
+
+/** The hosts' and admins' chalkboard: the latest 50 notes, oldest first. */
+export const chalkboardApi = {
+  list: () => api.get<{ notes: ChalkNote[] }>('/api/chalkboard'),
+  add: (text: string) => api.post<ChalkNote>('/api/chalkboard', { text }),
+};
+
 async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {
   const form = new FormData();
   form.append('name', input.name);
