@@ -205,6 +205,10 @@ const rows = () =>
 
 const card = (selector: string) => root.querySelector(selector) as HTMLElement;
 
+function pager(label: string): HTMLButtonElement {
+  return root.querySelector(`.pager-button[aria-label="${label}"]`) as HTMLButtonElement;
+}
+
 function tab(label: string): HTMLButtonElement {
   return [...root.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
     (b) => text(b) === label
@@ -228,9 +232,9 @@ describe('Dashboard', () => {
 });
 
 describe('Dashboard episodes', () => {
-  it("opens on Past, with all hosts' past episodes", async () => {
+  it("opens on Past, with all hosts' past episodes, three at a time", async () => {
     await mount();
-    await vi.waitFor(() => expect(rows()).toHaveLength(4));
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
     expect(tab('Past').getAttribute('aria-selected')).toBe('true');
     expect(tab('Upcoming').getAttribute('aria-selected')).toBe('false');
     expect(rows()).toEqual([
@@ -246,29 +250,34 @@ describe('Dashboard episodes', () => {
         text: 'Fr 16.10. · 18:00–20:00 · Dub Kitchen · mira | Finished · Pre-recorded',
         href: '/shows/37',
       },
+    ]);
+    const tags = [...root.querySelectorAll('.episodes .row-tags .tag:first-child')].map(
+      (t) => t.className
+    );
+    expect(tags).toEqual(['tag tag-finished', 'tag tag-wrapup_open', 'tag tag-finished']);
+    expect(text(card('.pager-range'))).toBe('1–3 of 4');
+    pager('Next episodes').click();
+    await nextTick();
+    expect(rows()).toEqual([
       {
         text: 'So 11.10. · 12:00–14:00 · Brunchtime · lena | Finished · Pre-recorded',
         href: '/shows/36',
       },
     ]);
-    const tags = [...root.querySelectorAll('.episodes .row-tags .tag:first-child')].map(
-      (t) => t.className
-    );
-    expect(tags).toEqual([
-      'tag tag-finished',
-      'tag tag-wrapup_open',
-      'tag tag-finished',
-      'tag tag-finished',
-    ]);
+    expect(text(card('.pager-range'))).toBe('4–4 of 4');
   });
 
   it("switches to Upcoming: all hosts' upcoming episodes, as in the flow", async () => {
     await mount();
-    await vi.waitFor(() => expect(rows()).toHaveLength(4));
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
     tab('Upcoming').click();
     await nextTick();
     expect(tab('Upcoming').getAttribute('aria-selected')).toBe('true');
-    expect(rows()).toEqual([
+    const all = [...rows()];
+    pager('Next episodes').click();
+    await nextTick();
+    all.push(...rows());
+    expect(all).toEqual([
       { text: 'So 25.10. · 12:00–14:00 · Brunchtime · lena | Upcoming · Live', href: '/shows/42' },
       {
         text: 'Di 27.10. · 20:00–22:00 · Night Shift · jonas | Upcoming · Live',
@@ -298,40 +307,42 @@ describe('Dashboard episodes', () => {
 
   it('marks the host’s own episodes and shows other hosts’ ones as read-only', async () => {
     await mount();
-    await vi.waitFor(() => expect(rows()).toHaveLength(4));
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
     const marks = () =>
       [...root.querySelectorAll('.episodes li')].map((li) => ({
         mine: li.querySelector('.date-chip')!.classList.contains('mine'),
         readOnly: li.querySelector('.row-icon')!.classList.contains('read-only'),
       }));
-    const expected = [
-      { mine: false, readOnly: true },
-      { mine: true, readOnly: false },
-      { mine: false, readOnly: true },
-      { mine: true, readOnly: false },
-    ];
-    expect(marks()).toEqual(expected);
+    const own = { mine: true, readOnly: false };
+    const other = { mine: false, readOnly: true };
+    expect(marks()).toEqual([other, own, other]);
     tab('Upcoming').click();
     await nextTick();
-    expect(marks()).toEqual([expected[1], expected[0], expected[2], expected[3]]);
+    expect(marks()).toEqual([own, other, other]);
   });
 
-  it('shows ten episodes per tab, then Show more', async () => {
-    past = Array.from({ length: 12 }, (_, i) => ({ ...PAST[0], id: 100 + i }));
+  it('pages through the episodes with the arrows; a tab starts on its first page', async () => {
+    past = Array.from({ length: 7 }, (_, i) => ({ ...PAST[0], id: 100 + i }));
     await mount();
-    await vi.waitFor(() => expect(rows()).toHaveLength(10));
-    const more = () =>
-      [...root.querySelectorAll('button')].find((b) => text(b) === 'Show more') ?? null;
-    more()!.click();
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
+    const ids = () => rows().map((r) => r.href);
+    expect(pager('Previous episodes').disabled).toBe(true);
+    pager('Next episodes').click();
     await nextTick();
-    expect(rows()).toHaveLength(12);
-    expect(more()).toBeNull();
+    expect(ids()).toEqual(['/shows/103', '/shows/104', '/shows/105']);
+    pager('Next episodes').click();
+    await nextTick();
+    expect(ids()).toEqual(['/shows/106']);
+    expect(text(card('.pager-range'))).toBe('7–7 of 7');
+    expect(pager('Next episodes').disabled).toBe(true);
+    pager('Previous episodes').click();
+    await nextTick();
+    expect(ids()).toEqual(['/shows/103', '/shows/104', '/shows/105']);
     tab('Upcoming').click();
     await nextTick();
-    expect(more()).toBeNull();
     tab('Past').click();
     await nextTick();
-    expect(rows()).toHaveLength(10);
+    expect(ids()).toEqual(['/shows/100', '/shows/101', '/shows/102']);
   });
 
   it('says so when a tab has no episodes', async () => {
@@ -355,7 +366,7 @@ describe('Dashboard episodes', () => {
     tab('Upcoming').click();
     await nextTick();
     expect(card('.episodes-card [role="alert"]')).toBeNull();
-    expect(rows()).toHaveLength(4);
+    expect(rows()).toHaveLength(3);
   });
 });
 
@@ -621,7 +632,7 @@ describe('flow', () => {
     streamActive = true;
     upcoming = [DUB_ON_AIR, ...UPCOMING];
     await mount({ render: () => [h(NavBar), h(HostDashboardPage)] });
-    await vi.waitFor(() => expect(rows()).toHaveLength(4));
+    await vi.waitFor(() => expect(rows()).toHaveLength(3));
     await vi.waitFor(() => expect(root.querySelectorAll('.show-tiles li')).toHaveLength(4));
     await vi.waitFor(() => expect(root.textContent).toContain('Listen live'));
     await expectFlow('dashboard', root);
