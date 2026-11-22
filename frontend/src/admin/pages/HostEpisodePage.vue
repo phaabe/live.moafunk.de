@@ -48,7 +48,8 @@ import {
 // Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab.
 // Show time has no soundcheck: it starts the show with the Studio's Go Live,
 // or warns and leads to Soundcheck, then shows the live panel. The flow
-// screens `wrapup` and `done` stay their own screens on the same path. Another
+// screens `wrapup` and `done` stay their own screens on the same path; `done`
+// shows only right after Publish, so a finished episode stays reachable. Another
 // host's episode gets the cards read-only (HostEpisodeView).
 
 const FlowLive = defineAsyncComponent(() => import('./flow/FlowLive.vue'));
@@ -97,7 +98,7 @@ function endedOnAir(): boolean {
 }
 
 function defaultView(s: ShowDetail): typeof view.value {
-  if (s.episode_status === 'finished') return 'done';
+  if (s.episode_status === 'finished') return 'episode';
   if (endedOnAir()) return 'wrapup';
   if (s.on_air) return 'episode';
   if (s.episode_status === 'wrapup_open') return 'wrapup';
@@ -214,7 +215,8 @@ const tab = computed(() => {
   if (picked.value !== null) return picked.value;
   if (liveHere.value) return 2;
   const i = segments.value.findIndex((s) => s.state === 'now');
-  return i < 0 ? 0 : i;
+  // A finished episode has every step done: open its last one, Recording.
+  return i < 0 ? segments.value.length - 1 : i;
 });
 
 /** The Studio may open on this page: the rules of its own route gate. */

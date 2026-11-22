@@ -4,12 +4,12 @@ import { RouterLink } from 'vue-router';
 import type { SeriesEpisode } from '../../api';
 import BoardIcon from '../BoardIcon.vue';
 import DateChip from '../DateChip.vue';
-import { episodeTarget } from '../../episodeRow';
 import { episodeTime, soundcloudLabel } from './showPage';
 
 // Upcoming or Past episodes of the show detail page, as M46 rows: date,
 // time, Live / Pre-recorded and the status (past rows add SoundCloud).
-// Rows of a Show the viewer does not manage open the episode read-only.
+// Every row opens its episode, also a finished one; rows of a Show the
+// viewer does not manage open it read-only.
 
 const props = defineProps<{
   title: string;
@@ -34,7 +34,6 @@ const rows = computed(() =>
     label: e.status_label,
     soundcloud: props.kind === 'past' ? soundcloudLabel(e.soundcloud) : null,
     tone: props.mine ? CHIP[e.status] : '',
-    to: episodeTarget(e),
   }))
 );
 </script>
@@ -63,11 +62,7 @@ const rows = computed(() =>
     <!-- Row text stays "So 25.10. · 12:00–14:00 · Live | Upcoming". -->
     <ul v-else :class="['episodes', 'board-rows', `${kind}-episodes`]">
       <li v-for="row in rows" :key="row.id">
-        <component
-          :is="row.to ? RouterLink : 'div'"
-          v-bind="row.to ? { to: row.to } : {}"
-          class="board-row"
-        >
+        <RouterLink :to="`/shows/${row.id}`" class="board-row">
           <span class="row-main">
             <DateChip :date="row.date" :tone="row.tone" />
             <span class="row-body">
@@ -89,12 +84,10 @@ const rows = computed(() =>
             </template>
           </span>
           <BoardIcon
-            v-if="row.to"
             :name="mine ? 'chevron' : 'eye'"
             :class="['row-icon', { 'read-only': !mine }]"
           />
-          <span v-else class="row-icon none"></span>
-        </component>
+        </RouterLink>
       </li>
     </ul>
   </section>
