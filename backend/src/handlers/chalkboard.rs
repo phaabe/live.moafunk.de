@@ -18,6 +18,8 @@ use crate::{AppError, AppState, Result};
 const MAX_CHARS: usize = 500;
 /// Notes the board shows: the latest ones.
 const SHOWN: i64 = 50;
+/// Notes live one week. Older ones are deleted when the board loads.
+const PRUNE: &str = "DELETE FROM chalkboard_notes WHERE created_at < datetime('now', '-7 days')";
 
 const SELECT: &str = "SELECT n.id, u.username AS author, n.text, \
      CAST(strftime('%s', n.created_at) AS INTEGER) AS ts \
@@ -37,12 +39,13 @@ pub struct NewNote {
     text: String,
 }
 
-/// GET /api/chalkboard — the latest notes, oldest first.
+/// GET /api/chalkboard — the latest notes of the last week, oldest first.
 pub async fn api_list_chalkboard(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     require_show_creator(&state, &headers).await?;
+    sqlx::query(PRUNE).execute(&state.db).await?;
     let mut notes: Vec<ChalkNote> = sqlx::query_as(&format!("{SELECT} ORDER BY n.id DESC LIMIT ?"))
         .bind(SHOWN)
         .fetch_all(&state.db)
@@ -170,6 +173,36 @@ mod tests {
             api_list_chalkboard(State(state.clone()), HeaderMap::new()).await,
             Err(AppError::Unauthorized(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn deletes_notes_older_than_one_week() {
+        let (state, _temp) = state().await;
+        let lena = add_user(&state, "lena", "host").await;
+        for (text, age) in [("old", "-8 days"), ("recent", "-6 days"), ("new", "0 days")] {
+            let id = add(&state, lena, text).await.unwrap()["id"]
+                .as_i64()
+                .unwrap();
+            sqlx::query("UPDATE chalkboard_notes SET created_at = datetime('now', ?) WHERE id = ?")
+                .bind(age)
+                .bind(id)
+                .execute(&state.db)
+                .await
+                .unwrap();
+        }
+
+        let texts: Vec<_> = list(&state, lena)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n["text"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(texts, ["recent", "new"]);
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chalkboard_notes")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(left, 2);
     }
 
     #[tokio::test]

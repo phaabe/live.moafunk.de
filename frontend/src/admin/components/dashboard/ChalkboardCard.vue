@@ -20,6 +20,14 @@ const listEl = ref<HTMLElement | null>(null);
 
 const mine = (n: ChalkNote) => !!props.username && n.author === props.username;
 
+/** A host's next note within this many seconds goes under the same name and time. */
+const STACK_S = 3600;
+function stacked(i: number): boolean {
+  const prev = notes.value[i - 1];
+  const n = notes.value[i];
+  return !!prev && prev.author === n.author && n.ts - prev.ts <= STACK_S;
+}
+
 const BERLIN = { timeZone: 'Europe/Berlin' } as const;
 const dayOf = (at: Date) => at.toLocaleDateString('sv-SE', BERLIN);
 
@@ -91,8 +99,12 @@ onUnmounted(() => {
       <p v-if="loadError" class="chalk-empty field-error" role="alert">{{ loadError }}</p>
       <p v-else-if="loaded && !notes.length" class="chalk-empty">The board is empty.</p>
       <ul v-if="notes.length" class="chalk-list" aria-label="Notes">
-        <li v-for="n in notes" :key="n.id" :class="['chalk-note', { mine: mine(n) }]">
-          <span class="chalk-meta"
+        <li
+          v-for="(n, i) in notes"
+          :key="n.id"
+          :class="['chalk-note', { mine: mine(n), stacked: stacked(i) }]"
+        >
+          <span v-if="!stacked(i)" class="chalk-meta"
             ><span class="chalk-author">{{ mine(n) ? `${n.author} · you` : n.author }}</span>
             <span class="chalk-time">{{ when(n.ts) }}</span></span
           >
@@ -173,6 +185,13 @@ onUnmounted(() => {
 
 .chalk-note + .chalk-note {
   border-top: 1px dashed #3a4441;
+}
+
+/* A follow-up note of the same host: no line, no name, close to the one above. */
+.chalk-note + .chalk-note.stacked {
+  border-top: none;
+  margin-top: -6px;
+  padding-top: 0;
 }
 
 .chalk-meta {

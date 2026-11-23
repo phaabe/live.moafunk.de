@@ -571,6 +571,27 @@ describe('Dashboard chalkboard', () => {
     ]);
   });
 
+  it('stacks a host’s notes written within 1 hour under one name', async () => {
+    notes = [
+      { id: 1, author: 'jonas', text: 'Who has a spare cable?', ts: at('10:03') },
+      { id: 2, author: 'jonas', text: 'XLR, 5 m.', ts: at('10:40') },
+      { id: 3, author: 'jonas', text: 'For Sunday.', ts: at('11:40') },
+      { id: 4, author: 'jonas', text: 'Found one.', ts: at('12:41') },
+      { id: 5, author: 'lena', text: 'Nice.', ts: at('12:45') },
+      { id: 6, author: 'jonas', text: 'Thanks.', ts: at('12:46') },
+    ];
+    await mount();
+    await vi.waitFor(() => expect(board()).toHaveLength(6));
+    expect(board().map((n) => [n.author, n.time, n.text])).toEqual([
+      ['jonas', '10:03', 'Who has a spare cable?'],
+      ['', '', 'XLR, 5 m.'],
+      ['', '', 'For Sunday.'],
+      ['jonas', '12:41', 'Found one.'],
+      ['lena · you', '12:45', 'Nice.'],
+      ['jonas', '12:46', 'Thanks.'],
+    ]);
+  });
+
   it('writes a note on the board', async () => {
     await mount();
     await vi.waitFor(() => expect(root.textContent).toContain('The board is empty.'));
