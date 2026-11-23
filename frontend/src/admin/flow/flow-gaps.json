@@ -77,24 +77,6 @@
       "items": ["button: Create guest link"]
     },
     {
-      "screen": "episode",
-      "release": "R2",
-      "items": [
-        "field: Track title",
-        "check: Upload as private track",
-        "check: Add to playlist “Brunchtime”"
-      ]
-    },
-    {
-      "screen": "episode",
-      "release": "R4",
-      "items": [
-        "check: 00:12:30 | Opening track",
-        "check: 00:31:05 | Guest talk",
-        "check: 01:20:44 | Closing set"
-      ]
-    },
-    {
       "screen": "studio-onair",
       "release": "R4",
       "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
@@ -121,6 +103,16 @@
     }
   ],
   "allowed": [
+    {
+      "screen": "episode-recording",
+      "items": ["button: Waveform"],
+      "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
+    },
+    {
+      "screen": "episode-recording-file",
+      "items": ["button: Waveform"],
+      "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
+    },
     {
       "screen": "dashboard",
       "items": ["button: Toggle menu", "button: Close menu"],
@@ -392,7 +384,6 @@
         "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
         "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
         "h2: Recording",
-        "button: Upload to SoundCloud",
         "h1: Brunchtime #31",
         "pill: Upcoming",
         "button: Edit"
@@ -518,7 +509,6 @@
       "items": [
         "button: Edit pre-announcement",
         "button: Cancel pre-announcement",
-        "field: Recording file",
         "button: 1 · Social media (done)",
         "button: 2 · Soundcheck",
         "button: 3 · Show time · in 5 days · until 12:00",
@@ -584,16 +574,6 @@
         "button: 4 · Recording"
       ],
       "why": "One episode page (Anton, 2026-11-22): another host's episode is the owner's page read-only, with the same four tab tiles above one main card. Update the flow in Flow Lab, then pin the new rev."
-    },
-    {
-      "screen": "episode",
-      "items": ["button: Publish episode"],
-      "why": "One episode page (Anton, 2026-11-22): the Wrap-up page is gone and Publish episode sits in the Recording card. It shows only after the show, so this pre-show check does not see it."
-    },
-    {
-      "screen": "episode",
-      "items": ["button: Edit recording"],
-      "why": "Edit recording (#883) sits in the Recording card and shows only after the show, once the episode has a recording, so this pre-show check does not see it."
     }
   ]
 }

@@ -314,7 +314,7 @@ async fn set_status(s: &Setup, status: &str) {
 }
 
 async fn edited_key(s: &Setup) -> Option<String> {
-    load_row(&s.state.db, s.id)
+    load_row(&s.state.db, s.id, Source::Show)
         .await
         .unwrap()
         .unwrap()
@@ -341,12 +341,12 @@ async fn edit_round_trip_and_bad_input() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         view,
-        json!({"source": null, "edit": null, "status": "none", "error": null,
-               "edited_url": null, "rendered_at": null})
+        json!({"file": "show", "filename": null, "source": null, "edit": null,
+               "status": "none", "error": null, "edited_url": null, "rendered_at": null})
     );
     assert_eq!(put_edit(&s, EDIT).await.0, StatusCode::NOT_FOUND);
 
-    // A manual upload: its length is not stored, so `end` is not checked against it.
+    // An own file: its length is not stored, so `end` is not checked against it.
     sqlx::query("UPDATE shows SET recording_key = 'shows/1/set.wav' WHERE id = ?")
         .bind(s.id)
         .execute(&s.state.db)
@@ -354,6 +354,8 @@ async fn edit_round_trip_and_bad_input() {
         .unwrap();
     let (_, view) = get_edit(&s).await;
     assert_eq!(view["status"], "none");
+    assert_eq!(view["file"], "own");
+    assert_eq!(view["filename"], "recording.mp3");
     assert!(view["source"]["url"]
         .as_str()
         .unwrap()
@@ -438,7 +440,7 @@ async fn apply_renders_the_cut_and_keeps_the_last_good_file() {
     assert!(view["rendered_at"].is_string());
     let key = edited_key(&s).await.unwrap();
     assert!(
-        key.starts_with(&format!("recordings/{}/edited/", s.id)),
+        key.starts_with(&format!("recordings/{}/edited/show-", s.id)),
         "{key}"
     );
     assert!(view["edited_url"].as_str().unwrap().contains(&key));
@@ -471,9 +473,10 @@ async fn apply_renders_the_cut_and_keeps_the_last_good_file() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        (upload.key.as_str(), upload.filename.as_str()),
+        (upload.file.key.as_str(), upload.file.filename.as_str()),
         (key.as_str(), "v1-edited.mp3")
     );
+    assert_eq!((upload.source, upload.edited), (Source::Show, true));
 
     // A failed render keeps the last good file as the upload source.
     let original = s.r2.object(&s.state, &source).unwrap();
@@ -517,9 +520,10 @@ async fn apply_renders_the_cut_and_keeps_the_last_good_file() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        (upload.key.as_str(), upload.filename.as_str()),
+        (upload.file.key.as_str(), upload.file.filename.as_str()),
         (newer.as_str(), "v2.mp3")
     );
+    assert_eq!((upload.source, upload.edited), (Source::Show, false));
 }
 
 #[tokio::test]
@@ -596,7 +600,395 @@ async fn a_restart_frees_a_stuck_render() {
     .await
     .unwrap();
     crate::db::run_migrations(&s.state.db).await.unwrap();
-    let row = load_row(&s.state.db, s.id).await.unwrap().unwrap();
+    let row = load_row(&s.state.db, s.id, Source::Show)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(row.status, "failed");
     assert!(row.error_message.unwrap().contains("restarted"));
+}
+
+// ── Two files: the show recording and an own file ───────────────────────────
+
+async fn put_source(s: &Setup, source: &str) -> (StatusCode, Value) {
+    let body = serde_json::from_value(json!({ "source": source })).unwrap();
+    reply(
+        api_put_recording_source(
+            State(s.state.clone()),
+            Path(s.id),
+            s.headers.clone(),
+            Json(body),
+        )
+        .await,
+    )
+    .await
+}
+
+async fn detail(s: &Setup) -> Value {
+    let result = crate::handlers::api::api_show_detail(
+        State(s.state.clone()),
+        Path(s.id),
+        s.headers.clone(),
+    )
+    .await;
+    let (status, body) = reply(result).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
+}
+
+/// Runs `query` with the show id bound once.
+async fn sql(s: &Setup, query: &str) {
+    sqlx::query(query)
+        .bind(s.id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+}
+
+async fn upload(s: &Setup) -> (Source, bool, String, String) {
+    let u = upload_source(&s.state, &show(s).await)
+        .await
+        .unwrap()
+        .unwrap();
+    (u.source, u.edited, u.file.key, u.file.filename)
+}
+
+/// A finalized take of 20 s, only in the database.
+async fn add_take(s: &Setup) -> String {
+    let take = format!("recordings/{}/v1/final.mp3", s.id);
+    sqlx::query(
+        "INSERT INTO recording_versions (show_id, version, status, final_key, duration_ms) \
+         VALUES (?, 'v1', 'finalized', ?, 20000)",
+    )
+    .bind(s.id)
+    .bind(&take)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    take
+}
+
+const OWN_KEY: &str = "recordings/2026-11-20-night-shift.wav";
+const OWN_EDITED: &str = "recordings/1/edited/own-20261120-120000.mp3";
+
+/// The host picks one of the two files; each keeps its own edit, and
+/// SoundCloud gets the picked one.
+#[tokio::test]
+async fn the_host_picks_one_of_two_files_and_each_keeps_its_edit() {
+    let s = setup().await;
+    // No file yet: the show recording is picked, and neither can be picked.
+    assert_eq!(picked_source(&show(&s).await), Source::Show);
+    assert_eq!(
+        put_source(&s, "own").await,
+        (
+            StatusCode::BAD_REQUEST,
+            json!({"error": "There is no own file."})
+        )
+    );
+    assert_eq!(
+        put_source(&s, "show").await.1["error"],
+        "There is no show recording yet."
+    );
+
+    // A take: the show recording.
+    let take = add_take(&s).await;
+    assert_eq!(picked_source(&show(&s).await), Source::Show);
+    assert_eq!(put_edit(&s, EDIT).await.0, StatusCode::OK);
+
+    // An own file, not picked yet: the own file wins, as before.
+    sqlx::query("UPDATE shows SET recording_key = ?, recording_filename = 'set.wav' WHERE id = ?")
+        .bind(OWN_KEY)
+        .bind(s.id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(picked_source(&show(&s).await), Source::Own);
+    let view = get_edit(&s).await.1;
+    assert_eq!(
+        (
+            &view["file"],
+            &view["filename"],
+            &view["edit"],
+            &view["status"]
+        ),
+        (
+            &json!("own"),
+            &json!("set.wav"),
+            &Value::Null,
+            &json!("none")
+        )
+    );
+    // Its length is not known, so 30 s is fine.
+    let own_edit = r#"{"start":1.0,"end":30.0,"gainDb":-2.0,"sections":[],"snippets":[]}"#;
+    assert_eq!(put_edit(&s, own_edit).await.0, StatusCode::OK);
+    assert_eq!(
+        upload(&s).await,
+        (Source::Own, false, OWN_KEY.into(), "set.wav".into())
+    );
+
+    // Back to the show recording: its edit was left alone.
+    assert_eq!(
+        put_source(&s, "show").await,
+        (StatusCode::OK, json!({"source": "show"}))
+    );
+    assert_eq!(picked_source(&show(&s).await), Source::Show);
+    let view = get_edit(&s).await.1;
+    assert_eq!(
+        (&view["file"], &view["filename"]),
+        (&json!("show"), &json!("v1.mp3"))
+    );
+    assert_eq!(view["edit"], serde_json::from_str::<Value>(EDIT).unwrap());
+    assert_eq!(
+        upload(&s).await,
+        (Source::Show, false, take.clone(), "v1.mp3".into())
+    );
+
+    // A render of the own file goes up only while the own file is picked.
+    sql(
+        &s,
+        &format!(
+            "UPDATE recording_edits SET status = 'done', edited_key = '{OWN_EDITED}', \
+             source_key = '{OWN_KEY}', edited_seconds = 29.0 \
+             WHERE show_id = ? AND source = 'own'"
+        ),
+    )
+    .await;
+    assert_eq!(upload(&s).await.2, take);
+    assert_eq!(put_source(&s, "own").await.0, StatusCode::OK);
+    assert_eq!(
+        upload(&s).await,
+        (
+            Source::Own,
+            true,
+            OWN_EDITED.into(),
+            "set-edited.mp3".into()
+        )
+    );
+    let view = get_edit(&s).await.1;
+    assert_eq!(
+        view["edit"],
+        serde_json::from_str::<Value>(own_edit).unwrap()
+    );
+    assert_eq!(view["status"], "done");
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT source, status FROM recording_edits WHERE show_id = ? ORDER BY source",
+    )
+    .bind(s.id)
+    .fetch_all(&s.state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("own".into(), "done".into()),
+            ("show".into(), "draft".into())
+        ]
+    );
+
+    // Deleting the own file goes back to the show recording.
+    let admin = add_user(&s.state, "admin", "admin").await;
+    let result = crate::handlers::api::api_delete_show_recording(
+        State(s.state.clone()),
+        Path(s.id),
+        headers(&s.state, admin).await,
+    )
+    .await;
+    assert_eq!(reply(result).await.0, StatusCode::OK);
+    let after = show(&s).await;
+    assert_eq!((after.recording_key, after.recording_source), (None, None));
+    assert_eq!(picked_source(&show(&s).await), Source::Show);
+}
+
+/// The show detail describes the picked file, its downloads and whether
+/// SoundCloud still has it.
+#[tokio::test]
+async fn the_show_detail_says_whether_soundcloud_has_the_picked_file() {
+    let s = setup().await;
+    let take = add_take(&s).await;
+
+    // No track yet.
+    let d = detail(&s).await;
+    assert_eq!(d["recording_source"], "show");
+    assert_eq!(
+        (
+            &d["soundcloud_source"],
+            &d["soundcloud_edited"],
+            &d["soundcloud_current"]
+        ),
+        (&Value::Null, &json!(false), &Value::Null)
+    );
+    let download = d["recording_download_url"].as_str().unwrap();
+    assert!(download.contains(&take), "{download}");
+    assert!(
+        download.contains("response-content-disposition=attachment%3B%20filename%3D%22v1.mp3%22"),
+        "{download}"
+    );
+    assert_eq!(d["recording_original_download_url"], Value::Null);
+
+    // A track from before the sent file was stored.
+    sql(
+        &s,
+        "UPDATE shows SET soundcloud_track_id = '555' WHERE id = ?",
+    )
+    .await;
+    assert_eq!(detail(&s).await["soundcloud_current"], Value::Null);
+
+    // SoundCloud has the take.
+    sqlx::query(
+        "UPDATE shows SET soundcloud_source = 'show', soundcloud_source_key = ?, \
+         soundcloud_edited = 0 WHERE id = ?",
+    )
+    .bind(&take)
+    .bind(s.id)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    let d = detail(&s).await;
+    assert_eq!(
+        (&d["soundcloud_source"], &d["soundcloud_current"]),
+        (&json!("show"), &json!(true))
+    );
+
+    // The host picks an own file with an edit: SoundCloud has another file.
+    sqlx::query(
+        "UPDATE shows SET recording_key = ?, recording_filename = 'set.wav', \
+         recording_source = 'own' WHERE id = ?",
+    )
+    .bind(OWN_KEY)
+    .bind(s.id)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO recording_edits (show_id, source, edit_json, status, edited_key, \
+             source_key, edited_seconds, rendered_at) \
+         VALUES (?, 'own', '{}', 'done', ?, ?, 29.0, '2026-11-20 12:00:00')",
+    )
+    .bind(s.id)
+    .bind(OWN_EDITED)
+    .bind(OWN_KEY)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    let d = detail(&s).await;
+    assert_eq!(d["recording_source"], "own");
+    assert_eq!(d["soundcloud_current"], false);
+    assert_eq!(d["recording_edit_status"], "done");
+    assert_eq!(d["recording_edited_seconds"], 29.0);
+    let edited = d["recording_download_url"].as_str().unwrap();
+    assert!(edited.contains(OWN_EDITED), "{edited}");
+    assert!(edited.contains("set-edited.mp3"), "{edited}");
+    let original = d["recording_original_download_url"].as_str().unwrap();
+    assert!(original.contains(OWN_KEY), "{original}");
+    assert!(original.contains("filename%3D%22set.wav%22"), "{original}");
+
+    // Uploaded again: SoundCloud has the edit of the own file.
+    sqlx::query(
+        "UPDATE shows SET soundcloud_source = 'own', soundcloud_source_key = ?, \
+         soundcloud_edited = 1 WHERE id = ?",
+    )
+    .bind(OWN_EDITED)
+    .bind(s.id)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    let d = detail(&s).await;
+    assert_eq!(
+        (
+            &d["soundcloud_source"],
+            &d["soundcloud_edited"],
+            &d["soundcloud_current"]
+        ),
+        (&json!("own"), &json!(true), &json!(true))
+    );
+}
+
+/// A table from before the two files is rebuilt once: an edit of a show
+/// with an own file was of that file, every other edit of the show recording.
+#[tokio::test]
+async fn an_old_edits_table_gets_the_file_of_each_edit() {
+    let s = setup().await;
+    let own: i64 = sqlx::query_scalar(
+        "INSERT INTO shows (title, date, show_type, recording_key) \
+         VALUES ('Own', '2026-11-21', 'external', 'recordings/own.mp3') RETURNING id",
+    )
+    .fetch_one(&s.state.db)
+    .await
+    .unwrap();
+    for query in [
+        "DROP TABLE recording_edits",
+        "CREATE TABLE recording_edits (
+            show_id INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+            edit_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            error_message TEXT,
+            edited_key TEXT,
+            source_key TEXT,
+            edited_seconds REAL,
+            rendered_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    ] {
+        sqlx::query(query).execute(&s.state.db).await.unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO recording_edits (show_id, edit_json, status, edited_key, source_key) \
+         VALUES (?, '{\"a\":1}', 'done', 'edited/a.mp3', 'final/a.mp3'), \
+                (?, '{\"b\":2}', 'rendering', NULL, NULL)",
+    )
+    .bind(s.id)
+    .bind(own)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+
+    // Twice: the second run changes nothing.
+    for _ in 0..2 {
+        crate::db::run_migrations(&s.state.db).await.unwrap();
+    }
+    let rows: Vec<(i64, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT show_id, source, edit_json, status, edited_key FROM recording_edits \
+         ORDER BY show_id",
+    )
+    .fetch_all(&s.state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                s.id,
+                "show".into(),
+                r#"{"a":1}"#.into(),
+                "done".into(),
+                Some("edited/a.mp3".into())
+            ),
+            // A stuck render is freed as before.
+            (
+                own,
+                "own".into(),
+                r#"{"b":2}"#.into(),
+                "failed".into(),
+                None
+            ),
+        ]
+    );
+    // Keyed by show and file now: a second edit of the same show fits.
+    sqlx::query("INSERT INTO recording_edits (show_id, source, edit_json) VALUES (?, 'own', '{}')")
+        .bind(s.id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+}
+
+#[test]
+fn source_names() {
+    for source in [Source::Show, Source::Own] {
+        assert_eq!(Source::parse(source.as_str()), Some(source));
+        assert_eq!(
+            serde_json::to_value(source).unwrap(),
+            json!(source.as_str())
+        );
+    }
+    assert_eq!(Source::parse("other"), None);
 }

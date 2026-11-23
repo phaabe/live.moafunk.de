@@ -1519,6 +1519,8 @@ async fn a_host_uploads_a_recording_only_to_their_own_episode() {
     let row = show_row(&state, 1).await.unwrap();
     assert_eq!(row.recording_key.as_deref(), Some(key.as_str()));
     assert_eq!(row.recording_filename.as_deref(), Some("mine.mp3"));
+    // Uploading picks the own file.
+    assert_eq!(row.recording_source.as_deref(), Some("own"));
     assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
     for (caller, want) in [
         (None, NOBODY),
@@ -1544,13 +1546,16 @@ async fn a_host_uploads_a_recording_only_to_their_own_episode() {
             .0,
         DENIED
     );
+    sqlx::query("UPDATE shows SET recording_source = 'show' WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
     let (code, done) = recording_finalize(&state, p.host, 1, &session).await;
     assert_eq!(code, OK);
     let key = done["key"].as_str().unwrap().to_string();
-    assert_eq!(
-        show_row(&state, 1).await.unwrap().recording_key.as_deref(),
-        Some(key.as_str())
-    );
+    let row = show_row(&state, 1).await.unwrap();
+    assert_eq!(row.recording_key.as_deref(), Some(key.as_str()));
+    assert_eq!(row.recording_source.as_deref(), Some("own"));
     assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
     assert_eq!(recording_init(&state, p.host, 2).await.0, DENIED);
     assert_eq!(recording_init(&state, p.guest, 1).await.0, DENIED);

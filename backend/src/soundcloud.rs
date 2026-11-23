@@ -369,16 +369,17 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // The rendered edit when there is one, else the original recording (see
-    // `recording_edit::resolve_original_recording` for the order).
+    // The picked file: its rendered edit when there is one, else the file (see
+    // `recording_edit::upload_source`).
+    let upload = crate::recording_edit::upload_source(state, &show)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
     let crate::recording_edit::RecordingSource {
         bucket: recording_bucket,
         key: recording_key,
         filename: source_filename,
         ..
-    } = crate::recording_edit::upload_source(state, &show)
-        .await?
-        .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
+    } = upload.file;
 
     tracing::info!(
         show_id = show_id,
@@ -520,12 +521,16 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         "Successfully uploaded to SoundCloud"
     );
 
-    // Store in database
+    // Store in database, with the file the track was made from.
     sqlx::query(
-        "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_uploaded_at = datetime('now'), soundcloud_public = 0 WHERE id = ?"
+        "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_uploaded_at = datetime('now'), soundcloud_public = 0, \
+             soundcloud_source = ?, soundcloud_source_key = ?, soundcloud_edited = ? WHERE id = ?"
     )
     .bind(&track_id)
     .bind(&track_url)
+    .bind(upload.source.as_str())
+    .bind(&recording_key)
+    .bind(upload.edited)
     .bind(show_id)
     .execute(&state.db)
     .await?;
@@ -823,6 +828,14 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
         }
     };
 
+    // A new take changes only the show recording; the host's own file stays.
+    if crate::recording_edit::picked_source(&show) == crate::recording_edit::Source::Own {
+        tracing::info!(
+            show_id,
+            "Skipping SoundCloud auto-upload (the own file is picked)"
+        );
+        return;
+    }
     if show.soundcloud_track_id.is_some() {
         tracing::info!(
             show_id,

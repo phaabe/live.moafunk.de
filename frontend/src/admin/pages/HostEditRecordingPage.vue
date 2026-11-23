@@ -63,6 +63,8 @@ const perSecond = ref(20);
 const duration = ref(0);
 /** The server's length of the recording, when it knows one. */
 const sourceDuration = ref<number | null>(null);
+/** The picked file this page edits (#1082): "Show recording" or "Own file · set.mp3". */
+const fileName = ref<string | null>(null);
 /**
  * Where the set can end at the latest. The server measures the length from the
  * capture and checks the end against it; the decoded file can be a little longer.
@@ -125,6 +127,12 @@ watch(
       }
       sourceUrl.value = state.source.url;
       sourceDuration.value = state.source.duration;
+      fileName.value =
+        state.file === 'own'
+          ? `Own file · ${state.filename ?? ''}`
+          : state.file === 'show'
+            ? 'Show recording'
+            : null;
       await loadPeaks(showId);
       if (!peaks.value) return;
       Object.assign(edit, state.edit ?? newEdit(lastEnd.value));
@@ -426,7 +434,8 @@ const header = computed(() => {
   if (!s) return '';
   const name = s.series_name ?? s.title;
   const length = duration.value ? ` · original ${clock(duration.value)}` : '';
-  return `${name} · ${episodeDay(s.date)}${length}`;
+  const file = fileName.value ? ` · ${fileName.value}` : '';
+  return `${name} · ${episodeDay(s.date)}${file}${length}`;
 });
 </script>
 

@@ -450,6 +450,14 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     // What the host's browser measured in the Studio and the live panel (JSON).
     add_column_if_missing(pool, "shows", "studio_log", "TEXT").await?;
+    // The file the host picked for SoundCloud: 'show' (recorded on air) or
+    // 'own' (`recording_key`). NULL: the own file when there is one, else 'show'.
+    add_column_if_missing(pool, "shows", "recording_source", "TEXT").await?;
+    // What the SoundCloud track was made from: the file, the R2 key that was
+    // sent, and whether it was a rendered edit.
+    add_column_if_missing(pool, "shows", "soundcloud_source", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_source_key", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_edited", "INTEGER DEFAULT 0").await?;
     // Listener counts the server takes while an episode is on air (unix ms).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS show_listener_samples (\
@@ -808,12 +816,13 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // Recording editor: one edit per show. `edited_key` is the last good render
-    // (default bucket); it stays while a new render runs or fails. `source_key`
-    // is the original it was made from, so a new recording makes it stale.
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS recording_edits (
-            show_id INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+    // Recording editor: one edit per show and file (`source`: 'show' or 'own').
+    // `edited_key` is the last good render (default bucket); it stays while a
+    // new render runs or fails. `source_key` is the file it was made from, so a
+    // new recording makes it stale.
+    const RECORDING_EDITS: &str = "(
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            source TEXT NOT NULL DEFAULT 'show',
             edit_json TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'draft',
             error_message TEXT,
@@ -821,11 +830,47 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             source_key TEXT,
             edited_seconds REAL,
             rendered_at TEXT,
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    )
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (show_id, source)
+        )";
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS recording_edits {RECORDING_EDITS}"
+    ))
     .execute(pool)
     .await?;
+    // A table from before the two files is keyed by show only: rebuild it. An
+    // old edit was of the own file when the show has one (it came first then).
+    let has_source: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('recording_edits') WHERE name = 'source'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_source == 0 {
+        let mut tx = pool.begin().await?;
+        sqlx::query(&format!(
+            "CREATE TABLE recording_edits_new {RECORDING_EDITS}"
+        ))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO recording_edits_new (show_id, source, edit_json, status, error_message, \
+                 edited_key, source_key, edited_seconds, rendered_at, updated_at) \
+             SELECT e.show_id, \
+                 CASE WHEN s.recording_key IS NOT NULL THEN 'own' ELSE 'show' END, \
+                 e.edit_json, e.status, e.error_message, e.edited_key, e.source_key, \
+                 e.edited_seconds, e.rendered_at, e.updated_at \
+             FROM recording_edits e LEFT JOIN shows s ON s.id = e.show_id",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE recording_edits")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE recording_edits_new RENAME TO recording_edits")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
     // A render does not survive a restart; free its lock so Apply works again.
     sqlx::query(
         "UPDATE recording_edits SET status = 'failed', \

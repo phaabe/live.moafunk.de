@@ -248,6 +248,17 @@ beforeEach(() => {
         current = { ...current, soundcloud_public: isPublic };
         return Response.json({ success: true, track_id: '555', track_url: current.soundcloud_url });
       }
+      if (url === '/api/shows/42/recording/edit')
+        return Response.json({
+          source: null,
+          edit: null,
+          status: 'none',
+          error: null,
+          edited_url: null,
+          rendered_at: null,
+        });
+      if (url === '/api/shows/42/recording/peaks')
+        return Response.json({ duration: 7120, per_second: 1, peaks: [0.4, 0.6] });
       if (url === '/api/shows/42/announcements') return Response.json(announcements);
       // Every host: where each slot is, without text, image or error.
       if (url === '/api/shows/42/announcements/status')
@@ -900,8 +911,9 @@ describe('Episode · phases', () => {
     expect(yellow()).toEqual(['Publish episode']);
     expect(root.querySelector('.onair-badge')?.textContent).toBe('Aired');
     expect(root.querySelector('.on-air-clock')?.textContent).toBe('01:58:40');
-    expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
-    expect(root.querySelector('.audio-player')?.getAttribute('data-src')).toBe(
+    expect(card('Recording & SoundCloud').textContent).toContain('Show recording · 1:58:40');
+    await vi.waitFor(() => expect(root.querySelector('button[aria-label="Play"]')).not.toBeNull());
+    expect(root.querySelector('.recording a[download]')?.getAttribute('href')).toBe(
       'https://r2.example/v1.mp3'
     );
     // Publish episode closes the episode in place: Finished, the button goes.
@@ -1001,10 +1013,9 @@ describe('Episode · phone', () => {
 
 describe('Episode · Recording', () => {
   function pick(name: string) {
-    const label = [...root.querySelectorAll('label')].find((l) =>
-      l.textContent?.includes('Recording file')
-    );
-    const input = label?.querySelector('input[type="file"]') as HTMLInputElement;
+    const input = root.querySelector(
+      'input[type="file"][aria-label="Own file"]'
+    ) as HTMLInputElement;
     Object.defineProperty(input, 'files', {
       value: [new File(['mp3'], name, { type: 'audio/mpeg' })],
       configurable: true,
@@ -1033,8 +1044,8 @@ describe('Episode · Recording', () => {
     });
     await mount();
     expect(text()).toContain('SoundCloud is temporarily not available.');
-    expect(button('Upload to SoundCloud').disabled).toBe(true);
-    expect(button('Make track public').disabled).toBe(true);
+    expect(button('Private').disabled).toBe(true);
+    expect(button('Public').disabled).toBe(true);
   });
 
   it('sends the recording to SoundCloud and shows the track link', async () => {
@@ -1056,13 +1067,13 @@ describe('Episode · Recording', () => {
     await mount();
     button('Upload to SoundCloud').click();
     await vi.waitFor(() => expect(text()).toContain('Private on SoundCloud'));
-    button('Make track public').click();
+    button('Public').click();
     await vi.waitFor(() => expect(text()).toContain('Public on SoundCloud'));
     expect(requests.find((r) => r.url.endsWith('/soundcloud/privacy'))?.body).toEqual({
       public: true,
     });
-    // Reloaded, so the page sees the public track.
-    await vi.waitFor(() => expect(button('Make track private')).toBeTruthy());
+    // Reloaded, so the page sees the public track; the SoundCloud row stays open.
+    await vi.waitFor(() => expect(button('Public').getAttribute('aria-pressed')).toBe('true'));
   });
 
   it('lets the host switch a public track back to private', async () => {
@@ -1072,18 +1083,23 @@ describe('Episode · Recording', () => {
     });
     await mount();
     expect(text()).toContain('Public on SoundCloud');
-    button('Make track private').click();
+    // No file yet, so no row is open.
+    [...root.querySelectorAll<HTMLButtonElement>('.rec-toggle')]
+      .find((b) => b.querySelector('.rec-name')?.textContent?.trim() === 'SoundCloud')!
+      .click();
+    await nextTick();
+    button('Private').click();
     await vi.waitFor(() => expect(text()).toContain('Private on SoundCloud'));
     expect(requests.find((r) => r.url.endsWith('/soundcloud/privacy'))?.body).toEqual({
       public: false,
     });
-    expect(button('Make track public')).toBeTruthy();
+    expect(button('Private').getAttribute('aria-pressed')).toBe('true');
   });
 
   it('has no switch before the track is on SoundCloud', async () => {
     current = episode({ recording_filename: 'set.mp3' });
     await mount();
-    expect(text()).not.toContain('Make track public');
+    expect(root.querySelector('.rec-seg')).toBeNull();
   });
 
   it('shows the SoundCloud error, and asks an admin to reconnect when not authorized', async () => {
@@ -1149,7 +1165,7 @@ describe('Episode · Pre-recorded', () => {
     expect(text()).not.toContain('Wrap-up');
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
     expect(currentCards()).toEqual(['Recording & SoundCloud']);
-    expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
+    expect(card('Recording & SoundCloud').textContent).toContain('Show recording · 1:58:40');
     expect(text()).not.toContain('Replace file');
     expect(cardStatus('Show time')).toBe('Aired');
     expect(card('Show time').querySelector('.big b')?.textContent).toBe('1:58:40');
@@ -1207,7 +1223,7 @@ describe('Recording card after the show (no Wrap-up page)', () => {
     expect(text()).not.toContain('Wrap-up');
     expect(text()).toContain('Finished · wrap-up open');
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
-    expect(card('Recording & SoundCloud').textContent).toContain('Ready · 1:58:40');
+    expect(card('Recording & SoundCloud').textContent).toContain('Show recording · 1:58:40');
     const leftOut = LEFT_OUT.filter((p) => p !== 'SoundCloud' && p !== 'Instagram');
     for (const part of leftOut) expect(text()).not.toContain(part);
 
@@ -1226,7 +1242,7 @@ describe('Recording card after the show (no Wrap-up page)', () => {
       latest_recording: { id: 1, version: 'v1', status: 'raw' },
     });
     await mount();
-    expect(card('Recording & SoundCloud').textContent).toContain('Processing…');
+    expect(card('Recording & SoundCloud').textContent).toContain('Processing the recording');
     expect(button('Publish episode').disabled).toBe(true);
   });
 
@@ -1290,7 +1306,7 @@ describe('Recording card after the show (no Wrap-up page)', () => {
       live_ended_at: new Date(Date.now() - 60 * 1000).toISOString(),
     });
     await mount('host', 1, { episodeEnded: 42 });
-    expect(card('Recording & SoundCloud').textContent).toContain('Processing…');
+    expect(card('Recording & SoundCloud').textContent).toContain('Processing the recording');
     expect(button('Publish episode').disabled).toBe(true);
   });
 
@@ -1323,7 +1339,7 @@ describe('Recording card after the show (no Wrap-up page)', () => {
     expect(tabs().map((t) => t.selected)).toEqual([false, false, false, true]);
     expect(shownCards()).toEqual(['Recording & SoundCloud']);
     expect(text()).not.toContain('Publish episode');
-    button('Make track public').click();
+    button('Public').click();
     await vi.waitFor(() => expect(text()).toContain('Public on SoundCloud'));
   });
 });

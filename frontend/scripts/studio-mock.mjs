@@ -17,6 +17,9 @@
 // - MOCK_RECORDING=<mp3>: episode 1 has that file as its recording, for the
 //   Edit recording page (/admin/#/shows/1/edit-recording): edit, peaks (ffmpeg)
 //   and /mock/recording.mp3 with CORS and Range, like R2. Apply only pretends.
+// - MOCK_EPISODE=after (with MOCK_RECORDING, best a 30 min file): episode 1
+//   ended yesterday, its recording edited and private on SoundCloud, for the
+//   Recording tab (/admin/#/shows/1). Picking the file and Private / Public work.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -79,6 +82,30 @@ function show() {
     episode_status: 'upcoming',
     studio_log: studioLog,
     listener_samples: [],
+    ...(AFTER ? after(berlin(new Date(Date.now() - 86_400_000))[0]) : {}),
+  };
+}
+
+/** The same episode the day after: recording edited, private on SoundCloud (#1082). */
+function after(date) {
+  const url = `http://localhost:${PORT}/mock/recording.mp3`;
+  const edit = recording.edit;
+  const done = recording.status === 'done' && edit;
+  return {
+    date,
+    start_time: '12:00',
+    end_time: '14:00',
+    on_air: false,
+    episode_status: 'wrapup_open',
+    latest_recording: { id: 1, version: 'v1', status: 'raw', duration_ms: 1_800_000, download_url: url },
+    recording_source: recordingSource,
+    recording_edit_status: recording.status,
+    recording_edited_at: `${date} 13:00:00`,
+    recording_edited_seconds: done ? edit.end - edit.start : null,
+    edited_recording_url: done ? url : null,
+    recording_download_url: url,
+    recording_original_download_url: done ? url : null,
+    ...soundcloud,
   };
 }
 
@@ -106,6 +133,34 @@ const listeners = new Set();
 // ---- Edit recording (#883) ----
 const RECORDING = process.env.MOCK_RECORDING ?? null;
 const recording = { edit: null, status: 'none', peaks: null, reading: false };
+const AFTER = !!RECORDING && process.env.MOCK_EPISODE === 'after';
+let recordingSource = 'show';
+const soundcloud = {
+  soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-1',
+  soundcloud_public: false,
+  soundcloud_uploaded_at: null,
+  soundcloud_source: 'show',
+  soundcloud_edited: true,
+  soundcloud_current: true,
+};
+if (AFTER) {
+  // An applied edit of a 30 min file: cut, one louder part, two snippets.
+  recording.edit = {
+    start: 60,
+    end: 1740,
+    gainDb: 2,
+    sections: [{ id: 'a', start: 450, end: 540, gainDb: 4 }],
+    snippets: [
+      { slot: 1, start: 720, length: 30 },
+      { slot: 2, start: 1080, length: 20 },
+    ],
+  };
+  recording.status = 'done';
+  soundcloud.soundcloud_uploaded_at = new Date(Date.now() - 82_800_000)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
+}
 
 /** Peaks like the backend: 8 kHz mono, loudest sample per 1/20 s, 0..1. */
 function readPeaks() {
@@ -130,6 +185,12 @@ function readPeaks() {
     recording.reading = false;
     console.log(`recording peaks: ${peaks.length}`);
   });
+}
+
+function readJson(req, done) {
+  let body = '';
+  req.on('data', (chunk) => (body += chunk));
+  req.on('end', () => done(JSON.parse(body || '{}')));
 }
 
 function editState() {
@@ -229,6 +290,23 @@ const server = createServer((req, res) => {
   }
   if (path === '/api/shows/1/recording/edit') {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    return;
+  }
+  if (AFTER && req.method === 'PUT' && path === '/api/shows/1/recording/source') {
+    readJson(req, (body) => {
+      recordingSource = body.source;
+      soundcloud.soundcloud_current = body.source === soundcloud.soundcloud_source;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    });
+    return;
+  }
+  if (AFTER && req.method === 'POST' && path === '/api/shows/1/soundcloud/privacy') {
+    readJson(req, (body) => {
+      soundcloud.soundcloud_public = !!body.public;
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ success: true, track_url: soundcloud.soundcloud_url }));
+    });
     return;
   }
   if (path === '/mock/live') {

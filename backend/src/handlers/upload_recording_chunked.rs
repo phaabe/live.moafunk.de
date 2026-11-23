@@ -393,13 +393,16 @@ pub async fn finalize_recording_upload(
         tracing::debug!("Uploaded recording peaks at {}", peaks_key);
     }
 
-    // Save recording_key and original filename in the database
-    sqlx::query("UPDATE shows SET recording_key = ?, recording_filename = ? WHERE id = ?")
-        .bind(&key)
-        .bind(&filename)
-        .bind(show_id)
-        .execute(&state.db)
-        .await?;
+    // Save recording_key and original filename; uploading picks the own file.
+    sqlx::query(
+        "UPDATE shows SET recording_key = ?, recording_filename = ?, recording_source = 'own' \
+         WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(show_id)
+    .execute(&state.db)
+    .await?;
 
     // Clean up: delete chunks from S3 and database
     for (chunk_key, _) in &chunk_rows {

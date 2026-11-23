@@ -1,35 +1,11 @@
 {
   "screen": "episode",
-  "hash": "87560358",
+  "hash": "1b6c82b2",
   "status": "drift",
   "leftOut": [
     {
       "item": "button: Create guest link",
       "release": "R5"
-    },
-    {
-      "item": "field: Track title",
-      "release": "R2"
-    },
-    {
-      "item": "check: Upload as private track",
-      "release": "R2"
-    },
-    {
-      "item": "check: Add to playlist “Brunchtime”",
-      "release": "R2"
-    },
-    {
-      "item": "check: 00:12:30 | Opening track",
-      "release": "R4"
-    },
-    {
-      "item": "check: 00:31:05 | Guest talk",
-      "release": "R4"
-    },
-    {
-      "item": "check: 01:20:44 | Closing set",
-      "release": "R4"
     }
   ],
   "missing": [
@@ -52,11 +28,7 @@
     "button: Cancel pre-announcement",
     "check: On air · story 9:16 | Sent when you go live",
     "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
-    "h2: Recording",
-    "field: Recording file",
-    "button: Edit recording",
-    "button: Upload to SoundCloud",
-    "button: Publish episode"
+    "h2: Recording"
   ],
   "extra": [
     "h1: Brunchtime #31",

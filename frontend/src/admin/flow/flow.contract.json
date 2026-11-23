@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 31,
+  "rev": 32,
   "screens": [
     {
       "id": "dashboard",
@@ -797,8 +797,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "87560358",
-      "notesHash": "345acfd7",
+      "hash": "1b6c82b2",
+      "notesHash": "62cf1ef4",
       "elements": [
         {
           "k": "back",
@@ -923,11 +923,144 @@
         {
           "k": "h2",
           "text": "Recording"
+        }
+      ]
+    },
+    {
+      "id": "episode-recording",
+      "title": "Recording tab",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "3c48f279",
+      "notesHash": "aa47f819",
+      "elements": [
+        {
+          "k": "h2",
+          "text": "Recording & SoundCloud"
         },
         {
-          "k": "field",
-          "text": "Recording file",
-          "value": "MP3 or WAV"
+          "k": "button",
+          "text": "Download",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": "episode-recording-file"
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Private · Show recording, edited · So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording, edited (1:47:40)",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Uploaded",
+          "meta": "So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Open on SoundCloud",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Private",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Public",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement waits for a public track",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "episode-recording-file",
+      "title": "Recording tab · File",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "b86e06fa",
+      "notesHash": "d85b6657",
+      "elements": [
+        {
+          "k": "h2",
+          "text": "Recording & SoundCloud"
+        },
+        {
+          "k": "button",
+          "text": "Download",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": null
+        },
+        {
+          "k": "choice",
+          "text": "Show recording",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Own file",
+          "to": null,
+          "on": false
         },
         {
           "k": "button",
@@ -937,48 +1070,21 @@
         },
         {
           "k": "button",
-          "text": "Upload to SoundCloud",
+          "text": "Choose file",
           "to": null,
           "primary": false
         },
         {
-          "k": "field",
-          "text": "Track title",
-          "value": "Brunchtime #31 · 25.10.2026"
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Private · Show recording, edited · So 25.10. · 14:20",
+          "to": null
         },
         {
-          "k": "check",
-          "text": "Upload as private track",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "Add to playlist “Brunchtime”",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "text",
-          "text": "3 moments for Instagram"
-        },
-        {
-          "k": "check",
-          "text": "00:12:30",
-          "meta": "Opening track",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "00:31:05",
-          "meta": "Guest talk",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "01:20:44",
-          "meta": "Closing set",
-          "on": false
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement waits for a public track",
+          "to": null
         },
         {
           "k": "button",
@@ -1330,13 +1436,13 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "4b0e93bd",
-      "notesHash": "4c475838",
+      "hash": "6a8cdbf5",
+      "notesHash": "d7005ebc",
       "elements": [
         {
           "k": "back",
           "text": "Episode",
-          "to": "episode"
+          "to": "episode-recording"
         },
         {
           "k": "h1",
@@ -1407,7 +1513,7 @@
         {
           "k": "button",
           "text": "Apply edit",
-          "to": "episode",
+          "to": "episode-recording",
           "primary": true
         }
       ]
@@ -1418,13 +1524,13 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "4b6ebb92",
+      "hash": "2ae316a2",
       "notesHash": "4ae96776",
       "elements": [
         {
           "k": "back",
           "text": "Episode",
-          "to": "episode"
+          "to": "episode-recording"
         },
         {
           "k": "h1",
@@ -1516,7 +1622,7 @@
         {
           "k": "button",
           "text": "Apply edit",
-          "to": "episode",
+          "to": "episode-recording",
           "primary": true
         }
       ]
@@ -1527,13 +1633,13 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "2a22c908",
+      "hash": "baaf987c",
       "notesHash": "270e386d",
       "elements": [
         {
           "k": "back",
           "text": "Episode",
-          "to": "episode"
+          "to": "episode-recording"
         },
         {
           "k": "h1",
@@ -1604,7 +1710,7 @@
         {
           "k": "button",
           "text": "Apply edit",
-          "to": "episode",
+          "to": "episode-recording",
           "primary": true
         }
       ]
