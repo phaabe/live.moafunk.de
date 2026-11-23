@@ -517,6 +517,17 @@ export interface ShowDetail {
   recording_edited_seconds?: number | null;
   /** The edited file; Upload to SoundCloud sends it. */
   edited_recording_url?: string | null;
+  /** Which file goes to SoundCloud and gets edited (#1082): the show recording or the own file. */
+  recording_source?: RecordingFile;
+  /** The picked file as it goes to SoundCloud (its edit when there is one), as a download. */
+  recording_download_url?: string | null;
+  /** The picked file without its edit; only when there is an edit. */
+  recording_original_download_url?: string | null;
+  /** Which file the SoundCloud track was made from. */
+  soundcloud_source?: RecordingFile | null;
+  soundcloud_edited?: boolean;
+  /** False when SoundCloud has another file than the one that would go up now. */
+  soundcloud_current?: boolean | null;
   prerecorded_key?: string;
   prerecorded_filename?: string;
   prerecorded_confirmed_at?: string;
@@ -935,10 +946,16 @@ export interface RecordingPeaks {
 
 export type RecordingEditStatus = 'none' | 'draft' | 'rendering' | 'done' | 'failed';
 
+/** The two files of an episode (#1082): recorded on air, or uploaded by the host. */
+export type RecordingFile = 'show' | 'own';
+
 /** GET /api/shows/:id/recording/edit — the Edit recording page (#883). */
 export interface RecordingEditState {
   /** The original recording; null when the episode has none. */
   source: { url: string; duration: number | null } | null;
+  /** The picked file this edit belongs to, and its name. */
+  file?: RecordingFile;
+  filename?: string | null;
   edit: RecordingEdit | null;
   status: RecordingEditStatus;
   error: string | null;
@@ -959,6 +976,10 @@ export const recordingEditApi = {
   /** Starts the render on the server: 202 `{status: 'rendering'}`. */
   apply: (showId: number) =>
     api.post<{ status: RecordingEditStatus }>(`/api/shows/${showId}/recording/edit/apply`),
+
+  /** Picks the file for SoundCloud and Edit recording (#1082). */
+  setSource: (showId: number, source: RecordingFile) =>
+    api.put<{ source: RecordingFile }>(`/api/shows/${showId}/recording/source`, { source }),
 };
 
 /**

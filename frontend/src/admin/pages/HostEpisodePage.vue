@@ -417,6 +417,7 @@ function replaceFile() {
         :read-only="!isMine"
         @uploaded="load(false)"
         @changed="load(false)"
+        @social="picked = 0"
       />
       <section
         v-if="studioMounted"
