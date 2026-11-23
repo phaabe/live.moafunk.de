@@ -55,8 +55,8 @@ const PEAKS_PER_SECOND: u32 = PEAK_RATE / PEAK_BUCKET as u32;
 /// A 2 h set renders in a few minutes; this only stops a hung ffmpeg.
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// Peak jobs by show: `None` while one runs, `Some(error)` after it failed.
-pub type PeaksJobs = std::sync::Mutex<HashMap<i64, Option<String>>>;
+/// Peak jobs by peaks key: `None` while one runs, `Some(error)` after it failed.
+pub type PeaksJobs = std::sync::Mutex<HashMap<String, Option<String>>>;
 
 // ============================================================================
 // Edit
@@ -227,17 +227,55 @@ impl RecordingSource {
     }
 }
 
-/// The show's original recording, in priority order:
-///   1. a manually attached recording (pre-recorded / UNHEARD shows),
-///   2. the latest *finalized* live recording (final.mp3, default bucket),
-///   3. the latest streamed *archive* MP3 (shows bucket) — streamed shows stay
-///      `raw` with only an archive_key, so this is the auto-upload source (#251).
-pub async fn resolve_original_recording(
+/// The two files of an episode. Each has its own edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// Recorded on air: the latest finalized take, else the archive mp3.
+    Show,
+    /// The file the host uploaded (`shows.recording_key`).
+    Own,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::Show => "show",
+            Source::Own => "own",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "show" => Some(Source::Show),
+            "own" => Some(Source::Own),
+            _ => None,
+        }
+    }
+}
+
+/// The file the host picked for SoundCloud. Not picked yet: the own file
+/// when there is one, else the show recording (what older shows did).
+pub fn picked_source(show: &models::Show) -> Source {
+    match show.recording_source.as_deref().and_then(Source::parse) {
+        Some(source) => source,
+        None if show.recording_key.is_some() => Source::Own,
+        None => Source::Show,
+    }
+}
+
+/// One file of the show, `None` when it does not exist:
+///   - own: the uploaded file (`recording_key`, default bucket),
+///   - show: the latest *finalized* live recording (final.mp3, default bucket),
+///     else the latest streamed *archive* MP3 (shows bucket) — streamed shows
+///     stay `raw` with only an archive_key.
+pub async fn resolve_file(
     state: &Arc<AppState>,
     show: &models::Show,
+    source: Source,
 ) -> Result<Option<RecordingSource>> {
-    if let Some(key) = &show.recording_key {
-        return Ok(Some(RecordingSource {
+    if source == Source::Own {
+        return Ok(show.recording_key.as_ref().map(|key| RecordingSource {
             bucket: state.config.r2_bucket_name.clone(),
             key: key.clone(),
             filename: show
@@ -276,29 +314,54 @@ pub async fn resolve_original_recording(
     Ok(None)
 }
 
-/// What "Upload to SoundCloud" sends: the rendered edit when it was made from
-/// the current original, else the original.
-pub async fn upload_source(
+/// The picked file and which one it is.
+async fn picked_file(
     state: &Arc<AppState>,
     show: &models::Show,
-) -> Result<Option<RecordingSource>> {
-    let Some(original) = resolve_original_recording(state, show).await? else {
+) -> Result<(Source, Option<RecordingSource>)> {
+    let source = picked_source(show);
+    Ok((source, resolve_file(state, show, source).await?))
+}
+
+/// What "Upload to SoundCloud" sends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upload {
+    pub file: RecordingSource,
+    /// The picked file `file` comes from.
+    pub source: Source,
+    /// True when `file` is the rendered edit.
+    pub edited: bool,
+}
+
+/// The picked file's rendered edit when it was made from the current file,
+/// else the picked file.
+pub async fn upload_source(state: &Arc<AppState>, show: &models::Show) -> Result<Option<Upload>> {
+    let (source, Some(original)) = picked_file(state, show).await? else {
         return Ok(None);
     };
-    let row = load_row(&state.db, show.id).await?;
+    let row = load_row(&state.db, show.id, source).await?;
     if let Some(key) = row.as_ref().and_then(|r| r.render_of(&original)) {
         let stem = FsPath::new(&original.filename)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "recording".to_string());
-        return Ok(Some(RecordingSource {
+        let file = RecordingSource {
             bucket: state.config.r2_bucket_name.clone(),
             key: key.to_string(),
             filename: format!("{stem}-edited.mp3"),
             duration_ms: None,
+        };
+        return Ok(Some(Upload {
+            file,
+            source,
+            edited: true,
         }));
     }
-    Ok(Some(original))
+    Ok(Some(Upload {
+        file: original,
+        source,
+        edited: false,
+    }))
 }
 
 /// Peaks of `source_key`, cached in the default bucket. Not `.peaks.json`: a
@@ -336,18 +399,23 @@ impl EditRow {
     }
 }
 
-async fn load_row(db: &SqlitePool, show_id: i64) -> Result<Option<EditRow>> {
+async fn load_row(db: &SqlitePool, show_id: i64, source: Source) -> Result<Option<EditRow>> {
     Ok(
-        sqlx::query_as("SELECT * FROM recording_edits WHERE show_id = ?")
+        sqlx::query_as("SELECT * FROM recording_edits WHERE show_id = ? AND source = ?")
             .bind(show_id)
+            .bind(source.as_str())
             .fetch_optional(db)
             .await?,
     )
 }
 
-/// The editor's view of a show. Also feeds the show detail.
+/// The editor's view of the picked file. Also feeds the show detail.
 #[derive(Debug, Serialize)]
 pub struct EditView {
+    /// Which file this is: `show` | `own`.
+    file: Source,
+    /// Name of the file, `None` when it does not exist.
+    filename: Option<String>,
     source: Option<SourceView>,
     edit: Option<RecordingEdit>,
     /// `none` | `draft` | `rendering` | `done` | `failed`
@@ -366,8 +434,9 @@ struct SourceView {
 }
 
 pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView> {
-    let source = resolve_original_recording(state, show).await?;
-    let row = load_row(&state.db, show.id).await?;
+    let (file, source) = picked_file(state, show).await?;
+    let filename = source.as_ref().map(|s| s.filename.clone());
+    let row = load_row(&state.db, show.id, file).await?;
     let edit = row
         .as_ref()
         .and_then(|r| serde_json::from_str(&r.edit_json).ok());
@@ -377,6 +446,8 @@ pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView
             None => None,
         };
         return Ok(EditView {
+            file,
+            filename,
             source,
             edit,
             status: "none".to_string(),
@@ -398,6 +469,8 @@ pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView
         row.status.clone()
     };
     Ok(EditView {
+        file,
+        filename,
         source: Some(source_view(state, source).await?),
         edit,
         status,
@@ -442,6 +515,36 @@ pub async fn api_get_recording_edit(
     Ok(Json(view(&state, &show).await?))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SourceBody {
+    source: Source,
+}
+
+/// `PUT /api/shows/:id/recording/source` — pick the file for SoundCloud.
+pub async fn api_put_recording_source(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    Json(body): Json<SourceBody>,
+) -> Result<Json<serde_json::Value>> {
+    let (_user, show) = require_show_editor(&state, &headers, id).await?;
+    if resolve_file(&state, &show, body.source).await?.is_none() {
+        return Err(AppError::BadRequest(
+            match body.source {
+                Source::Own => "There is no own file.",
+                Source::Show => "There is no show recording yet.",
+            }
+            .to_string(),
+        ));
+    }
+    sqlx::query("UPDATE shows SET recording_source = ? WHERE id = ?")
+        .bind(body.source.as_str())
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    Ok(Json(json!({ "source": body.source })))
+}
+
 /// `PUT /api/shows/:id/recording/edit` — save the edit as a draft.
 pub async fn api_put_recording_edit(
     State(state): State<Arc<AppState>>,
@@ -450,9 +553,8 @@ pub async fn api_put_recording_edit(
     body: Bytes,
 ) -> Result<Response> {
     let (_user, show) = require_show_editor(&state, &headers, id).await?;
-    let source = resolve_original_recording(&state, &show)
-        .await?
-        .ok_or_else(no_recording)?;
+    let (picked, source) = picked_file(&state, &show).await?;
+    let source = source.ok_or_else(no_recording)?;
     let edit: RecordingEdit = match serde_json::from_slice(&body) {
         Ok(edit) => edit,
         Err(e) => return Ok(invalid(vec![format!("Invalid edit JSON: {e}")])),
@@ -464,12 +566,13 @@ pub async fn api_put_recording_edit(
     let edit_json = serde_json::to_string(&edit)
         .map_err(|e| AppError::Internal(format!("Failed to encode the edit: {e}")))?;
     let saved = sqlx::query(
-        "INSERT INTO recording_edits (show_id, edit_json) VALUES (?, ?) \
-         ON CONFLICT(show_id) DO UPDATE SET edit_json = excluded.edit_json, \
+        "INSERT INTO recording_edits (show_id, source, edit_json) VALUES (?, ?, ?) \
+         ON CONFLICT(show_id, source) DO UPDATE SET edit_json = excluded.edit_json, \
              status = 'draft', error_message = NULL, updated_at = datetime('now') \
          WHERE recording_edits.status != 'rendering'",
     )
     .bind(id)
+    .bind(picked.as_str())
     .bind(&edit_json)
     .execute(&state.db)
     .await?;
@@ -488,10 +591,9 @@ pub async fn api_apply_recording_edit(
     headers: HeaderMap,
 ) -> Result<Response> {
     let (_user, show) = require_show_editor(&state, &headers, id).await?;
-    let source = resolve_original_recording(&state, &show)
-        .await?
-        .ok_or_else(no_recording)?;
-    let row = load_row(&state.db, id)
+    let (picked, source) = picked_file(&state, &show).await?;
+    let source = source.ok_or_else(no_recording)?;
+    let row = load_row(&state.db, id, picked)
         .await?
         .ok_or_else(|| AppError::BadRequest("Save an edit first".to_string()))?;
     let edit: RecordingEdit = serde_json::from_str(&row.edit_json)
@@ -503,9 +605,10 @@ pub async fn api_apply_recording_edit(
     let claimed = sqlx::query(
         "UPDATE recording_edits SET status = 'rendering', error_message = NULL, \
              updated_at = datetime('now') \
-         WHERE show_id = ? AND status != 'rendering'",
+         WHERE show_id = ? AND source = ? AND status != 'rendering'",
     )
     .bind(id)
+    .bind(picked.as_str())
     .execute(&state.db)
     .await?;
     if claimed.rows_affected() == 0 {
@@ -513,7 +616,7 @@ pub async fn api_apply_recording_edit(
             "The edit is already rendering".to_string(),
         ));
     }
-    tokio::spawn(render_task(state.clone(), id, edit, source));
+    tokio::spawn(render_task(state.clone(), id, picked, edit, source));
     Ok((StatusCode::ACCEPTED, Json(json!({ "status": "rendering" }))).into_response())
 }
 
@@ -524,8 +627,9 @@ pub async fn api_get_recording_peaks(
     headers: HeaderMap,
 ) -> Result<Response> {
     let (_user, show) = require_show_editor(&state, &headers, id).await?;
-    let source = resolve_original_recording(&state, &show)
+    let source = picked_file(&state, &show)
         .await?
+        .1
         .ok_or_else(no_recording)?;
     let key = peaks_key(&source.key);
     if let Ok((data, _)) = storage::download_file(&state, &key).await {
@@ -533,15 +637,15 @@ pub async fn api_get_recording_peaks(
     }
     {
         let mut jobs = state.peaks_jobs.lock().unwrap();
-        match jobs.get(&id) {
+        match jobs.get(&key) {
             // Report the failure once; the next request starts a new job.
             Some(Some(_)) => {
-                let error = jobs.remove(&id).flatten().unwrap_or_default();
+                let error = jobs.remove(&key).flatten().unwrap_or_default();
                 return Err(AppError::Internal(error));
             }
             Some(None) => {}
             None => {
-                jobs.insert(id, None);
+                jobs.insert(key.clone(), None);
                 tokio::spawn(peaks_task(state.clone(), id, source, key));
             }
         }
@@ -590,11 +694,12 @@ fn ffmpeg_error(stderr: &[u8]) -> String {
 async fn render_task(
     state: Arc<AppState>,
     show_id: i64,
+    picked: Source,
     edit: RecordingEdit,
     source: RecordingSource,
 ) {
-    let result = render(&state, show_id, &edit, &source).await;
-    let previous = match load_row(&state.db, show_id).await {
+    let result = render(&state, show_id, picked, &edit, &source).await;
+    let previous = match load_row(&state.db, show_id, picked).await {
         Ok(row) => row.and_then(|r| r.edited_key),
         Err(_) => None,
     };
@@ -604,12 +709,13 @@ async fn render_task(
                 "UPDATE recording_edits SET status = 'done', edited_key = ?, source_key = ?, \
                      edited_seconds = ?, rendered_at = datetime('now'), error_message = NULL, \
                      updated_at = datetime('now') \
-                 WHERE show_id = ?",
+                 WHERE show_id = ? AND source = ?",
             )
             .bind(key)
             .bind(&source.key)
             .bind(edit.end - edit.start)
             .bind(show_id)
+            .bind(picked.as_str())
             .execute(&state.db)
             .await
         }
@@ -619,10 +725,11 @@ async fn render_task(
             sqlx::query(
                 "UPDATE recording_edits SET status = 'failed', error_message = ?, \
                      updated_at = datetime('now') \
-                 WHERE show_id = ?",
+                 WHERE show_id = ? AND source = ?",
             )
             .bind(e.to_string())
             .bind(show_id)
+            .bind(picked.as_str())
             .execute(&state.db)
             .await
         }
@@ -651,6 +758,7 @@ async fn render_task(
 async fn render(
     state: &Arc<AppState>,
     show_id: i64,
+    picked: Source,
     edit: &RecordingEdit,
     source: &RecordingSource,
 ) -> Result<String> {
@@ -681,7 +789,8 @@ async fn render(
             .await
             .map_err(|e| AppError::Internal(format!("Failed to read the edited mp3: {e}")))?;
         let key = format!(
-            "recordings/{show_id}/edited/{}.mp3",
+            "recordings/{show_id}/edited/{}-{}.mp3",
+            picked.as_str(),
             chrono::Utc::now().format("%Y%m%d-%H%M%S")
         );
         storage::upload_multipart(
@@ -726,11 +835,11 @@ async fn peaks_task(state: Arc<AppState>, show_id: i64, source: RecordingSource,
     let mut jobs = state.peaks_jobs.lock().unwrap();
     match result {
         Ok(()) => {
-            jobs.remove(&show_id);
+            jobs.remove(&key);
         }
         Err(e) => {
             tracing::error!(show_id, error = %e, "Recording peaks failed");
-            jobs.insert(show_id, Some(e.to_string()));
+            jobs.insert(key, Some(e.to_string()));
         }
     }
 }

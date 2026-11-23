@@ -2069,6 +2069,21 @@ pub struct ShowDetailResponse {
     edited_recording_url: Option<String>,
     /// Length of the current edited file in seconds (end − start of its edit).
     recording_edited_seconds: Option<f64>,
+    /// The file picked for SoundCloud: "show" (recorded on air) or "own".
+    /// The edit fields above describe this file.
+    recording_source: crate::recording_edit::Source,
+    /// The picked file as SoundCloud gets it (its current edit, else the
+    /// file), as a 24 h download link.
+    recording_download_url: Option<String>,
+    /// The picked file without its edit; only set when a current edit exists.
+    recording_original_download_url: Option<String>,
+    /// The file the SoundCloud track was made from: "show" | "own".
+    soundcloud_source: Option<String>,
+    /// Whether the SoundCloud track was a rendered edit.
+    soundcloud_edited: bool,
+    /// Whether the SoundCloud track is what an upload would send now. None
+    /// without a track, or when the sent file is not known.
+    soundcloud_current: Option<bool>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2894,6 +2909,40 @@ pub async fn api_show_detail(
         }
     };
 
+    // The picked file as SoundCloud gets it. A failure must not break the page.
+    let recording_source = crate::recording_edit::picked_source(&show);
+    let upload = match crate::recording_edit::upload_source(&state, &show).await {
+        Ok(upload) => Some(upload),
+        Err(e) => {
+            tracing::error!("Failed to load the upload file for show {}: {e}", id);
+            None
+        }
+    };
+    let soundcloud_current = match (&show.soundcloud_track_id, &show.soundcloud_source_key) {
+        (Some(_), Some(sent)) => upload
+            .as_ref()
+            .map(|now| now.as_ref().is_some_and(|u| &u.file.key == sent)),
+        _ => None,
+    };
+    let (mut recording_download_url, mut recording_original_download_url) = (None, None);
+    if let Some(Some(upload)) = &upload {
+        let file = &upload.file;
+        recording_download_url =
+            storage::get_download_url(&state, &file.bucket, &file.key, &file.filename, 3600 * 24)
+                .await
+                .ok();
+        if upload.edited {
+            if let Ok(Some(f)) =
+                crate::recording_edit::resolve_file(&state, &show, upload.source).await
+            {
+                recording_original_download_url =
+                    storage::get_download_url(&state, &f.bucket, &f.key, &f.filename, 3600 * 24)
+                        .await
+                        .ok();
+            }
+        }
+    }
+
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
@@ -2987,6 +3036,12 @@ pub async fn api_show_detail(
         edited_recording_url: edit.as_ref().and_then(|e| e.edited_url.clone()),
         recording_edited_seconds: edit.as_ref().and_then(|e| e.edited_seconds),
         recording_edit_status: edit.map(|e| e.status),
+        recording_source,
+        recording_download_url,
+        recording_original_download_url,
+        soundcloud_source: show.soundcloud_source,
+        soundcloud_edited: show.soundcloud_edited.unwrap_or(false),
+        soundcloud_current,
     }))
 }
 
@@ -4378,13 +4433,16 @@ pub async fn api_upload_show_recording(
         tracing::debug!("Uploaded recording peaks at {}", peaks_key);
     }
 
-    // Save recording_key and original filename in the database
-    sqlx::query("UPDATE shows SET recording_key = ?, recording_filename = ? WHERE id = ?")
-        .bind(&key)
-        .bind(&filename)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    // Save recording_key and original filename; uploading picks the own file.
+    sqlx::query(
+        "UPDATE shows SET recording_key = ?, recording_filename = ?, recording_source = 'own' \
+         WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     // Auto-upload to SoundCloud in background (fire-and-forget). Only for an
     // admin upload: the host page has its own Upload to SoundCloud button, and
@@ -4501,11 +4559,14 @@ pub async fn api_delete_show_recording(
         .send()
         .await;
 
-    // Clear recording_key and recording_filename in the database
-    sqlx::query("UPDATE shows SET recording_key = NULL, recording_filename = NULL WHERE id = ?")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    // Clear the own file; the show recording is picked again.
+    sqlx::query(
+        "UPDATE shows SET recording_key = NULL, recording_filename = NULL, \
+             recording_source = NULL WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     tracing::info!("Deleted recording for show {}: {}", id, recording_key);
 

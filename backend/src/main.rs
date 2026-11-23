@@ -791,6 +791,10 @@ async fn main() -> anyhow::Result<()> {
             get(recording_edit::api_get_recording_peaks),
         )
         .route(
+            "/api/shows/:id/recording/source",
+            axum::routing::put(recording_edit::api_put_recording_source),
+        )
+        .route(
             "/api/shows/:id/instagram",
             post(handlers::api::api_post_show_to_instagram),
         )

@@ -359,6 +359,21 @@ async fn show_with_recording(state: &Arc<AppState>, r2: &FakeR2) -> i64 {
     id
 }
 
+/// A show with a finalized live take in R2 and no own file.
+async fn show_with_take(state: &Arc<AppState>, r2: &FakeR2) -> i64 {
+    let id = add_show(state, "Late Night", Some("Show bio")).await;
+    sqlx::query(
+        "INSERT INTO recording_versions (show_id, version, status, final_key) \
+         VALUES (?, 'v1', 'finalized', 'final/v1.mp3')",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    r2.insert(state, "final/v1.mp3", b"take");
+    id
+}
+
 #[test]
 fn auto_upload_only_when_enabled_and_configured() {
     // Happy path: on + configured (fires even if the show already has a
@@ -553,7 +568,7 @@ async fn finalize_after_expiry_refreshes_and_uploads() {
     exchange_code(&state, "the-code", &login_state(&state))
         .await
         .unwrap();
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     set_expires_in(&state, -3600).await;
     assert!(
         has_token(&state).await,
@@ -1040,6 +1055,15 @@ async fn upload_sends_a_private_track_and_stores_it() {
     );
     assert!(stored.soundcloud_uploaded_at.is_some());
     assert_eq!(stored.soundcloud_public, Some(false));
+    // Which file went up.
+    assert_eq!(
+        (
+            stored.soundcloud_source.as_deref(),
+            stored.soundcloud_source_key.as_deref(),
+            stored.soundcloud_edited
+        ),
+        (Some("own"), Some("shows/rec.mp3"), Some(false))
+    );
 
     // A new playlist named like the show, holding the track.
     let create = fake.call("POST /playlists");
@@ -1107,8 +1131,8 @@ async fn upload_prefers_the_edited_recording() {
     let (state, _temp, fake, r2) = setup(json!({})).await;
     let id = show_with_recording(&state, &r2).await;
     sqlx::query(
-        "INSERT INTO recording_edits (show_id, edit_json, status, edited_key, source_key) \
-         VALUES (?, '{}', 'done', 'recordings/1/edited/a.mp3', 'shows/rec.mp3')",
+        "INSERT INTO recording_edits (show_id, source, edit_json, status, edited_key, source_key) \
+         VALUES (?, 'own', '{}', 'done', 'recordings/1/edited/a.mp3', 'shows/rec.mp3')",
     )
     .bind(id)
     .execute(&state.db)
@@ -1119,6 +1143,14 @@ async fn upload_prefers_the_edited_recording() {
     assert_eq!(
         fake.call("POST /tracks").body["track[asset_data]"],
         json!({"file": "set-edited.mp3", "len": 7})
+    );
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (
+            stored.soundcloud_source_key.as_deref(),
+            stored.soundcloud_edited
+        ),
+        (Some("recordings/1/edited/a.mp3"), Some(true))
     );
 
     sqlx::query("UPDATE recording_edits SET source_key = 'shows/older.mp3' WHERE show_id = ?")
@@ -1407,19 +1439,29 @@ async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
 #[tokio::test]
 async fn auto_upload_runs_only_when_switched_on() {
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": false })).await;
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     auto_upload_on_finalize(&state, id).await;
     assert!(fake.routes().is_empty());
 
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
-    let id = show_with_recording(&state, &r2).await;
+    // A new take leaves a picked own file alone.
+    let own = show_with_recording(&state, &r2).await;
+    auto_upload_on_finalize(&state, own).await;
+    assert!(fake.routes().is_empty());
+
+    let id = show_with_take(&state, &r2).await;
     auto_upload_on_finalize(&state, 999).await;
     assert!(fake.routes().is_empty());
     auto_upload_on_finalize(&state, id).await;
     assert!(fake.routes().contains(&"POST /tracks".to_string()));
+    let stored = show(&state, id).await;
+    assert_eq!(stored.soundcloud_track_id.as_deref(), Some("555"));
     assert_eq!(
-        show(&state, id).await.soundcloud_track_id.as_deref(),
-        Some("555")
+        (
+            stored.soundcloud_source.as_deref(),
+            stored.soundcloud_source_key.as_deref()
+        ),
+        (Some("show"), Some("final/v1.mp3"))
     );
 }
 
@@ -1428,7 +1470,7 @@ async fn auto_upload_runs_only_when_switched_on() {
 #[tokio::test]
 async fn turned_off_refuses_every_write() {
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     crate::db::set_setting(&state.db, crate::db::SOUNDCLOUD_ENABLED, "false")
         .await
         .unwrap();

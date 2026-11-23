@@ -123,6 +123,14 @@ pub struct Show {
     /// button or the auto-start scheduler). Guards against the scheduler
     /// re-starting an already-started show.
     pub prerecorded_started_at: Option<String>,
+    /// 'show' | 'own' | NULL, see `recording_edit::picked_source`.
+    pub recording_source: Option<String>,
+    /// The file the SoundCloud track was made from: 'show' | 'own'.
+    pub soundcloud_source: Option<String>,
+    /// The R2 key that was sent to SoundCloud.
+    pub soundcloud_source_key: Option<String>,
+    /// Whether the SoundCloud track was a rendered edit.
+    pub soundcloud_edited: Option<bool>,
 }
 
 /// Reusable show template: a per-user bundle of presentation content

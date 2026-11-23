@@ -648,6 +648,37 @@ pub async fn get_presigned_url_from_bucket(
     key: &str,
     expires_in_secs: u64,
 ) -> Result<String> {
+    presign_get(state, bucket, key, expires_in_secs, None).await
+}
+
+/// A presigned URL that makes the browser save the file as `filename`
+/// instead of playing it.
+pub async fn get_download_url(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    filename: &str,
+    expires_in_secs: u64,
+) -> Result<String> {
+    // Plain ASCII only, so the header value stays valid.
+    let name: String = filename
+        .chars()
+        .map(|c| match c {
+            ' ' | '!'..='~' if c != '"' && c != '\\' => c,
+            _ => '_',
+        })
+        .collect();
+    let disposition = format!("attachment; filename=\"{name}\"");
+    presign_get(state, bucket, key, expires_in_secs, Some(disposition)).await
+}
+
+async fn presign_get(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    expires_in_secs: u64,
+    disposition: Option<String>,
+) -> Result<String> {
     let presigning_config = aws_sdk_s3::presigning::PresigningConfig::builder()
         .expires_in(std::time::Duration::from_secs(expires_in_secs))
         .build()
@@ -658,6 +689,7 @@ pub async fn get_presigned_url_from_bucket(
         .get_object()
         .bucket(bucket)
         .key(key)
+        .set_response_content_disposition(disposition)
         .presigned(presigning_config)
         .await
         .map_err(|e| AppError::Storage(format!("Failed to generate presigned URL: {}", e)))?;
