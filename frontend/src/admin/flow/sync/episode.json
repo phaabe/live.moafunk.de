@@ -1,10 +1,10 @@
 {
   "screen": "episode",
-  "hash": "1b6c82b2",
+  "hash": "b5111603",
   "status": "drift",
   "leftOut": [
     {
-      "item": "button: Create guest link",
+      "item": "button: Add guest",
       "release": "R5"
     }
   ],
@@ -22,6 +22,8 @@
     "choice: Pre-recorded",
     "button: Save",
     "button: Cancel booking",
+    "row: Hosts | lena, jonas · mira · DJ Lumen (guest)",
+    "button: Add host",
     "h2: Promotion · Instagram",
     "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
     "button: Edit pre-announcement",

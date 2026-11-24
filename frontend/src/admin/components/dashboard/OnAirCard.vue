@@ -6,8 +6,8 @@ import EpisodeHead from './EpisodeHead.vue';
 import { LISTEN_URL, dayAndTime, hostsOf, isMine, progressOf, timeRange } from './dashboard';
 
 // Dashboard card "On air" (#1049): the episode on air now, with its clock and
-// progress and listener count. The host's own episode opens On Air; any other
-// one Listen live.
+// progress and listener count. The host who went live with it gets Back to
+// On Air; anyone else, a co-host too (#1047), Listen live.
 // With nothing on air it says so and names the next episode.
 const props = defineProps<{
   /** The stream is live. */
@@ -19,6 +19,8 @@ const props = defineProps<{
   coverUrl: string | null;
   coverSrcset?: string | null;
   username: string | undefined;
+  /** Who sends the stream; unknown when the server does not say. */
+  streamUser?: string;
   /** The clock, in ms since the epoch. */
   now: number;
   /** Listeners now, or null while the count cannot be read. */
@@ -26,7 +28,11 @@ const props = defineProps<{
 }>();
 
 const hosts = computed(() => (props.episode ? hostsOf(props.episode) : []));
-const mine = computed(() => isMine(hosts.value, props.username));
+const mine = computed(
+  () =>
+    isMine(hosts.value, props.username) &&
+    (!props.streamUser || props.streamUser === props.username)
+);
 const progress = computed(() => (props.episode ? progressOf(props.episode, props.now) : null));
 const line = computed(() =>
   props.episode ? [...hosts.value, props.episode.mode_label].join(' · ') : ''

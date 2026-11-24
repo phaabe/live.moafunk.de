@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 32,
+  "rev": 33,
   "screens": [
     {
       "id": "dashboard",
@@ -11,7 +11,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
       "hash": "2e9bf3ce",
-      "notesHash": "c00dfe08",
+      "notesHash": "a4ea25a1",
       "elements": [
         {
           "k": "h1",
@@ -412,7 +412,7 @@
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
       "hash": "f5a0f035",
-      "notesHash": "6799cc90",
+      "notesHash": "ab9dea67",
       "elements": [
         {
           "k": "h1",
@@ -553,8 +553,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "61afb41a",
-      "notesHash": "00a82f92",
+      "hash": "1f945984",
+      "notesHash": "8ff80e8c",
       "elements": [
         {
           "k": "back",
@@ -573,7 +573,7 @@
         {
           "k": "button",
           "text": "Edit",
-          "to": "my-shows",
+          "to": "my-show-edit",
           "primary": false
         },
         {
@@ -677,6 +677,102 @@
           "text": "So 11.10. · 12:00–14:00 · Pre-recorded",
           "meta": "Finished · Public on SoundCloud",
           "to": "episode"
+        }
+      ]
+    },
+    {
+      "id": "my-show-edit",
+      "title": "My Show · editing",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows?edit=brunchtime",
+      "hash": "ec62311d",
+      "notesHash": "7ea347ed",
+      "elements": [
+        {
+          "k": "back",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "h1",
+          "text": "My Show"
+        },
+        {
+          "k": "text",
+          "text": "Editing show details"
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "media",
+          "text": "Show cover · drop an image or pick a file",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Brunchtime"
+        },
+        {
+          "k": "field",
+          "text": "Description",
+          "value": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Rhythm"
+        },
+        {
+          "k": "field",
+          "text": "Repeats",
+          "value": "Every week ▾"
+        },
+        {
+          "k": "field",
+          "text": "Day",
+          "value": "Sunday ▾"
+        },
+        {
+          "k": "field",
+          "text": "Time",
+          "value": "12:00–14:00 ▾"
+        },
+        {
+          "k": "field",
+          "text": "Instagram handle",
+          "value": "@brunchtime"
+        },
+        {
+          "k": "h2",
+          "text": "Hosts"
+        },
+        {
+          "k": "row",
+          "text": "lena",
+          "meta": "Owner",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "jonas",
+          "meta": "Co-host · Remove",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Add host",
+          "value": "Pick a host ▾"
         }
       ]
     },
@@ -797,8 +893,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "1b6c82b2",
-      "notesHash": "62cf1ef4",
+      "hash": "b5111603",
+      "notesHash": "fed8525f",
       "elements": [
         {
           "k": "back",
@@ -872,14 +968,26 @@
         },
         {
           "k": "button",
-          "text": "Create guest link",
-          "to": "guest-link",
+          "text": "Cancel booking",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Hosts",
+          "meta": "lena, jonas · mira · DJ Lumen (guest)",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Add host",
+          "to": null,
           "primary": false
         },
         {
           "k": "button",
-          "text": "Cancel booking",
-          "to": null,
+          "text": "Add guest",
+          "to": "guest-link",
           "primary": false
         },
         {
@@ -1393,7 +1501,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/44",
       "hash": "daadd459",
-      "notesHash": "39abb03b",
+      "notesHash": "c48ff876",
       "elements": [
         {
           "k": "back",
@@ -1920,7 +2028,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
       "hash": "85fbd85f",
-      "notesHash": "f0a57840",
+      "notesHash": "f0534f9e",
       "elements": [
         {
           "k": "back",

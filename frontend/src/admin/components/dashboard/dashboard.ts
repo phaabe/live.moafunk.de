@@ -11,12 +11,9 @@ import { fmtClock } from '../../composables/useShowClocks';
 /** The public player, for "Listen live". */
 export const LISTEN_URL = 'https://live.moafunk.de';
 
-/**
- * The hosts of an episode or a Show. Today that is the one host of its Show;
- * the cards take a list so several hosts per episode (#1047) fit in later.
- */
-export function hostsOf(item: Pick<UpcomingEpisode, 'host_username'>): string[] {
-  return item.host_username ? [item.host_username] : [];
+/** The hosts of an episode or a Show: the owner, then the co-hosts (#1047). */
+export function hostsOf(item: Pick<UpcomingEpisode, 'host_username' | 'hosts'>): string[] {
+  return item.hosts ?? (item.host_username ? [item.host_username] : []);
 }
 
 /** True when the signed-in user is one of the hosts. */

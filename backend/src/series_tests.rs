@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 const BOUNDARY: &str = "series-test-boundary";
 
 /// A multipart body with the given text fields.
-async fn form(fields: &[(&str, &str)]) -> Multipart {
+pub(crate) async fn form(fields: &[(&str, &str)]) -> Multipart {
     form_with_cover(fields, None).await
 }
 
@@ -41,7 +41,7 @@ async fn form_with_cover(fields: &[(&str, &str)], cover: Option<&str>) -> Multip
     Multipart::from_request(request, &()).await.unwrap()
 }
 
-const BRUNCHTIME: &[(&str, &str)] = &[
+pub(crate) const BRUNCHTIME: &[(&str, &str)] = &[
     ("name", "Brunchtime"),
     ("description", "Sunday brunch sounds."),
     ("repeat_rule", "weekly"),
@@ -50,14 +50,18 @@ const BRUNCHTIME: &[(&str, &str)] = &[
     ("end_time", "14:00"),
 ];
 
-async fn json_of(response: impl IntoResponse) -> (StatusCode, Value) {
+pub(crate) async fn json_of(response: impl IntoResponse) -> (StatusCode, Value) {
     let response = response.into_response();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
-async fn create(state: &Arc<AppState>, user: i64, fields: &[(&str, &str)]) -> Result<Value> {
+pub(crate) async fn create(
+    state: &Arc<AppState>,
+    user: i64,
+    fields: &[(&str, &str)],
+) -> Result<Value> {
     let response = handlers::series::api_create_series(
         State(state.clone()),
         headers(state, user).await,
@@ -69,7 +73,7 @@ async fn create(state: &Arc<AppState>, user: i64, fields: &[(&str, &str)]) -> Re
     Ok(body)
 }
 
-async fn get(state: &Arc<AppState>, user: i64, slug: &str) -> Result<Value> {
+pub(crate) async fn get(state: &Arc<AppState>, user: i64, slug: &str) -> Result<Value> {
     let response = handlers::series::api_get_series(
         State(state.clone()),
         Path(slug.to_string()),
@@ -79,7 +83,7 @@ async fn get(state: &Arc<AppState>, user: i64, slug: &str) -> Result<Value> {
     Ok(json_of(response).await.1)
 }
 
-async fn list(state: &Arc<AppState>, user: i64) -> Value {
+pub(crate) async fn list(state: &Arc<AppState>, user: i64) -> Value {
     let response =
         handlers::series::api_list_series(State(state.clone()), headers(state, user).await)
             .await
@@ -87,7 +91,7 @@ async fn list(state: &Arc<AppState>, user: i64) -> Value {
     json_of(response).await.1
 }
 
-async fn episode(state: &Arc<AppState>, series_id: i64, date: &str, mode: &str) -> i64 {
+pub(crate) async fn episode(state: &Arc<AppState>, series_id: i64, date: &str, mode: &str) -> i64 {
     sqlx::query(
         "INSERT INTO shows (title, date, start_time, show_type, stream_mode, template_id) \
          VALUES ('Brunchtime', ?, '12:00', 'external', ?, ?)",
@@ -210,7 +214,10 @@ async fn every_host_views_a_series_and_only_its_owner_lists_it() {
         let detail = get(&state, user, "brunchtime").await.unwrap();
         assert_eq!(detail["name"], "Brunchtime");
         assert_eq!(detail["can_edit"], can_edit);
-        assert_eq!(detail["hosts"], json!([{ "username": "alice" }]));
+        assert_eq!(
+            detail["hosts"],
+            json!([{ "user_id": alice, "username": "alice", "role": "owner" }])
+        );
     }
     for user in [bob, admin] {
         assert_eq!(list(&state, user).await["series"], json!([]));
@@ -476,18 +483,18 @@ async fn dashboard_lists_all_hosts_upcoming_episodes() {
             {
                 "date": "2099-01-01", "start_time": "12:00", "end_time": "14:00",
                 "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
-                "host_username": "lena", "mode": "live", "mode_label": "Live", "id": sooner
+                "host_username": "lena", "hosts": ["lena"], "mode": "live", "mode_label": "Live", "id": sooner
             },
             {
                 "date": "2099-01-02", "start_time": "12:00", "end_time": null,
                 "title": "Brunchtime", "show_name": "Night Shift", "series_slug": "night-shift",
-                "host_username": "jonas", "mode": "live", "mode_label": "Live",
+                "host_username": "jonas", "hosts": ["jonas"], "mode": "live", "mode_label": "Live",
                 "id": night_episode
             },
             {
                 "date": "2099-01-04", "start_time": "12:00", "end_time": "14:00",
                 "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
-                "host_username": "lena", "mode": "prerecorded", "mode_label": "Pre-recorded",
+                "host_username": "lena", "hosts": ["lena"], "mode": "prerecorded", "mode_label": "Pre-recorded",
                 "id": later
             },
         ])
@@ -555,13 +562,13 @@ async fn dashboard_lists_all_hosts_past_episodes() {
             {
                 "date": "2020-01-07", "start_time": "12:00", "end_time": null,
                 "title": "Brunchtime", "show_name": "Night Shift", "series_slug": "night-shift",
-                "host_username": "jonas", "mode": "live", "mode_label": "Live", "id": newer,
+                "host_username": "jonas", "hosts": ["jonas"], "mode": "live", "mode_label": "Live", "id": newer,
                 "status": "wrapup_open", "status_label": "Finished · wrap-up open"
             },
             {
                 "date": "2020-01-05", "start_time": "12:00", "end_time": "14:00",
                 "title": "Brunchtime", "show_name": "Brunchtime", "series_slug": "brunchtime",
-                "host_username": "lena", "mode": "prerecorded", "mode_label": "Pre-recorded",
+                "host_username": "lena", "hosts": ["lena"], "mode": "prerecorded", "mode_label": "Pre-recorded",
                 "id": older, "status": "finished", "status_label": "Finished"
             },
         ])

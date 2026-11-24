@@ -474,6 +474,8 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     crate::series::migrate(pool).await?;
+    // Co-hosts of a Show and of one episode.
+    crate::hosts::migrate(pool).await?;
     // The host's own Instagram account, without '@'.
     add_column_if_missing(pool, "show_templates", "instagram_handle", "TEXT").await?;
     // Announcements of an episode: one per (episode, slot, channel).

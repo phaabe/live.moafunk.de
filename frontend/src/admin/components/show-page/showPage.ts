@@ -79,11 +79,26 @@ export function rhythmText(series: Pick<Series, 'rhythm' | 'rhythm_line'>): stri
     : series.rhythm_line;
 }
 
-/** "Host: lena"; a Show with several hosts (later) reads "Hosts: lena, jonas". */
+/** "Host: lena"; a Show with several hosts reads "Hosts: lena, jonas". */
 export function hostsLine(hosts: readonly SeriesHost[] | undefined): string {
   const names = (hosts ?? []).map((h) => h.username);
   if (!names.length) return '';
   return `${names.length === 1 ? 'Host' : 'Hosts'}: ${names.join(', ')}`;
+}
+
+/** "lena, jonas · mira": the Show's hosts, then the episode's own co-hosts. */
+export function episodeHostsText(hosts: readonly SeriesHost[] | undefined): string {
+  return hostGroups(hosts)
+    .map((group) => group.map((h) => h.username).join(', '))
+    .join(' · ');
+}
+
+/** The Show's hosts, then the episode's own co-hosts; empty groups left out. */
+export function hostGroups(hosts: readonly SeriesHost[] | undefined): SeriesHost[][] {
+  const all = hosts ?? [];
+  return [all.filter((h) => h.role !== 'episode'), all.filter((h) => h.role === 'episode')].filter(
+    (group) => group.length > 0
+  );
 }
 
 /** The SoundCloud tag of a past episode. */

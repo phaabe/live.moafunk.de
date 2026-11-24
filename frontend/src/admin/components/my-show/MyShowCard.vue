@@ -2,12 +2,14 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, type Series, type UpcomingEpisode } from '../../api';
+import { seriesApi, type Series, type SeriesHost, type UpcomingEpisode } from '../../api';
 import { draftOf, draftValid, toNewSeries, type SeriesDraft } from '../../seriesDraft';
 import { cleanHandle, handleError } from '../../promotion';
 import { getBerlinNowISO } from '../../showTime';
+import { useAuthStore } from '../../stores/auth';
 import BoardIcon from '../BoardIcon.vue';
 import CoverDrop from '../CoverDrop.vue';
+import HostsField from '../HostsField.vue';
 import SeriesFields from '../SeriesFields.vue';
 import { coverCountdown, showFacts } from './showFacts';
 
@@ -27,8 +29,6 @@ const today = getBerlinNowISO().slice(0, 10);
 
 const props = defineProps<{
   show: Series;
-  /** Who hosts the Show. Today only its owner; a list, so more hosts fit later (#1047). */
-  hosts: string[];
   /** The next episode; null when none is booked, undefined when the episodes could not load. */
   next?: UpcomingEpisode | null;
   editing: boolean;
@@ -39,11 +39,20 @@ const emit = defineEmits<{
   edit: [];
   cancel: [];
   saved: [show: Series];
+  /** The co-hosts changed (saved at once, apart from Save). */
+  hosts: [hosts: SeriesHost[]];
+  /** The signed-in co-host left the Show. */
+  left: [];
 }>();
 /** The form has changes that are not saved. */
 const dirty = defineModel<boolean>('dirty', { default: false });
 
 const router = useRouter();
+const auth = useAuthStore();
+/** Only the owner changes the co-hosts (#1047). */
+const isOwner = computed(() =>
+  (props.show.hosts ?? []).some((h) => h.role === 'owner' && h.user_id === auth.user?.id)
+);
 
 const draft = ref<SeriesDraft>(draftOf(props.show));
 const cover = ref<File | null>(null);
@@ -131,11 +140,14 @@ async function save() {
             <span class="label">Instagram handle</span>
             <input v-model="handle" type="text" class="input" placeholder="@brunchtime" />
           </label>
-          <!-- Not editable yet: more hosts per show come with #1047. -->
-          <div class="field hosts">
-            <span class="label">Hosts</span>
-            <span class="static">{{ hosts.join(', ') || '—' }}</span>
-          </div>
+          <HostsField
+            class="hosts"
+            :target="{ slug: show.slug }"
+            :hosts="show.hosts ?? []"
+            :manage="isOwner"
+            @changed="emit('hosts', $event)"
+            @left="emit('left')"
+          />
         </div>
         <p v-if="handleProblem" class="field-error">{{ handleProblem }}</p>
         <p class="hint">
@@ -508,7 +520,7 @@ async function save() {
 }
 
 .form > .hosts {
-  flex-basis: 120px;
+  flex-basis: 100%;
 }
 
 .form :deep(.field-error) {

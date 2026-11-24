@@ -1,19 +1,26 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { BaseButton } from '@shared/components';
-import { seriesApi, showsApi, type SeriesSlot, type ShowDetail } from '../api';
+import { seriesApi, showsApi, type SeriesHost, type SeriesSlot, type ShowDetail } from '../api';
 import { slotDate, slotTime } from '../episodeRow';
 import { berlinToUtcDate } from '../showTime';
 import BoardIcon from './BoardIcon.vue';
+import HostsField from './HostsField.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
 
 // Edit mode of the episode's heading box (#1052): Title, Description, Date,
 // Time and Mode, saved with one Save. Date and Time offer Book Slot's free
 // choices. Date, Time and Mode change only before the start (the backend
 // refuses later). The default slot holds the danger zone (Cancel booking).
+// Hosts are added, removed and left at once, apart from Save (#1047).
 
-const props = defineProps<{ show: ShowDetail; hosts?: string[] }>();
-const emit = defineEmits<{ saved: []; cancel: [] }>();
+const props = defineProps<{ show: ShowDetail }>();
+const emit = defineEmits<{
+  saved: [];
+  cancel: [];
+  hosts: [hosts: SeriesHost[]];
+  left: [];
+}>();
 
 const title = ref('');
 const description = ref('');
@@ -228,10 +235,15 @@ async function save() {
           </div>
         </fieldset>
 
-        <div v-if="hosts?.length" class="field hosts">
-          <span class="legend">{{ hosts.length > 1 ? 'Hosts' : 'Host' }}</span>
-          <span class="hosts-line"><BoardIcon name="user" :size="16" />{{ hosts.join(', ') }}</span>
-        </div>
+        <HostsField
+          v-if="show.hosts"
+          class="wide"
+          :target="{ showId: show.id }"
+          :hosts="show.hosts"
+          :manage="!!show.can_manage"
+          @changed="emit('hosts', $event)"
+          @left="emit('left')"
+        />
 
         <p class="help wide">
           Date and Time offer the same free choices as Book Slot. Save refuses a time that clashes
@@ -356,15 +368,6 @@ textarea.input {
 .mode-field .mode label {
   padding: 0 8px;
   white-space: nowrap;
-}
-
-.hosts-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  font-weight: 700;
-  color: #d0d0dc;
 }
 
 .help {

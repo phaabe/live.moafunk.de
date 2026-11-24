@@ -1,9 +1,10 @@
 //! Booking API for host episodes: Book Slot, the upload-first pre-recorded
 //! set, Replace file, Cancel booking and Publish.
 //!
-//! Series routes take the slug and allow the series owner or an admin.
-//! Episode routes take the show id and allow an admin, the host or the
-//! creator (`require_show_editor`). Everyone else gets 403.
+//! Series routes take the slug and allow the series owner, its co-hosts or
+//! an admin. Episode routes take the show id and allow its hosts or an admin
+//! (`require_show_editor`). Cancel booking also refuses an episode
+//! co-host (`require_show_manager`). Everyone else gets 403.
 
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::api::{self, require_show_creator, require_show_editor};
-use super::series::{load_series_for_editor, SeriesRow};
+use super::series::{load_series_by_slug, load_series_for_editor, SeriesRow};
 use crate::series::{self as model, EpisodeStatus};
 use crate::{audio, scheduler, storage, AppError, AppState, Result};
 
@@ -92,14 +93,23 @@ async fn is_taken(state: &AppState, slot: &Slot) -> Result<bool> {
 
 /// GET /api/series/:slug/slots — free slots of the rhythm for the next
 /// 12 weeks. Empty for a series without a rhythm: it books a free date and
-/// time instead.
+/// time instead. An episode co-host sees them too: they may move their episode.
 pub async fn api_series_slots(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
-    let series = load_series_for_editor(&state, &user, &slug).await?;
+    let series = match load_series_for_editor(&state, &user, &slug).await {
+        Err(AppError::Forbidden(message)) => {
+            let series = load_series_by_slug(&state, &slug).await?;
+            if !crate::hosts::cohosts_an_episode_of(&state.db, series.id, user.id).await? {
+                return Err(AppError::Forbidden(message));
+            }
+            series
+        }
+        other => other?,
+    };
     let mut free = Vec::new();
     for slot in rhythm_slots(&state, &series, Utc::now()).await? {
         if !is_taken(&state, &slot).await? {
@@ -700,7 +710,7 @@ pub async fn api_cancel_booking(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_show_editor(&state, &headers, id).await?;
+    let (_user, show) = api::require_show_manager(&state, &headers, id).await?;
     let start = show
         .start_time
         .as_deref()

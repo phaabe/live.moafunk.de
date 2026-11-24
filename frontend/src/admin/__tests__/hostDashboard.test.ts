@@ -94,6 +94,8 @@ const SHOWS: SeriesOverviewItem[] = [
 let app: App | undefined;
 let root: HTMLDivElement;
 let streamActive: boolean;
+/** Who sends the stream; unset: the server does not say. */
+let streamUser: string | undefined;
 /** What /api/stream/metrics answers: listeners now, or null when Icecast is offline. */
 let listening: number | null;
 let upcoming: UpcomingEpisode[];
@@ -107,6 +109,7 @@ let failing: string[];
 
 beforeEach(() => {
   streamActive = false;
+  streamUser = undefined;
   listening = 37;
   upcoming = [...UPCOMING];
   past = [...PAST];
@@ -132,7 +135,7 @@ beforeEach(() => {
         case '/api/chalkboard':
           return Response.json({ notes });
         case '/api/stream/status':
-          return Response.json({ active: streamActive, recording: false });
+          return Response.json({ active: streamActive, user: streamUser, recording: false });
         case '/api/stream/metrics':
           return Response.json({
             online: listening !== null,
@@ -436,6 +439,26 @@ describe('Dashboard on air', () => {
     await vi.waitFor(() =>
       expect(router.currentRoute.value.fullPath).toBe('/stream/on-air?show=40')
     );
+  });
+
+  it('names every host and gives a co-host who did not go live Listen live (#1047)', async () => {
+    streamActive = true;
+    streamUser = 'mira';
+    // lena co-hosts mira's Dub Kitchen; mira went live with it.
+    upcoming = [{ ...DUB_ON_AIR, hosts: ['mira', 'lena'] }, ...UPCOMING];
+    await mount();
+    const air = () => card('.on-air-card');
+    await vi.waitFor(() => expect(air().textContent).toContain('Dub Kitchen'));
+    expect(text(air().querySelector('.head-line'))).toBe('mira · lena · Pre-recorded');
+    expect(text(air().querySelector('a'))).toBe('Listen live');
+    expect(air().textContent).not.toContain('Back to On Air');
+
+    // The host who went live gets Back to On Air.
+    streamUser = 'lena';
+    app?.unmount();
+    root.innerHTML = '';
+    await mount();
+    await vi.waitFor(() => expect(card('.on-air-card').textContent).toContain('Back to On Air'));
   });
 
   it('says so when nothing is on air, and names the next show', async () => {

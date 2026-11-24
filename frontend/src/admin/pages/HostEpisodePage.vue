@@ -6,6 +6,7 @@ import {
   announcementsApi,
   seriesApi,
   showsApi,
+  streamApi,
   type Announcement,
   type AnnouncementSlot,
   type AnnouncementStatus,
@@ -73,11 +74,26 @@ const composing = ref<AnnouncementSlot | null>(null);
 let poll: ReturnType<typeof setTimeout> | null = null;
 
 const id = computed(() => Number(route.params.id));
-const isMine = computed(
+/** One of the episode's hosts (#1047): owner, co-host or episode co-host. */
+const isMine = computed(() => !!show.value?.can_edit);
+/** Who sends the stream while the episode is on air; null when the server cannot say. */
+const onAirUser = ref<string | null>(null);
+/** This host went live with the episode (maybe in another tab); a co-host who did not gets Listen live. */
+const mineOnAir = computed(
   () =>
-    !!show.value &&
-    (show.value.host_user_id === auth.user?.id || show.value.created_by === auth.user?.id)
+    isMine.value &&
+    !!show.value?.on_air &&
+    (onAirUser.value === null || onAirUser.value === auth.user?.username)
 );
+
+async function loadOnAirUser() {
+  try {
+    const status = await streamApi.status();
+    onAirUser.value = status.active ? (status.user ?? null) : null;
+  } catch {
+    onAirUser.value = null;
+  }
+}
 const showName = computed(() => show.value?.series_name ?? show.value?.title ?? '');
 const backTo = computed(() =>
   show.value?.series_slug ? `/shows/${show.value.series_slug}` : '/shows'
@@ -101,6 +117,7 @@ async function load(reset: boolean) {
   error.value = null;
   try {
     show.value = await showsApi.get(id.value);
+    if (show.value.on_air) await loadOnAirUser();
     if (reset) {
       ended.value = endedOnAir();
       picked.value = ended.value ? 3 : null;
@@ -357,8 +374,15 @@ function replaceFile() {
     <router-link :to="backTo" class="back-link"
       ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>{{ showName }}</router-link
     >
-    <EpisodeHeading :show="show" :phase="phase" :can-edit="isMine" @saved="load(true)">
-      <template #danger>
+    <EpisodeHeading
+      :show="show"
+      :phase="phase"
+      :can-edit="isMine"
+      @saved="load(true)"
+      @hosts="show.hosts = $event"
+      @left="router.push('/dashboard')"
+    >
+      <template v-if="show.can_manage" #danger>
         <BaseButton variant="danger" class="quiet-danger" :disabled="busy" @click="cancelBooking">
           <BoardIcon name="close" :size="16" />Cancel booking
         </BaseButton>
@@ -445,7 +469,7 @@ function replaceFile() {
         aria-label="Live Panel"
       >
         <OnAirView :show="show" :phase="phase" :now="now" :alert="showTimeAlert">
-          <template v-if="!isMine && show.on_air" #end>
+          <template v-if="show.on_air && !mineOnAir" #end>
             <div class="end">
               <a class="listen" :href="LISTEN" target="_blank" rel="noopener"
                 >Listen live<EpisodeIcon name="external"

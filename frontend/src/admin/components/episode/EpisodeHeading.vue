@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { BaseButton } from '@shared/components';
-import type { ShowDetail } from '../../api';
+import type { SeriesHost, ShowDetail } from '../../api';
 import { episodeDay } from '../../episodeRow';
 import BoardIcon from '../BoardIcon.vue';
 import EpisodeDetailsCard from '../EpisodeDetailsCard.vue';
+import { episodeHostsText } from '../show-page/showPage';
 import EpisodeIcon from './EpisodeIcon.vue';
 import { timeRange, type EpisodePhase } from './phase';
 
@@ -18,12 +19,15 @@ const props = defineProps<{
   /** One of the episode's hosts: may edit before the start. */
   canEdit?: boolean;
 }>();
-const emit = defineEmits<{ saved: [] }>();
+const emit = defineEmits<{ saved: []; hosts: [hosts: SeriesHost[]]; left: [] }>();
 
 const editing = ref(false);
 
-/** The episode's hosts. One today; a list once episodes take several (#1047). */
-const hosts = computed(() => [props.show.host_username].filter((h): h is string => !!h));
+/** The episode's hosts (#1047): the Show's hosts, then the episode's own co-hosts. */
+const hostCount = computed(() => props.show.hosts?.length ?? (props.show.host_username ? 1 : 0));
+const hostsText = computed(() =>
+  props.show.hosts ? episodeHostsText(props.show.hosts) : (props.show.host_username ?? '')
+);
 const when = computed(() =>
   [episodeDay(props.show.date), timeRange(props.show)].filter(Boolean).join(' · ')
 );
@@ -73,11 +77,12 @@ function saved() {
     <EpisodeDetailsCard
       v-if="editing && canEdit"
       :show="show"
-      :hosts="hosts"
       @saved="saved"
       @cancel="editing = false"
+      @hosts="emit('hosts', $event)"
+      @left="emit('left')"
     >
-      <slot name="danger" />
+      <template v-if="$slots.danger" #default><slot name="danger" /></template>
     </EpisodeDetailsCard>
     <template v-else>
       <div class="top">
@@ -100,10 +105,10 @@ function saved() {
               ><span class="dot" aria-hidden="true"></span>{{ pill.text }}</span
             >
             <span class="chip">{{ mode }}</span>
-            <span v-if="hosts.length" class="hosts"
-              ><BoardIcon :name="hosts.length > 1 ? 'users' : 'user'" :size="16" />{{
-                hosts.length > 1 ? 'Hosts' : 'Host'
-              }}: {{ hosts.join(', ') }}</span
+            <span v-if="hostCount" class="hosts"
+              ><BoardIcon :name="hostCount > 1 ? 'users' : 'user'" :size="16" />{{
+                hostCount > 1 ? 'Hosts' : 'Host'
+              }}: {{ hostsText }}</span
             >
           </div>
         </div>
