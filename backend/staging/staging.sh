@@ -22,7 +22,7 @@
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
 #   staging.sh seed-db <file|->     replace the staging DB with a scrubbed copy
-#   staging.sh users                set the staging logins (staging-admin, staging-host, e2e-host) from .env
+#   staging.sh users                set the staging logins (staging-admin, staging-host, staging-host-2, e2e-host) from .env
 set -euo pipefail
 
 STAGING_DIR="${STAGING_DIR:-/opt/unheard-staging}"
@@ -856,8 +856,9 @@ PY
 }
 
 # The staging logins from .env, with passwords from Bitwarden: staging-admin
-# (superadmin), staging-host (host, for people) and e2e-host (host, only for
-# the e2e tests, so a person never takes over a test's stream). Needed because
+# (superadmin), staging-host and staging-host-2 (hosts for people, the second
+# one to test co-hosts; same password as staging-host) and e2e-host (host,
+# only for the e2e tests, so a person never takes over a test's stream). Needed because
 # the backend seeds a superadmin only into an empty users table, and every
 # user in a production copy has an unusable password. Resets all to the
 # Bitwarden password.
@@ -876,6 +877,7 @@ import os, sqlite3, sys
 logins = [
     (os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"], "superadmin"),
     (os.environ["HOST_NAME"], os.environ["HOST_HASH"], "host"),
+    (os.environ["HOST_NAME"] + "-2", os.environ["HOST_HASH"], "host"),
     (os.environ["E2E_NAME"], os.environ["E2E_HASH"], "host"),
 ]
 for name, hashed, role in logins:

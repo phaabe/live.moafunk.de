@@ -347,6 +347,7 @@ expect_ok "seed-db installs a copy from stdin" seed_from_stdin "$TMP/copy.db"
 expect_fact "seed-db adds the staging superadmin" "$BOX/data/unheard.db" \
   "user staging-admin superadmin \$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA"
 expect_fact "seed-db adds the staging host" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "seed-db adds the second staging host" "$BOX/data/unheard.db" "user staging-host-2 host $HOST_HASH"
 expect_fact "seed-db adds the e2e host" "$BOX/data/unheard.db" "user e2e-host host $E2E_HASH"
 expect_fact "seed-db keeps production users unusable" "$BOX/data/unheard.db" "user boss superadmin !"
 
@@ -358,6 +359,7 @@ expect_fact "seed-db drops stored tokens itself" "$BOX/data/unheard.db" "setting
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDATE users SET role='admin', password_hash='old' WHERE username='staging-host'\"); c.commit()" "$BOX/data/unheard.db"
 expect_ok "users resets the staging logins in the running DB" staging users
 expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "users resets the second staging host too" "$BOX/data/unheard.db" "user staging-host-2 host $HOST_HASH"
 set_key "$BOX/.env" STAGING_HOST_PASSWORD_HASH -
 expect_refused "users refuses .env without the host hash" "a host login needs a username and an argon2 hash" staging users
 write_good
