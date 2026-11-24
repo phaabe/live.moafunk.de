@@ -61,7 +61,7 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
 
   await test.step('create a Show and book a live slot a day ahead', async () => {
     show = await createShow(page, SHOW_NAME);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     // A day ahead: the episode never goes on air during the test.
     const start = nextMinute(24 * 3600);
     episode = await bookSlot(page, start, new Date(start.getTime() + 60 * 60_000));

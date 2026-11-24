@@ -104,7 +104,7 @@ test('a host announces an episode on Instagram', async () => {
 
   await test.step('create a Show and book a live slot a few minutes ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-instagram`);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     // Time for the pre-announcement while the episode is still upcoming.
     start = nextMinute(4 * 60);
     episode = await bookSlot(page, start, new Date(start.getTime() + 30 * 60_000));

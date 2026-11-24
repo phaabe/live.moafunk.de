@@ -50,7 +50,7 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   await test.step('create a Show and book a live slot a minute ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-live`);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     const start = nextMinute(60);
     episode = await bookSlot(page, start, new Date(start.getTime() + (60 + DURATION_MIN) * 60_000));
   });

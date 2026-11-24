@@ -38,7 +38,7 @@ test('an uploaded set starts by itself and is published', async () => {
 
   await test.step('create a Show, upload a set, book it a minute ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-set`);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     // The radio switches the page to ?mode=prerecorded; check() would wait for
     // the old radio forever.
     await page.getByLabel('Pre-recorded').click();

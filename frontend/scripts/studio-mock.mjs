@@ -79,6 +79,9 @@ function show() {
     host_user_id: HOST_ID,
     created_by: HOST_ID,
     host_username: 'local-host',
+    // Like the backend: an admin or the episode's host runs it (#1047).
+    can_edit: user.role === 'admin' || user.id === HOST_ID,
+    can_manage: user.role === 'admin' || user.id === HOST_ID,
     episode_status: 'upcoming',
     studio_log: studioLog,
     listener_samples: [],
