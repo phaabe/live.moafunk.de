@@ -3,7 +3,7 @@
 //! These endpoints mirror the functionality of the template-based handlers
 //! but return JSON responses for the Vue 3 admin panel.
 
-use crate::{ai, auth, models, storage, telegram_notify, video, AppError, AppState, Result};
+use crate::{ai, auth, hosts, models, storage, telegram_notify, video, AppError, AppState, Result};
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
@@ -2029,6 +2029,15 @@ pub struct ShowDetailResponse {
     stream_mode: Option<String>,
     /// The user who created the show (may differ from the assigned host).
     created_by: Option<i64>,
+    /// Who hosts this episode: the Show's owner and co-hosts, then the
+    /// episode's own co-hosts.
+    hosts: Vec<hosts::Host>,
+    /// The viewer may edit this episode and go live with it (one of its hosts
+    /// or an admin).
+    can_edit: bool,
+    /// The viewer may also cancel it and change who hosts it (not an episode
+    /// co-host).
+    can_manage: bool,
     /// The most recent live-stream recording (from `recording_versions`), distinct
     /// from the manual `recording_*`/`prerecorded_*` uploads above. `None` when the
     /// show was never recorded. See [`LatestRecordingInfo`].
@@ -2656,6 +2665,8 @@ pub async fn api_show_detail(
         .await?;
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    let access = hosts::episode_access(&state.db, &viewer, &show).await?;
+    let episode_hosts = hosts::episode_hosts(&state.db, &show).await?;
 
     // Get assigned artists with file keys for URL generation and audio availability
     let assigned_artists_raw: Vec<ArtistWithFileKeys> = sqlx::query_as(
@@ -3018,6 +3029,9 @@ pub async fn api_show_detail(
         available_hosts,
         stream_mode: show.stream_mode,
         created_by: show.created_by,
+        hosts: episode_hosts,
+        can_edit: access.is_some(),
+        can_manage: access == Some(hosts::EpisodeAccess::Manage),
         latest_recording,
         series_slug: view.series_slug,
         series_name: view.series_name,
@@ -3578,8 +3592,9 @@ pub async fn api_delete_show(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    // Admins (any show), or the host/creator of this show, may delete it.
-    require_show_editor(&state, &headers, id).await?;
+    // Admins (any show), or the host/creator of this show, may delete it;
+    // an episode co-host may not.
+    require_show_manager(&state, &headers, id).await?;
 
     // Delete the show from database
     sqlx::query("DELETE FROM shows WHERE id = ?")
@@ -3839,7 +3854,7 @@ pub async fn api_show_assign_host(
     Json(req): Json<AssignHostRequest>,
 ) -> Result<impl IntoResponse> {
     // Admins, or the show's creator, may (re)assign the host.
-    let (editor, show) = require_show_editor(&state, &headers, show_id).await?;
+    let (editor, show) = require_show_manager(&state, &headers, show_id).await?;
     let editor_is_admin = editor.role_enum().can_access_admin();
 
     if show.show_type == "unheard" {
@@ -3894,7 +3909,7 @@ pub async fn api_show_unassign_host(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     // Admins or the show's creator may clear the host.
-    require_show_editor(&state, &headers, show_id).await?;
+    require_show_manager(&state, &headers, show_id).await?;
 
     sqlx::query("UPDATE shows SET host_user_id = NULL, updated_at = datetime('now') WHERE id = ?")
         .bind(show_id)
@@ -5992,15 +6007,13 @@ pub async fn require_show_creator(
     Ok(user)
 }
 
-/// Require a user allowed to EDIT a specific show: admins/superadmins (any show),
-/// the host assigned to this show, or the user who created it. The creator is
-/// included so a host who hands the show to a guest keeps control of it.
-/// Returns the authenticated user and the loaded show so the caller can reuse it.
-pub async fn require_show_editor(
+/// The signed-in user, the show and what the user may do on it
+/// (`hosts::episode_access`). 403 when they do not host it.
+pub(super) async fn require_episode_access(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     show_id: i64,
-) -> Result<(models::User, models::Show)> {
+) -> Result<(models::User, models::Show, hosts::EpisodeAccess)> {
     let token = auth::get_session_from_headers(headers);
     let user = auth::get_current_user(state, token.as_deref())
         .await
@@ -6012,15 +6025,40 @@ pub async fn require_show_editor(
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    let is_admin = user.role_enum().can_access_admin();
-    let is_host = show.host_user_id == Some(user.id);
-    let is_creator = show.created_by == Some(user.id);
-    if !is_admin && !is_host && !is_creator {
+    let access = hosts::episode_access(&state.db, &user, &show)
+        .await?
+        .ok_or_else(|| {
+            AppError::Forbidden("You can only edit shows you host or created".to_string())
+        })?;
+    Ok((user, show, access))
+}
+
+/// Require a user allowed to EDIT a specific show: admins/superadmins (any
+/// show), its hosts (the assigned host, the Show's owner and co-hosts, episode
+/// co-hosts), or the creator of a show without a Show. Returns the
+/// authenticated user and the loaded show so the caller can reuse it.
+pub async fn require_show_editor(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    show_id: i64,
+) -> Result<(models::User, models::Show)> {
+    let (user, show, _) = require_episode_access(state, headers, show_id).await?;
+    Ok((user, show))
+}
+
+/// Like [`require_show_editor`], but for cancelling or deleting the show and
+/// changing who hosts it: an episode co-host gets 403.
+pub async fn require_show_manager(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    show_id: i64,
+) -> Result<(models::User, models::Show)> {
+    let (user, show, access) = require_episode_access(state, headers, show_id).await?;
+    if access != hosts::EpisodeAccess::Manage {
         return Err(AppError::Forbidden(
-            "You can only edit shows you host or created".to_string(),
+            "Only the Show's owner and co-hosts can do this".to_string(),
         ));
     }
-
     Ok((user, show))
 }
 

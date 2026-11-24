@@ -1,7 +1,7 @@
 //! Host API for show series ("Shows" in the host flow). Every host may view a
-//! series and its episodes (GET /api/series/:slug); only its owner edits it,
-//! and only the owner or an admin books its episodes. The list and the edit
-//! route only see the caller's own series; another user's slug is a 404 there.
+//! series and its episodes (GET /api/series/:slug); its owner and co-hosts
+//! edit it, and they or an admin book its episodes. The list and the edit
+//! route only see the series the caller hosts; another slug is a 404 there.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 use super::api::require_show_creator;
+use crate::hosts::{self, HostNames};
 use crate::series::{self, EpisodeStatus, RepeatRule, Rhythm};
 use crate::{storage, AppError, AppState, Result};
 
@@ -38,7 +39,7 @@ const SERIES_COLUMNS: &str = "id, slug, name, description, cover_key, owner_user
                               repeat_rule, weekday, start_time, end_time, instagram_handle";
 
 /// A series by slug, whoever owns it. An unknown slug is 404.
-async fn load_series_by_slug(state: &Arc<AppState>, slug: &str) -> Result<SeriesRow> {
+pub(super) async fn load_series_by_slug(state: &Arc<AppState>, slug: &str) -> Result<SeriesRow> {
     sqlx::query_as(&format!(
         "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?"
     ))
@@ -48,20 +49,23 @@ async fn load_series_by_slug(state: &Arc<AppState>, slug: &str) -> Result<Series
     .ok_or_else(|| AppError::NotFound("Show not found".to_string()))
 }
 
-/// The owner or an admin may book and manage the episodes of a series.
-fn may_book(row: &SeriesRow, user: &crate::models::User) -> bool {
-    row.owner_user_id == user.id || user.role_enum().can_access_admin()
+/// The owner, a co-host or an admin may book and manage the episodes of a series.
+async fn may_book(state: &AppState, row: &SeriesRow, user: &crate::models::User) -> Result<bool> {
+    Ok(user.role_enum().can_access_admin()
+        || hosts::series_role(&state.db, row.id, row.owner_user_id, user.id)
+            .await?
+            .is_some())
 }
 
-/// A series by slug for its owner or an admin (booking endpoints). Another
-/// host gets 403; an unknown slug is 404.
+/// A series by slug for its owner, a co-host or an admin (booking endpoints).
+/// Another host gets 403; an unknown slug is 404.
 pub(super) async fn load_series_for_editor(
     state: &Arc<AppState>,
     user: &crate::models::User,
     slug: &str,
 ) -> Result<SeriesRow> {
     let row = load_series_by_slug(state, slug).await?;
-    if !may_book(&row, user) {
+    if !may_book(state, &row, user).await? {
         return Err(AppError::Forbidden(
             "You can only book episodes of your own shows".to_string(),
         ));
@@ -94,9 +98,11 @@ pub struct SeriesItem {
     rhythm_line: Option<String>,
     /// The host's own Instagram account, without '@'.
     instagram_handle: Option<String>,
+    /// The owner first, then the co-hosts.
+    hosts: Vec<hosts::Host>,
 }
 
-async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
+async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> Result<SeriesItem> {
     let rhythm = row.rhythm();
     let cover_url = match &row.cover_key {
         Some(key) => storage::get_presigned_url(state, key, 3600).await.ok(),
@@ -106,7 +112,8 @@ async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
         .cover_key
         .as_deref()
         .map(|key| crate::thumbs::srcset(state, key));
-    SeriesItem {
+    Ok(SeriesItem {
+        hosts: hosts::series_hosts(&state.db, row.id).await?,
         id: row.id,
         rhythm_line: rhythm.as_ref().map(Rhythm::line),
         rhythm,
@@ -116,10 +123,10 @@ async fn series_item(state: &Arc<AppState>, row: SeriesRow) -> SeriesItem {
         instagram_handle: row.instagram_handle,
         cover_url,
         cover_srcset,
-    }
+    })
 }
 
-/// GET /api/series — the caller's series, by name.
+/// GET /api/series — the series the caller owns or co-hosts, by name.
 pub async fn api_list_series(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -127,7 +134,9 @@ pub async fn api_list_series(
     let user = require_show_creator(&state, &headers).await?;
     let rows: Vec<SeriesRow> = sqlx::query_as(&format!(
         "SELECT {SERIES_COLUMNS} FROM show_templates \
-         WHERE owner_user_id = ? AND slug IS NOT NULL ORDER BY name COLLATE NOCASE, id"
+         WHERE slug IS NOT NULL AND (owner_user_id = ?1 OR id IN \
+               (SELECT series_id FROM series_hosts WHERE user_id = ?1)) \
+         ORDER BY name COLLATE NOCASE, id"
     ))
     .bind(user.id)
     .fetch_all(&state.db)
@@ -135,7 +144,7 @@ pub async fn api_list_series(
 
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        items.push(series_item(&state, row).await);
+        items.push(series_item(&state, row).await?);
     }
     Ok(Json(serde_json::json!({ "series": items })))
 }
@@ -313,11 +322,11 @@ pub async fn api_create_series(
         }
     }
 
-    let row = load_own_series(&state, user.id, &slug).await?;
-    Ok((StatusCode::CREATED, Json(series_item(&state, row).await)))
+    let row = load_hosted_series(&state, user.id, &slug).await?;
+    Ok((StatusCode::CREATED, Json(series_item(&state, row).await?)))
 }
 
-/// PUT /api/series/:slug — the owner edits a series. Same multipart fields as
+/// PUT /api/series/:slug — the owner or a co-host edits a series. Same multipart fields as
 /// POST /api/series; `cover` is optional and kept when left out. The slug
 /// stays, so links keep working. Booked episodes keep their date and time.
 pub async fn api_update_series(
@@ -327,7 +336,7 @@ pub async fn api_update_series(
     multipart: Multipart,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
-    let row = load_own_series(&state, user.id, &slug).await?;
+    let row = load_hosted_series(&state, user.id, &slug).await?;
     let form = CreateSeriesForm::read(multipart).await?;
 
     let name = form.name.as_deref().map(str::trim).unwrap_or("");
@@ -364,16 +373,18 @@ pub async fn api_update_series(
     .execute(&state.db)
     .await?;
 
-    let row = load_own_series(&state, user.id, &slug).await?;
-    Ok(Json(series_item(&state, row).await))
+    let row = load_hosted_series(&state, user.id, &slug).await?;
+    Ok(Json(series_item(&state, row).await?))
 }
 
-async fn load_own_series(state: &Arc<AppState>, owner_id: i64, slug: &str) -> Result<SeriesRow> {
+/// A series by slug that `user_id` owns or co-hosts; any other is 404.
+async fn load_hosted_series(state: &Arc<AppState>, user_id: i64, slug: &str) -> Result<SeriesRow> {
     sqlx::query_as(&format!(
-        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ? AND owner_user_id = ?"
+        "SELECT {SERIES_COLUMNS} FROM show_templates WHERE slug = ?1 AND (owner_user_id = ?2 \
+         OR id IN (SELECT series_id FROM series_hosts WHERE user_id = ?2))"
     ))
     .bind(slug)
-    .bind(owner_id)
+    .bind(user_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or_else(|| AppError::NotFound("Show not found".to_string()))
@@ -439,20 +450,13 @@ pub struct PostReading {
     sent_at: Option<String>,
 }
 
-/// A host of a series. Today that is its owner; a series may get more later.
-#[derive(Debug, Serialize)]
-pub struct SeriesHost {
-    username: String,
-}
-
 #[derive(Debug, Serialize)]
 pub struct SeriesDetail {
     #[serde(flatten)]
     series: SeriesItem,
-    /// The caller may book and manage its episodes (its owner or an admin).
-    /// Editing the series itself (PUT) stays with its owner.
+    /// The caller may book and manage its episodes (its owner, a co-host or
+    /// an admin). Editing the series itself (PUT) stays with its hosts.
     can_edit: bool,
-    hosts: Vec<SeriesHost>,
     /// Newest first.
     episodes: Vec<EpisodeItem>,
 }
@@ -466,16 +470,8 @@ pub async fn api_get_series(
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
     let row = load_series_by_slug(&state, &slug).await?;
-    let can_edit = may_book(&row, &user);
+    let can_edit = may_book(&state, &row, &user).await?;
     let rhythm_end = row.rhythm().map(|r| r.end_time);
-
-    let hosts: Vec<SeriesHost> = sqlx::query_scalar("SELECT username FROM users WHERE id = ?")
-        .bind(row.owner_user_id)
-        .fetch_all(&state.db)
-        .await?
-        .into_iter()
-        .map(|username| SeriesHost { username })
-        .collect();
 
     let rows: Vec<EpisodeRow> = sqlx::query_as(
         "SELECT id, title, date, start_time, end_time, stream_mode, wrapup_published_at, \
@@ -546,9 +542,8 @@ pub async fn api_get_series(
         .collect();
 
     Ok(Json(SeriesDetail {
-        series: series_item(&state, row).await,
+        series: series_item(&state, row).await?,
         can_edit,
-        hosts,
         episodes,
     }))
 }
@@ -564,6 +559,7 @@ struct UpcomingRow {
     wrapup_published_at: Option<String>,
     live_ended_at: Option<String>,
     show_name: String,
+    series_id: i64,
     series_slug: String,
     host_username: String,
 }
@@ -588,9 +584,10 @@ impl UpcomingRow {
         )
     }
 
-    fn into_item(self) -> UpcomingEpisode {
+    fn into_item(self, names: &HostNames) -> UpcomingEpisode {
         let (mode, mode_label) = series::mode_of(self.stream_mode.as_deref());
         UpcomingEpisode {
+            hosts: names.of_episode(&self.host_username, self.series_id, self.id),
             id: self.id,
             title: self.title,
             date: self.date,
@@ -611,7 +608,7 @@ const HOST_EPISODES_SQL: &str = "SELECT s.id, s.title, s.date, \
             COALESCE(s.start_time, t.start_time) AS start_time, \
             COALESCE(s.end_time, t.end_time) AS end_time, s.stream_mode, \
             s.wrapup_published_at, s.live_ended_at, t.name AS show_name, \
-            t.slug AS series_slug, u.username AS host_username \
+            t.id AS series_id, t.slug AS series_slug, u.username AS host_username \
      FROM shows s \
      JOIN show_templates t ON t.id = s.template_id \
      JOIN users u ON u.id = t.owner_user_id \
@@ -629,7 +626,10 @@ pub struct UpcomingEpisode {
     show_name: String,
     /// The Show's slug: its page and its cover on the Dashboard.
     series_slug: String,
+    /// The Show's owner.
     host_username: String,
+    /// The owner, the Show's co-hosts, then the episode's co-hosts.
+    hosts: Vec<String>,
     /// "live" | "prerecorded"
     mode: &'static str,
     /// "Live" | "Pre-recorded"
@@ -653,10 +653,11 @@ pub async fn api_upcoming_episodes(
 
     let on_air = on_air_show_id(&state).await;
     let now = Utc::now();
+    let names = HostNames::load(&state.db).await?;
     let episodes: Vec<UpcomingEpisode> = rows
         .into_iter()
         .filter(|e| e.status(on_air, now) == EpisodeStatus::Upcoming)
-        .map(UpcomingRow::into_item)
+        .map(|e| e.into_item(&names))
         .collect();
 
     Ok(Json(serde_json::json!({ "episodes": episodes })))
@@ -706,12 +707,13 @@ pub async fn api_past_episodes(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     require_show_creator(&state, &headers).await?;
+    let names = HostNames::load(&state.db).await?;
     let episodes: Vec<PastEpisode> = past_host_episodes(&state)
         .await?
         .into_iter()
         .take(PAST_EPISODES_LIMIT)
         .map(|(e, status)| PastEpisode {
-            episode: e.into_item(),
+            episode: e.into_item(&names),
             status,
             status_label: status.label(),
         })
@@ -738,6 +740,8 @@ pub struct SeriesOverviewItem {
     /// Small copies of the cover, see `thumbs::srcset`.
     cover_srcset: Option<String>,
     host_username: String,
+    /// The owner, then the co-hosts.
+    hosts: Vec<String>,
     /// Episodes whose broadcast is over (wrap-up open or finished).
     finished_episodes: usize,
 }
@@ -761,6 +765,7 @@ pub async fn api_series_overview(
     for (episode, _) in past_host_episodes(&state).await? {
         *finished.entry(episode.series_slug).or_default() += 1;
     }
+    let names = HostNames::load(&state.db).await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
@@ -779,6 +784,7 @@ pub async fn api_series_overview(
             name: row.name,
             cover_url,
             cover_srcset,
+            hosts: names.of_series(&row.host_username, row.id),
             host_username: row.host_username,
         });
     }

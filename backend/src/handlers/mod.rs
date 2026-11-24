@@ -5,6 +5,7 @@ pub mod booking;
 pub mod chalkboard;
 pub mod chat_ws;
 pub mod download;
+pub mod hosts;
 pub mod recording;
 pub mod recovery;
 pub mod series;

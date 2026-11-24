@@ -9,6 +9,7 @@ mod config;
 mod db;
 mod error;
 mod handlers;
+mod hosts;
 mod image_overlay;
 mod instagram;
 mod metrics;
@@ -45,6 +46,8 @@ mod fake_instagram;
 mod fake_r2;
 #[cfg(test)]
 mod fake_telegram;
+#[cfg(test)]
+mod hosts_tests;
 #[cfg(test)]
 mod recording_tests;
 #[cfg(test)]
@@ -608,6 +611,24 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/series/:slug",
             get(handlers::series::api_get_series).put(handlers::series::api_update_series),
+        )
+        // Co-hosts of a Show and of one episode; the host accounts to add
+        .route("/api/hosts", get(handlers::hosts::api_list_hosts))
+        .route(
+            "/api/series/:slug/hosts",
+            post(handlers::hosts::api_add_series_host),
+        )
+        .route(
+            "/api/series/:slug/hosts/:user_id",
+            axum::routing::delete(handlers::hosts::api_remove_series_host),
+        )
+        .route(
+            "/api/shows/:id/hosts",
+            post(handlers::hosts::api_add_episode_host),
+        )
+        .route(
+            "/api/shows/:id/hosts/:user_id",
+            axum::routing::delete(handlers::hosts::api_remove_episode_host),
         )
         // Host Dashboard: all hosts' upcoming episodes
         .route(
