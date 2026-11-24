@@ -16,8 +16,21 @@ flow calls this an **Episode**, and uses **Show** for the series below.
 
 **Series** — A host's recurring programme (for example "Brunchtime") with a
 name, description, cover and rhythm; it owns its episodes. The host flow calls
-it a **Show**. Its owner is the only host who may book, edit or start its
-episodes; every host may view them. (Code: `show_templates`, `Series`.)
+it a **Show**. Its owner and its co-hosts may book, edit or start its
+episodes; every other host may only view them. (Code: `show_templates`, `Series`.)
+
+**Owner** — The one host a Series belongs to. Only the owner may delete the
+Series or add and remove its co-hosts.
+
+**Co-host** — A host the owner added to a Series. A co-host has the owner's
+rights on the Series and all its episodes, except deleting the Series and
+changing who its co-hosts are.
+
+**Episode co-host** — A host added to one episode only, by the owner or a
+co-host. An episode co-host has the owner's rights on that episode, except
+cancelling the booking and changing who its episode co-hosts are. The Series
+itself stays read-only for them. An episode's **hosts** are its Series' owner,
+the Series' co-hosts and its episode co-hosts.
 
 **Show type** — Distinguishes editorial formats. `unheard` shows use the legacy
 info-card detail layout; `external` / "brunchtime" shows use the newer dashboard
@@ -28,10 +41,13 @@ word.
 **Host** — The person responsible for a show's broadcast. Either a standing user
 (role `host`) or the admin themselves. Distinct from **Guest** below.
 
-**Guest** — A one-off host identity created for a single show: can only log in on
-the show date and is removed afterwards. A Guest *is* a kind of host for that
-show, but is not a standing user. (When we say "assign a host" the target may be
-either a standing user or a freshly created Guest.)
+**Guest** — A person a host brings in for one episode through a **Take-Over
+link**: a one-time link, no account and no password. A guest is listed among the
+episode's hosts, but may only open the Studio and go live for that episode;
+never edit it, and never post to SoundCloud or Instagram. *Terminology watch:*
+the code still has guest *accounts* (role `guest`, login on the show date only),
+and in code "takeover" means an admin forcing a stream away from its
+broadcaster. Neither is the guest or Take-Over link meant here.
 
 ## Broadcast
 
