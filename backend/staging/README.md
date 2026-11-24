@@ -55,7 +55,7 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
    ```
 
 7. **Finish setup:** `ssh root@<staging-ip> /opt/unheard-staging/staging.sh setup` again. It checks both env files and the R2 token, writes `icecast.xml`, installs the nginx vhost and gets the TLS certificate once DNS points at the box. It is safe to run again at any time.
-8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` (password in `Moafunk STAGING_SUPERADMIN_PASSWORD`) or `staging-host` (password in `Moafunk STAGING_HOST_PASSWORD`).
+8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` (password in `Moafunk STAGING_SUPERADMIN_PASSWORD`) or `staging-host` (password in `Moafunk STAGING_HOST_PASSWORD`). `staging-host-2` has the same password, as a second host for co-host tests.
 
 ## Daily use
 
@@ -82,7 +82,7 @@ The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGI
 
 Staging keeps running (also after a reboot) until `down`.
 
-`up` and `seed-db` create or reset three logins to the Bitwarden passwords: `staging-admin` (superadmin) and `staging-host` (host) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+`up` and `seed-db` create or reset four logins to the Bitwarden passwords: `staging-admin` (superadmin), `staging-host` and `staging-host-2` (hosts) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
 
 ## Chaos test show
 
@@ -125,7 +125,7 @@ ssh root@178.104.160.103 'bash -s -- export-db' < backend/staging/staging.sh \
   | ssh root@<staging-ip> '/opt/unheard-staging/staging.sh seed-db -'
 ```
 
-The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin` and `staging-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
+The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin`, `staging-host`, `staging-host-2` and `e2e-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
 
 ## Tests
 
