@@ -74,7 +74,7 @@
     {
       "screen": "episode",
       "release": "R5",
-      "items": ["button: Create guest link"]
+      "items": ["button: Add guest"]
     },
     {
       "screen": "studio-onair",
@@ -574,6 +574,21 @@
         "button: 4 · Recording"
       ],
       "why": "One episode page (Anton, 2026-11-22): another host's episode is the owner's page read-only, with the same four tab tiles above one main card. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-show-edit",
+      "items": ["back: My Shows", "button: New show", "h2: Rhythm"],
+      "why": "My Show (https://github.com/phaabe/live.moafunk.de/issues/1050) is a nav page: it has no back link, New show sits in the page head, and the form has no Rhythm heading (Repeats, Day and Time sit in one row). The flow drew this screen like New show. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-show-edit",
+      "items": ["row: jonas | Co-host · Remove", "row: jonas | Co-host", "button: Remove jonas"],
+      "why": "Co-hosts (https://github.com/phaabe/live.moafunk.de/issues/1047): Remove is the row's own button, so the row reads jonas | Co-host and the button Remove jonas. Update the flow in Flow Lab (a row plus a button), then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": ["row: Hosts | lena, jonas · mira · DJ Lumen (guest)", "button: Add host"],
+      "why": "Co-hosts (https://github.com/phaabe/live.moafunk.de/issues/1047): the Hosts row and Add host sit in the heading box's Edit form, like Save and Cancel booking. The read-only heading says “Hosts: lena, jonas · mira”. Guests (DJ Lumen) come with https://github.com/phaabe/live.moafunk.de/issues/739."
     }
   ]
 }

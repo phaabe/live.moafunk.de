@@ -537,6 +537,12 @@ export interface ShowDetail {
   host_has_logged_in: boolean | null;
   host_username?: string;
   available_hosts?: { id: number; username: string }[];
+  /** The episode's hosts (#1047): the Show's owner and co-hosts, then its own co-hosts. */
+  hosts?: SeriesHost[];
+  /** The caller hosts this episode: may edit it, open the Studio and go live. */
+  can_edit?: boolean;
+  /** The caller may also cancel it and change who hosts it (not an episode co-host). */
+  can_manage?: boolean;
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
   /** The user who created the show (may differ from the assigned host). */
@@ -1122,6 +1128,8 @@ export interface Series {
   rhythm_line: string | null;
   /** The host's own Instagram account, without "@"; announcements invite it as collaborator. */
   instagram_handle?: string | null;
+  /** The owner first, then the co-hosts (#1047). */
+  hosts?: SeriesHost[];
 }
 
 export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
@@ -1144,15 +1152,17 @@ export interface SeriesEpisode {
   instagram?: Pick<Announcement, 'slot' | 'state' | 'scheduled_at' | 'sent_at'>[];
 }
 
-/** A host of a Show. Today that is its owner; a Show may get more later. */
+/** A host of a Show or an episode (#1047). */
 export interface SeriesHost {
+  user_id: number;
   username: string;
+  /** The Show's owner, a Show co-host, or a co-host of one episode. */
+  role: 'owner' | 'cohost' | 'episode';
 }
 
 export interface SeriesDetail extends Series {
-  /** The caller may book and manage its episodes: its owner or an admin. */
+  /** The caller may book and manage its episodes: its owner, a co-host or an admin. */
   can_edit?: boolean;
-  hosts?: SeriesHost[];
   /** Newest first. */
   episodes: SeriesEpisode[];
 }
@@ -1169,6 +1179,8 @@ export interface UpcomingEpisode {
   /** The Show's slug: its page and its cover in the Shows grid. */
   series_slug: string;
   host_username: string;
+  /** Every host by name: the owner, the Show's co-hosts, the episode's co-hosts. */
+  hosts?: string[];
   mode: 'live' | 'prerecorded';
   mode_label: string;
 }
@@ -1188,6 +1200,8 @@ export interface SeriesOverviewItem {
   cover_url: string | null;
   cover_srcset?: string | null;
   host_username: string;
+  /** The owner, then the co-hosts. */
+  hosts?: string[];
   /** Episodes whose broadcast is over (wrap-up open or finished). */
   finished_episodes: number;
 }
@@ -1309,6 +1323,28 @@ export const seriesApi = {
 
   /** All hosts' Shows with cover, host and finished episodes, most episodes first. */
   overview: () => api.get<{ series: SeriesOverviewItem[] }>('/api/series-overview'),
+};
+
+/** A host account that Add host offers. */
+export interface HostAccount {
+  id: number;
+  username: string;
+}
+
+/** Co-hosts of a Show and of one episode (#1047). Each change returns the new host list. */
+export const hostsApi = {
+  /** Every active host account (no guests, no admins). */
+  list: () => api.get<HostAccount[]>('/api/hosts'),
+  addToSeries: (slug: string, userId: number) =>
+    api.post<SeriesHost[]>(`${seriesPath(slug)}/hosts`, { user_id: userId }),
+  /** The owner removes a co-host, or a co-host leaves (their own id). */
+  removeFromSeries: (slug: string, userId: number) =>
+    api.delete<SeriesHost[]>(`${seriesPath(slug)}/hosts/${userId}`),
+  addToEpisode: (showId: number, userId: number) =>
+    api.post<SeriesHost[]>(`/api/shows/${showId}/hosts`, { user_id: userId }),
+  /** The owner or a Show co-host removes an episode co-host, or one leaves. */
+  removeFromEpisode: (showId: number, userId: number) =>
+    api.delete<SeriesHost[]>(`/api/shows/${showId}/hosts/${userId}`),
 };
 
 /** A note on the Dashboard's chalkboard. `ts` is seconds since the epoch. */

@@ -1,0 +1,16 @@
+{
+  "screen": "my-show-edit",
+  "hash": "ec62311d",
+  "status": "drift",
+  "leftOut": [],
+  "missing": [
+    "back: My Shows",
+    "h2: Rhythm",
+    "row: jonas | Co-host · Remove"
+  ],
+  "extra": [
+    "button: New show",
+    "button: Remove jonas",
+    "row: jonas | Co-host"
+  ]
+}

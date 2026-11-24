@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { showsApi } from '@admin/api';
+import { showsApi, streamApi } from '@admin/api';
+import { useAuthStore } from '@admin/stores/auth';
 import {
   useHostFlow,
   useAudioCapture,
@@ -88,8 +89,22 @@ async function onAirNow(showId: number): Promise<boolean | null> {
   }
 }
 
+/** Another host who is on air now, e.g. a co-host of this episode (#1047); null when none or unknown. */
+async function otherOnAir(): Promise<string | null> {
+  try {
+    const status = await streamApi.status();
+    const user = status.active ? status.user : undefined;
+    return user && user !== useAuthStore().user?.username ? user : null;
+  } catch {
+    return null;
+  }
+}
+
 onMounted(async () => {
-  if (show.value) backOnAir.value = (await onAirNow(show.value.id)) === true;
+  if (!show.value) return;
+  const [onAir, other] = await Promise.all([onAirNow(show.value.id), otherOnAir()]);
+  // A co-host's broadcast is not this host's to go back to.
+  backOnAir.value = onAir === true && !other;
 });
 
 const canGoLive = computed(
@@ -126,6 +141,12 @@ async function goLive() {
   const firstGoLive = !backOnAir.value;
   goingLive.value = true;
   goLiveError.value = null;
+  // The server refuses a second broadcast; say who is on air instead.
+  const other = await otherOnAir();
+  if (other) {
+    failGoLive(`${other} is on air from another device.`);
+    return;
+  }
   if (backOnAir.value) {
     // This click is a user gesture: resume audio before the request.
     audioCapture.resumeAudioContext();

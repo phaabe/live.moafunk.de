@@ -34,6 +34,8 @@ const showsError = ref<string | null>(null);
 const episodesLoaded = ref(false);
 const showsLoaded = ref(false);
 const streamActive = ref(false);
+/** Who sends the stream; unknown when the server does not say. */
+const streamUser = ref<string | undefined>(undefined);
 const listeners = ref<number | null>(null);
 const now = ref(Date.now());
 
@@ -107,7 +109,9 @@ async function loadListeners() {
 
 /** A stream that starts or stops moves episodes between the lists: reload them. */
 async function loadStatus() {
-  const active = (await streamApi.status()).active;
+  const status = await streamApi.status();
+  const active = status.active;
+  streamUser.value = status.user;
   const changed = active !== streamActive.value;
   streamActive.value = active;
   if (active) await loadListeners();
@@ -147,6 +151,7 @@ onUnmounted(() => {
             :cover-url="coverOf(onAir)"
             :cover-srcset="coverSrcsetOf(onAir)"
             :username="username"
+            :stream-user="streamUser"
             :now="now"
             :listeners="listeners"
           />

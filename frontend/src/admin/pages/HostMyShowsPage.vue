@@ -8,8 +8,7 @@ import {
   type LocationQuery,
 } from 'vue-router';
 import { BaseButton } from '@shared/components';
-import { seriesApi, type Series, type UpcomingEpisode } from '../api';
-import { useAuthStore } from '../stores/auth';
+import { seriesApi, type Series, type SeriesHost, type UpcomingEpisode } from '../api';
 import BoardIcon from '../components/BoardIcon.vue';
 import MyShowCard from '../components/my-show/MyShowCard.vue';
 
@@ -17,12 +16,11 @@ import MyShowCard from '../components/my-show/MyShowCard.vue';
 // One Show fills the page as one card; more Shows sit in a grid, two per
 // row. A card reads as plain text until Edit turns it into the Show form.
 // `?edit=<slug>` opens that card in edit mode (the Show page links here).
-// Only the host's own Shows are listed, so every card may be edited.
+// The Shows the host owns or co-hosts are listed, so every card may be edited.
 // UNHEARD is parked, so it has no card here.
 
 const route = useRoute();
 const router = useRouter();
-const auth = useAuthStore();
 
 const shows = ref<Series[]>([]);
 /** All hosts' upcoming episodes, by date and start time; null when they could not load. */
@@ -40,8 +38,6 @@ const editing = computed(() => {
   return shows.value.some((s) => s.slug === slug) ? slug : null;
 });
 const grid = computed(() => shows.value.length > 1);
-/** The owner hosts the Show; more hosts per Show come with #1047. */
-const hosts = computed(() => (auth.user ? [auth.user.username] : []));
 
 /** A Show's next episode; null when none is booked, undefined when the episodes could not load. */
 const nextOf = (slug: string) =>
@@ -57,6 +53,17 @@ function setEditing(slug: string | null) {
 
 function onSaved(saved: Series) {
   shows.value = shows.value.map((s) => (s.slug === saved.slug ? saved : s));
+  dirty.value = false;
+  void setEditing(null);
+}
+
+function onHosts(slug: string, hosts: SeriesHost[]) {
+  shows.value = shows.value.map((s) => (s.slug === slug ? { ...s, hosts } : s));
+}
+
+/** Leave show: the Show is no longer the host's. */
+function onLeft(slug: string) {
+  shows.value = shows.value.filter((s) => s.slug !== slug);
   dirty.value = false;
   void setEditing(null);
 }
@@ -111,13 +118,14 @@ onMounted(async () => {
         :key="show.slug"
         v-model:dirty="dirty"
         :show="show"
-        :hosts="hosts"
         :next="nextOf(show.slug)"
         :editing="editing === show.slug"
         :compact="grid"
         @edit="setEditing(show.slug)"
         @cancel="setEditing(null)"
         @saved="onSaved"
+        @hosts="onHosts(show.slug, $event)"
+        @left="onLeft(show.slug)"
       />
     </div>
   </div>

@@ -40,6 +40,8 @@ const mocks = vi.hoisted(() => ({
   socketStats: {} as Record<string, unknown>,
   chat: null as null | { messages: Ref<unknown[]>; connected: Ref<boolean> },
   health: {} as Record<string, Ref<unknown>>,
+  /** GET /api/stream/status: who sends the stream. */
+  streamStatus: { active: false } as { active: boolean; user?: string },
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -55,6 +57,7 @@ vi.mock('@admin/api', () => ({
   // The Studio and the live panel save their values to the episode.
   showsApi: { saveStudioLog: vi.fn(() => Promise.resolve()) },
   streamApi: {
+    status: vi.fn(() => Promise.resolve(mocks.streamStatus)),
     metrics: vi.fn(() =>
       Promise.resolve({
         online: mocks.listeners !== null,
@@ -64,6 +67,9 @@ vi.mock('@admin/api', () => ({
     ),
   },
   recordingApi: { status: vi.fn(() => Promise.resolve(mocks.recording)) },
+}));
+vi.mock('@admin/stores/auth', () => ({
+  useAuthStore: () => ({ user: { id: 2, username: 'jonas', role: 'host' } }),
 }));
 // The public stream: On Air offers "What listeners hear".
 vi.mock('@/config', () => ({
@@ -158,6 +164,7 @@ const goLiveButton = () =>
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.push.mockReset();
+  mocks.streamStatus = { active: false };
   mocks.connect.mockReset().mockResolvedValue(undefined);
   mocks.stopStream.mockReset();
   mocks.flowReset.mockReset();
@@ -314,6 +321,21 @@ describe('Studio', () => {
     expect(text()).toContain('Connection error');
     expect(mocks.push).not.toHaveBeenCalled();
     expect(goLiveButton().disabled).toBe(false);
+  });
+
+  it('refuses Go Live while another host of the episode is on air (#1047)', async () => {
+    mocks.passed!.value = true;
+    mocks.streamStatus = { active: true, user: 'lena' };
+    await mountStudio('2026-11-15T12:00:30Z');
+    // The co-host's broadcast is not this host's to go back on air to.
+    expect(goLiveButton().textContent).toContain('Go Live');
+
+    goLiveButton().click();
+    await vi.advanceTimersByTimeAsync(0);
+    await nextTick();
+    expect(text()).toContain('lena is on air from another device.');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
   });
 
   it('stays on the Studio when the input was unplugged before Go Live', async () => {

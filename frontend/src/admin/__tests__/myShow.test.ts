@@ -6,7 +6,8 @@ import { useAuthStore } from '../stores/auth';
 import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
 import { coverCountdown, showFacts } from '../components/my-show/showFacts';
 import { getBerlinNowISO } from '../showTime';
-import type { Series, UpcomingEpisode } from '../api';
+import type { HostAccount, Series, SeriesHost, UpcomingEpisode } from '../api';
+import { expectFlow } from '../flow/expectFlow';
 
 // My Show (#1050): read mode, edit mode, the discard prompt and ?edit=<slug>.
 // The list itself and the flow check are in hostScreens.test.ts.
@@ -20,6 +21,10 @@ const BRUNCHTIME: Series = {
   rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
   rhythm_line: 'Sundays · 12:00–14:00',
   instagram_handle: 'brunchtime',
+  hosts: [
+    { user_id: 1, username: 'lena', role: 'owner' },
+    { user_id: 2, username: 'jonas', role: 'cohost' },
+  ],
 };
 const UNHEARD: Series = {
   id: 4,
@@ -55,12 +60,21 @@ let upcoming: UpcomingEpisode[] | null;
 let put: FormData | undefined;
 let putFails: boolean;
 let confirm: Mock<[message?: string], boolean>;
+/** Every host account: whom Add host offers. */
+const ACCOUNTS: HostAccount[] = [
+  { id: 2, username: 'jonas' },
+  { id: 1, username: 'lena' },
+  { id: 3, username: 'mira' },
+];
+/** The host requests: POST and DELETE /api/series/:slug/hosts. */
+let hostCalls: string[];
 
 beforeEach(() => {
   mySeries = [BRUNCHTIME];
   upcoming = [BRUNCH_31];
   put = undefined;
   putFails = false;
+  hostCalls = [];
   root = document.createElement('div');
   document.body.appendChild(root);
   confirm = vi.fn((_message?: string) => false);
@@ -73,6 +87,24 @@ beforeEach(() => {
         return upcoming
           ? Response.json({ episodes: upcoming })
           : Response.json({ error: 'boom' }, { status: 500 });
+      }
+      if (url === '/api/hosts') return Response.json(ACCOUNTS);
+      const hostsOf = url.match(/^\/api\/series\/([^/]+)\/hosts(?:\/(\d+))?$/);
+      if (hostsOf) {
+        const series = mySeries.find((s) => s.slug === hostsOf[1])!;
+        const method = options?.method ?? 'GET';
+        let hosts: SeriesHost[] = series.hosts ?? [];
+        if (method === 'POST') {
+          const id = (JSON.parse(String(options?.body)) as { user_id: number }).user_id;
+          const a = ACCOUNTS.find((x) => x.id === id)!;
+          hosts = [...hosts, { user_id: id, username: a.username, role: 'cohost' }];
+          hostCalls.push(`POST ${id}`);
+        } else if (method === 'DELETE') {
+          hosts = hosts.filter((h) => h.user_id !== Number(hostsOf[2]));
+          hostCalls.push(`DELETE ${hostsOf[2]}`);
+        }
+        mySeries = mySeries.map((s) => (s.slug === series.slug ? { ...s, hosts } : s));
+        return Response.json(hosts);
       }
       const slug = url.match(/^\/api\/series\/([^/]+)$/)?.[1];
       const show = mySeries.find((s) => s.slug === slug);
@@ -99,7 +131,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mount(path = '/shows'): Promise<Router> {
+async function mount(path = '/shows', user = { id: 1, username: 'lena' }): Promise<Router> {
   const stub = (text: string) => ({ render: () => h('div', text) });
   const router = createRouter({
     history: createMemoryHistory(),
@@ -115,7 +147,7 @@ async function mount(path = '/shows'): Promise<Router> {
   const pinia = createPinia();
   app = createApp({ render: () => h(RouterView) });
   app.use(pinia).use(router);
-  useAuthStore(pinia).user = { id: 1, username: 'lena', role: 'host' };
+  useAuthStore(pinia).user = { ...user, role: 'host' };
   await router.push(path);
   await router.isReady();
   app.mount(root);
@@ -156,6 +188,15 @@ function field(within: Element, label: string): HTMLInputElement | HTMLSelectEle
   }
   throw new Error(`No field "${label}"`);
 }
+
+/** The host rows of the Hosts block: "name | role". */
+const rows = (within: Element) =>
+  [...within.querySelectorAll('.hosts-field li')].map((li) =>
+    [...li.querySelectorAll('.name, .role')].map((e) => e.textContent?.trim()).join(' | ')
+  );
+/** The picks of a select, without its placeholder. */
+const options = (select: HTMLInputElement | HTMLSelectElement) =>
+  [...(select as HTMLSelectElement).options].filter((o) => o.value).map((o) => o.text);
 
 async function type(el: HTMLInputElement | HTMLSelectElement, value: string) {
   el.value = value;
@@ -237,7 +278,8 @@ describe('My Show edit mode', () => {
     expect(field(c, 'Repeats').value).toBe('weekly');
     expect(field(c, 'Day').value).toBe('7');
     expect(field(c, 'Instagram handle').value).toBe('@brunchtime');
-    expect(c.querySelector('.static')?.textContent).toBe('lena');
+    expect(rows(c)).toEqual(['lena | Owner', 'jonas | Co-host']);
+    await vi.waitFor(() => expect(options(field(c, 'Add host'))).toEqual(['mira']));
   });
 
   it('leaves edit mode on Cancel without asking when nothing changed', async () => {
@@ -438,5 +480,53 @@ describe('coverCountdown', () => {
     expect(coverCountdown(on('2026-11-21'), '2026-11-22')).toBeNull();
     expect(coverCountdown(null, '2026-11-22')).toBeNull();
     expect(coverCountdown(undefined, '2026-11-22')).toBeNull();
+  });
+});
+
+describe('My Show co-hosts (#1047)', () => {
+  it('lets the owner add a host at once and remove a co-host after asking', async () => {
+    await mount('/shows?edit=brunchtime');
+    const c = card('Brunchtime');
+    await vi.waitFor(() => expect(options(field(c, 'Add host'))).toEqual(['mira']));
+    await type(field(c, 'Add host'), '3');
+    await vi.waitFor(() =>
+      expect(rows(c)).toEqual(['lena | Owner', 'jonas | Co-host', 'mira | Co-host'])
+    );
+    expect(hostCalls).toEqual(['POST 3']);
+    expect(put).toBeUndefined();
+
+    button('Remove', c).click();
+    expect(confirm).toHaveBeenCalledWith('Remove jonas as co-host?');
+    await settle();
+    expect(hostCalls).toEqual(['POST 3']);
+    confirm.mockReturnValue(true);
+    button('Remove', c).click();
+    await vi.waitFor(() => expect(rows(c)).toEqual(['lena | Owner', 'mira | Co-host']));
+    expect(hostCalls).toEqual(['POST 3', 'DELETE 2']);
+  });
+
+  it('shows a co-host the hosts as text and Leave show, which drops the Show', async () => {
+    await mount('/shows?edit=brunchtime', { id: 2, username: 'jonas' });
+    const c = card('Brunchtime');
+    expect(c.querySelector('.hosts-field .names')?.textContent).toBe('lena, jonas');
+    expect(rows(c)).toEqual([]);
+    expect(() => field(c, 'Add host')).toThrow();
+    expect(hasButton('Remove', c)).toBe(false);
+
+    confirm.mockReturnValue(true);
+    button('Leave show', c).click();
+    expect(confirm).toHaveBeenCalledWith('Leave this show?');
+    await vi.waitFor(() => expect(cards()).toHaveLength(0));
+    expect(hostCalls).toEqual(['DELETE 2']);
+  });
+});
+
+describe('flow', () => {
+  it('My Show · editing matches the flow', async () => {
+    await mount('/shows?edit=brunchtime');
+    await vi.waitFor(() =>
+      expect(options(field(card('Brunchtime'), 'Add host'))).toEqual(['mira'])
+    );
+    await expectFlow('my-show-edit', root);
   });
 });

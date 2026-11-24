@@ -5,7 +5,7 @@ import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-
 import { useAuthStore } from '../stores/auth';
 import { hostPage } from '../hostPage';
 import { currentReplaceTarget } from '../replaceFile';
-import type { ShowDetail, User } from '../api';
+import type { SeriesHost, ShowDetail, User } from '../api';
 import { expectFlow } from '../flow/expectFlow';
 
 // jsdom does not implement font loading used by the composables barrel.
@@ -180,6 +180,13 @@ const FR_2310_1800 = '2026-10-23T16:00:00Z';
 let app: App | undefined;
 let root: HTMLDivElement;
 let current: ShowDetail;
+/** The signed-in user of `mount`. */
+let viewerId = 1;
+/** What the backend says the viewer may do (#1047): here the assigned host or the creator. */
+function asViewer(s: ShowDetail): ShowDetail {
+  const mine = s.host_user_id === viewerId || s.created_by === viewerId;
+  return { can_edit: mine, can_manage: mine, ...s };
+}
 let announcements: Announcement[];
 let times: AnnouncementTime[];
 let saveError: Response | undefined;
@@ -191,6 +198,14 @@ const ON = { soundcloud: true, instagram: true };
 let photoUpload: Response | undefined;
 /** Holds GET /api/series/brunchtime until it resolves. */
 let seriesGate: Promise<void> | undefined;
+/** GET /api/stream/status; null: not mocked (the page cannot tell who is on air). */
+let streamStatus: { active: boolean; user?: string } | null;
+const ACCOUNTS = [
+  { id: 2, username: 'jonas' },
+  { id: 4, username: 'kai' },
+  { id: 1, username: 'lena' },
+  { id: 3, username: 'mira' },
+];
 
 beforeEach(() => {
   current = episode();
@@ -202,6 +217,7 @@ beforeEach(() => {
   meta = { paused: false, needs_approval: false, services: ON };
   photoUpload = undefined;
   seriesGate = undefined;
+  streamStatus = null;
   soundcloud = Response.json({
     success: true,
     track_id: '555',
@@ -215,7 +231,7 @@ beforeEach(() => {
       const method = options?.method ?? 'GET';
       const body = typeof options?.body === 'string' ? JSON.parse(options.body) : undefined;
       requests.push({ url, method, body });
-      if (url === '/api/shows/42' && method === 'GET') return Response.json(current);
+      if (url === '/api/shows/42' && method === 'GET') return Response.json(asViewer(current));
       if (url === '/api/shows/42' && method === 'PUT') {
         current = { ...current, ...(body as Partial<ShowDetail>) };
         return Response.json(current);
@@ -297,6 +313,21 @@ beforeEach(() => {
         );
         return Response.json(announcements.find((a) => a.slot === slot));
       }
+      if (url === '/api/stream/status' && streamStatus) return Response.json(streamStatus);
+      if (url === '/api/hosts') return Response.json(ACCOUNTS);
+      const hostOf = url.match(/^\/api\/shows\/42\/hosts(?:\/(\d+))?$/);
+      if (hostOf) {
+        let hosts: SeriesHost[] = current.hosts ?? [];
+        if (method === 'POST') {
+          const id = (body as { user_id: number }).user_id;
+          const name = ACCOUNTS.find((a) => a.id === id)!.username;
+          hosts = [...hosts, { user_id: id, username: name, role: 'episode' }];
+        } else if (method === 'DELETE') {
+          hosts = hosts.filter((h) => h.user_id !== Number(hostOf[1]));
+        }
+        current = { ...current, hosts };
+        return Response.json(hosts);
+      }
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
   );
@@ -336,12 +367,15 @@ async function mount(
       { path: '/shows/:slug', component: stub('Show page') },
       { path: '/stream/live', component: stub('Studio') },
       { path: '/stream/on-air', component: stub('On Air') },
+      { path: '/dashboard', component: stub('Dashboard') },
     ],
   });
   const pinia = createPinia();
   app = createApp({ render: () => h(RouterView) });
   app.use(pinia).use(router);
-  useAuthStore(pinia).user = { id: userId, username: 'lena', role };
+  const username = { 1: 'lena', 2: 'jonas', 3: 'mira' }[userId] ?? 'lena';
+  useAuthStore(pinia).user = { id: userId, username, role };
+  viewerId = userId;
   await router.push(state ? { path, state } : path);
   await router.isReady();
   app.mount(root);
@@ -2256,5 +2290,76 @@ describe('flow', () => {
     });
     await mount();
     await expectFlow('episode-pre-nofile', root);
+  });
+});
+
+describe('co-hosts (#1047)', () => {
+  const HOSTS: SeriesHost[] = [
+    { user_id: 1, username: 'lena', role: 'owner' },
+    { user_id: 2, username: 'jonas', role: 'cohost' },
+    { user_id: 3, username: 'mira', role: 'episode' },
+  ];
+  /** The Hosts row of the Edit form: "Hosts | names", without its × buttons. */
+  function hostsRow(): string {
+    const row = root.querySelector('.hosts-row > div')!.cloneNode(true) as Element;
+    row.querySelectorAll('button').forEach((b) => b.remove());
+    return [...row.children].map((c) => c.textContent?.replace(/\s+/g, ' ').trim()).join(' | ');
+  }
+  const removes = () =>
+    [...root.querySelectorAll('.hosts-row button')].map((b) => b.getAttribute('aria-label'));
+  const hostRequests = () => requests.filter((r) => r.url.startsWith('/api/shows/42/hosts'));
+
+  it('lets a host of the Show add an episode co-host at once and remove one after asking', async () => {
+    current = episode({ hosts: HOSTS });
+    await mount();
+    await vi.waitFor(() => expect(text()).toContain('Hosts: lena, jonas · mira'));
+    button('Edit').click();
+    await vi.waitFor(() => expect(root.querySelector('.hosts-row')).not.toBeNull());
+    expect(hostsRow()).toBe('Hosts | lena, jonas · mira');
+    expect(removes()).toEqual(['Remove mira']);
+    expect(text()).toContain('Cancel booking');
+
+    button('Add host').click();
+    await nextTick();
+    const pick = root.querySelector('.hosts-field select') as HTMLSelectElement;
+    await vi.waitFor(() => expect([...pick.options].map((o) => o.value)).toContain('4'));
+    pick.value = '4';
+    pick.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect(hostsRow()).toBe('Hosts | lena, jonas · mira, kai'));
+    expect(hostRequests()).toEqual([
+      { url: '/api/shows/42/hosts', method: 'POST', body: { user_id: 4 } },
+    ]);
+
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    (root.querySelector('[aria-label="Remove mira"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(hostsRow()).toBe('Hosts | lena, jonas · kai'));
+    expect(hostRequests().at(-1)).toMatchObject({ url: '/api/shows/42/hosts/3', method: 'DELETE' });
+  });
+
+  it('gives an episode co-host Edit and Leave episode, but no Cancel booking or Add host', async () => {
+    current = episode({ hosts: HOSTS, can_edit: true, can_manage: false });
+    const router = await mount('host', 3);
+    await vi.waitFor(() => expect(text()).toContain('Hosts: lena, jonas · mira'));
+    button('Edit').click();
+    await vi.waitFor(() => expect(root.querySelector('.hosts-row')).not.toBeNull());
+    expect(removes()).toEqual([]);
+    expect(text()).not.toContain('Add host');
+    expect(text()).not.toContain('Cancel booking');
+
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    button('Leave episode').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/dashboard'));
+    expect(hostRequests()).toEqual([
+      { url: '/api/shows/42/hosts/3', method: 'DELETE', body: undefined },
+    ]);
+  });
+
+  it('gives a co-host who did not go live Listen live, not Back to On Air', async () => {
+    current = episode({ hosts: HOSTS, on_air: true });
+    streamStatus = { active: true, user: 'lena' };
+    await mount('host', 2);
+    await vi.waitFor(() => expect(shown('.on-air')).toBe(true));
+    expect(root.querySelector('.on-air .listen')).not.toBeNull();
+    expect(text()).not.toContain('Back to On Air');
   });
 });

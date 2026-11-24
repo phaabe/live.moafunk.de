@@ -10,6 +10,7 @@ import ShowSeriesPage from '../pages/ShowSeriesPage.vue';
 import {
   countdown,
   countdownParts,
+  episodeHostsText,
   hostsLine,
   initials,
   nextStep,
@@ -64,7 +65,7 @@ const BRUNCHTIME: SeriesDetail = {
   rhythm_line: 'Sundays · 12:00–14:00',
   instagram_handle: 'brunchtime',
   can_edit: true,
-  hosts: [{ username: 'lena' }],
+  hosts: [{ user_id: 1, username: 'lena', role: 'owner' }],
   episodes: [
     episode(43, '2026-11-08', 'Pre-recorded', 'upcoming', 'Upcoming'),
     episode(42, '2026-10-25', 'Live', 'upcoming', 'Upcoming'),
@@ -84,7 +85,7 @@ const NIGHT: SeriesDetail = {
   rhythm: { repeat_rule: 'biweekly', weekday: 2, start_time: '20:00', end_time: '22:00' },
   rhythm_line: 'Every other Tuesday · 20:00–22:00',
   can_edit: false,
-  hosts: [{ username: 'jonas' }],
+  hosts: [{ user_id: 7, username: 'jonas', role: 'owner' }],
   episodes: [
     episode(44, '2026-10-27', 'Live', 'upcoming', 'Upcoming', {
       title: 'Night Shift',
@@ -427,9 +428,14 @@ describe('Show page helpers', () => {
     expect(rhythmText(BRUNCHTIME)).toBe('Every week · Sundays · 12:00–14:00');
     expect(rhythmText(NIGHT)).toBe('Every other Tuesday · 20:00–22:00');
     expect(rhythmText({ rhythm: null, rhythm_line: null })).toBe('No fixed rhythm');
-    expect(hostsLine([{ username: 'lena' }])).toBe('Host: lena');
-    expect(hostsLine([{ username: 'lena' }, { username: 'jonas' }])).toBe('Hosts: lena, jonas');
+    const lena = { user_id: 1, username: 'lena', role: 'owner' } as const;
+    const jonas = { user_id: 7, username: 'jonas', role: 'cohost' } as const;
+    const mira = { user_id: 9, username: 'mira', role: 'episode' } as const;
+    expect(hostsLine([lena])).toBe('Host: lena');
+    expect(hostsLine([lena, jonas])).toBe('Hosts: lena, jonas');
     expect(hostsLine(undefined)).toBe('');
+    expect(episodeHostsText([lena, jonas, mira])).toBe('lena, jonas · mira');
+    expect(episodeHostsText([lena, mira])).toBe('lena · mira');
   });
 });
 
