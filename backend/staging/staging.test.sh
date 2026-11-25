@@ -73,6 +73,7 @@ SOUNDCLOUD_KEEP_TRACKS=10
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=8880403786:AAtest-token_x
 TELEGRAM_LIVE_CHAT_ID=-1005857809589
+TELEGRAM_ANNOUNCE_CHAT_ID=-1005857809589
 INSTAGRAM_ACCOUNT=dev
 INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
 INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
@@ -159,6 +160,8 @@ case_env "SoundCloud app secret unset" "SOUNDCLOUD_CLIENT_SECRET must be set" SO
 case_env "Telegram switched off" "TELEGRAM_ENABLED must be 'true'" TELEGRAM_ENABLED false
 case_env "production live chat group" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -1006079057775
 case_env "live chat group unset" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -
+case_env "on-air message to the Moafunk channel" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -1001899120046
+case_env "on-air message chat unset" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -
 case_env "production bot token" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN 123:abc
 case_env "bot token unset" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN -
 case_env "admin chat set (technical alerts)" "TELEGRAM_ADMIN_CHAT_ID must not be set" TELEGRAM_ADMIN_CHAT_ID -1003507800985

@@ -152,7 +152,7 @@ forbidden_key() {
     # The Instagram test account only (check_env pins INSTAGRAM_ACCOUNT=dev).
     INSTAGRAM_ACCOUNT | INSTAGRAM_ACCESS_TOKEN_DEV | INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV) return 1 ;;
     # The Telegram test bot and test group only (check_env pins them).
-    TELEGRAM_BOT_TOKEN | TELEGRAM_LIVE_CHAT_ID) return 1 ;;
+    TELEGRAM_BOT_TOKEN | TELEGRAM_LIVE_CHAT_ID | TELEGRAM_ANNOUNCE_CHAT_ID) return 1 ;;
     SOUNDCLOUD_* | TELEGRAM_* | INSTAGRAM_* | FACEBOOK_* | OPENAI_* | RECOVERY_* | GITHUB_DISPATCH_TOKEN) return 0 ;;
   esac
   return 1
@@ -168,7 +168,7 @@ check_env() {
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
     SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
     SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=true "TELEGRAM_LIVE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" \
-    INSTAGRAM_ACCOUNT=dev \
+    "TELEGRAM_ANNOUNCE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" INSTAGRAM_ACCOUNT=dev \
     STAGING_E2E_HOST_USERNAME=e2e-host \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
