@@ -15,8 +15,9 @@
 #                                   During a hold, up and down refuse, and hold and unhold refuse a test run's
 #                                   hold; STAGING_IGNORE_HOLD=1 overrides
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
-#                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
-#                                   e2e-recordings, e2e-cleanup, e2e-free-slot; for the Instagram test: e2e-instagram on <HH:MM>|off)
+#                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap,
+#                                   e2e-restart-api, e2e-restart-icecast, e2e-cut, e2e-recordings, e2e-cleanup,
+#                                   e2e-free-slot; for the Instagram test: e2e-instagram on <HH:MM>|off)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
@@ -573,6 +574,14 @@ ci_e2e() {
     fi
   elif [[ "$request" == e2e-restart-liquidsoap ]]; then
     compose restart liquidsoap
+  # The API and Icecast restarts return once they serve again, so the test
+  # measures the show's recovery, not the container start.
+  elif [[ "$request" == e2e-restart-api ]]; then
+    compose restart api
+    wait_healthy
+  elif [[ "$request" == e2e-restart-icecast ]]; then
+    compose restart icecast
+    wait_mounts
   elif [[ "$request" =~ ^e2e-cut\ ([1-9]|[1-5][0-9]|60)$ ]]; then
     secs="${BASH_REMATCH[1]}"
     ip="${SSH_CLIENT:-}"
@@ -597,7 +606,7 @@ ci_e2e() {
   elif [[ "$request" =~ ^e2e-instagram\ public\ ([0-9]{1,12})$ ]]; then
     e2e_instagram public "${BASH_REMATCH[1]}"
   else
-    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-free-slot <date> <HH:MM> <HH:MM>, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-restart-api, e2e-restart-icecast, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-free-slot <date> <HH:MM> <HH:MM>, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
   fi
 }
 

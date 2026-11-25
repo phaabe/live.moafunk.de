@@ -1,6 +1,6 @@
 // The chaos test show: a live episode on staging that must survive a
-// network cut, a Liquidsoap restart and a page reload by itself, and end in
-// exactly one recording as long as the time on air.
+// network cut, a Liquidsoap, API and Icecast restart and a page reload by
+// itself, and end in exactly one recording as long as the time on air.
 import { test, expect, type Dialog, type Page } from '@playwright/test';
 import {
   RUN,
@@ -73,6 +73,25 @@ test('a live show recovers by itself and ends in one recording', async () => {
   await test.step('a Liquidsoap restart on staging', async () => {
     staging('e2e-restart-liquidsoap');
     console.log(`tone back ${await toneBack(RECOVER_S)} s after the restart`);
+  });
+
+  await test.step('an API restart on staging', async () => {
+    const restarted = Date.now();
+    // Returns once the new API answers /health.
+    staging('e2e-restart-api');
+    // The harbor can still play the old producer's audio for up to 20 s: the
+    // tone must not stop for 15 s until then, and be there after.
+    while (Date.now() < restarted + HARBOR_MAX_S * 1000) await toneBack(RECOVER_S);
+    console.log(`tone back ${await toneBack(RECOVER_S)} s after the old audio ran out`);
+    // The Studio reconnects to the new API by itself: the host does nothing.
+    await expect(page).toHaveURL(/#\/stream\/on-air/);
+  });
+
+  await test.step('an Icecast restart on staging', async () => {
+    // Returns once Icecast lists both mounts again.
+    staging('e2e-restart-icecast');
+    console.log(`tone back ${await toneBack(RECOVER_S)} s after the Icecast restart`);
+    await expect(page).toHaveURL(/#\/stream\/on-air/);
   });
 
   await test.step('a page reload', async () => {
