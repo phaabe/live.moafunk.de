@@ -137,17 +137,51 @@ const router = useRouter();
 /** Post slot: the snippets of the picked recording file go out as video slides. */
 const snippets = ref<Snippet[]>([]);
 const snippetError = ref<string | null>(null);
+/** The original recording; Play in the slide strip plays from it. */
+const sourceUrl = ref<string | null>(null);
 
 async function loadSnippets() {
+  stopSnippet();
   snippets.value = [];
   snippetError.value = null;
+  sourceUrl.value = null;
   if (props.slot !== 'post') return;
   try {
     const state = await recordingEditApi.get(props.showId);
     snippets.value = [...(state.edit?.snippets ?? [])].sort((a, b) => a.slot - b.slot);
+    sourceUrl.value = state.source?.url ?? null;
   } catch (e) {
     snippetError.value = e instanceof Error ? e.message : 'Could not load the snippets';
   }
+}
+
+// Play one snippet of the original recording: no edit volume, no waveform.
+let audio: HTMLAudioElement | null = null;
+const playing = ref<number | null>(null);
+
+function stopSnippet() {
+  audio?.pause();
+  audio = null;
+  playing.value = null;
+}
+
+function toggleSnippet(s: Snippet) {
+  const wasPlaying = playing.value === s.slot;
+  stopSnippet();
+  if (wasPlaying || !sourceUrl.value) return;
+  const a = new Audio(sourceUrl.value);
+  a.currentTime = s.start;
+  a.ontimeupdate = () => {
+    if (a.currentTime >= s.start + s.length) stopSnippet();
+  };
+  a.onended = stopSnippet;
+  audio = a;
+  playing.value = s.slot;
+  a.play().catch((e: unknown) => {
+    if (audio !== a) return;
+    stopSnippet();
+    snippetError.value = e instanceof Error ? e.message : 'Could not play the snippet';
+  });
 }
 
 async function load() {
@@ -220,6 +254,7 @@ watch(
 );
 onUnmounted(() => {
   if (previewTimer) clearTimeout(previewTimer);
+  stopSnippet();
 });
 const previewAlt = computed(() => {
   if (!feed.value) return 'Preview · 9:16 story by moafunk_radio';
@@ -554,6 +589,22 @@ function picked(value: string) {
           :src="preview"
           :alt="previewAlt"
         />
+        <ol v-if="slot === 'post' && snippets.length" class="slides">
+          <li v-for="(s, i) in snippets" :key="s.slot">
+            <img v-if="preview" class="slide-thumb" :src="preview" alt="" />
+            <span class="slide-name"
+              >Slide {{ i + 2 }} · Snippet {{ s.slot }} · {{ s.length }} s</span
+            >
+            <BaseButton
+              variant="secondary"
+              size="sm"
+              :disabled="!sourceUrl"
+              :aria-label="`${playing === s.slot ? 'Stop' : 'Play'} snippet ${s.slot}`"
+              @click="toggleSnippet(s)"
+              >{{ playing === s.slot ? 'Stop' : 'Play' }}</BaseButton
+            >
+          </li>
+        </ol>
         <p v-if="feed && caption.trim()" class="caption-preview">
           <b>moafunk_radio</b> {{ caption.trim() }}
         </p>
@@ -775,6 +826,35 @@ function picked(value: string) {
   object-fit: cover;
   border-radius: var(--radius-lg);
   background: #07071a;
+}
+
+/* The video slides after the image: a small copy of it, the name and Play. */
+.slides {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.slides li {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.slide-thumb {
+  width: 40px;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.slide-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
 }
 
 .preview.story {
