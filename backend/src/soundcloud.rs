@@ -1074,14 +1074,15 @@ async fn create_playlist(
 pub const PUBLIC_CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(15);
 
 /// A track made public on soundcloud.com, not in the app, never set
-/// `soundcloud_public`. For every episode whose post-announcement waits for
-/// SoundCloud and whose track is private here, ask SoundCloud for the
-/// track's sharing and mark the public ones. Returns the shows marked public.
+/// `soundcloud_public`. For every episode with a post-announcement not sent
+/// yet and whose track is private here, ask SoundCloud for the track's
+/// sharing and mark the public ones. Returns the shows marked public.
 pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
     let rows: Vec<(i64, String)> = sqlx::query_as(
         "SELECT DISTINCT s.id, s.soundcloud_track_id FROM shows s \
          JOIN announcements a ON a.show_id = s.id \
-         WHERE a.slot = 'post' AND a.state = 'waiting_soundcloud' \
+         WHERE a.slot = 'post' \
+           AND a.state IN ('draft', 'waiting_soundcloud', 'scheduled', 'pending_approval') \
            AND s.soundcloud_track_id IS NOT NULL AND COALESCE(s.soundcloud_public, 0) = 0 \
          ORDER BY s.id",
     )
@@ -1204,27 +1205,8 @@ pub async fn set_track_privacy(
         public = public,
         "SoundCloud track privacy updated"
     );
-    // Back to private: a post not sent yet must not link to a private track,
-    // so it waits again; going public sets its time anew.
-    if !public {
-        sqlx::query(
-            "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL, \
-               updated_at = CURRENT_TIMESTAMP \
-             WHERE show_id = ? AND slot = 'post' AND state IN ('scheduled', 'pending_approval') \
-               AND send_claimed_at IS NULL",
-        )
-        .bind(show_id)
-        .execute(&state.db)
-        .await?;
-    }
-    // A public track unlocks the episode's post announcement.
-    if public {
-        if let Err(e) =
-            crate::announcement_send::unlock_waiting_posts(state, chrono::Utc::now()).await
-        {
-            tracing::error!("Announcements: post unlock failed: {e}");
-        }
-    }
+    // The post-announcement keeps its booked time either way: the
+    // announcement tick unsets it if the track is still private then.
 
     Ok(SoundCloudUploadResult {
         success: true,

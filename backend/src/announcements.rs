@@ -42,7 +42,9 @@ impl AnnouncementSlot {
 }
 
 /// States that count against the limits.
-/// cancelled, rejected, failed and draft do not count.
+/// cancelled, rejected, failed and draft do not count; a draft with a booked
+/// time holds its day (see `handlers::announcements::others_near`).
+/// `waiting_soundcloud` (historic name): set up, no time booked yet.
 pub const ACTIVE_STATES: &str =
     "('pending_approval', 'scheduled', 'armed', 'waiting_soundcloud', 'sent')";
 
@@ -56,6 +58,8 @@ pub struct Announcement {
     pub anchor_offset_minutes: Option<i64>,
     pub scheduled_at: Option<String>,
     /// The host's time when the backend moved the post; see [`KEEP_REQUESTED_AT`].
+    /// With no `scheduled_at`: the booked time the backend unset because the
+    /// post could not go out then (`announcement_send::unset_unready_bookings`).
     pub requested_at: Option<String>,
     pub headline: Option<String>,
     pub caption: Option<String>,
