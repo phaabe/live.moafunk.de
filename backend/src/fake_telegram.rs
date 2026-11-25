@@ -227,7 +227,7 @@ async fn fake_request(State(fake): State<FakeTelegram>, uri: Uri, request: Reque
         .into_response();
     }
     let result = match method.as_str() {
-        "answercallbackquery" => json!(true),
+        "answercallbackquery" | "pinchatmessage" | "unpinchatmessage" => json!(true),
         "getfile" => json!({
             "file_id": "file-1", "file_unique_id": "unique-1",
             "file_size": fake.file.lock().unwrap().len(), "file_path": "photos/file-1.jpg"

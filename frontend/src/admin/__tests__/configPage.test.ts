@@ -14,7 +14,7 @@ beforeEach(() => {
   failPut = false;
   root = document.createElement('div');
   document.body.appendChild(root);
-  let bot = { enabled: true, live_chat: true };
+  let bot = { enabled: true, live_chat: true, onair_message: true };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
@@ -93,6 +93,16 @@ describe('Config · Moafunkbot', () => {
     expect(botPuts).toEqual([{ live_chat: false }]);
     expect(box('Live chat').checked).toBe(false);
     expect(box('Technical alerts').checked).toBe(true);
+    expect(box('On-air message').checked).toBe(true);
+  });
+
+  it('turns the on-air message off on its own', async () => {
+    await mount();
+    box('On-air message').click();
+    await settle();
+    expect(botPuts).toEqual([{ onair_message: false }]);
+    expect(box('On-air message').checked).toBe(false);
+    expect(box('Live chat').checked).toBe(true);
   });
 
   it('flips back when saving fails', async () => {

@@ -3,11 +3,12 @@ import { ref, onMounted } from 'vue';
 import { settingsApi, type NotificationSettings, type ServiceSettings } from '../api';
 
 // --- Moafunkbot: one switch per Telegram integration ---
-const bot = ref<NotificationSettings>({ enabled: true, live_chat: true });
+const bot = ref<NotificationSettings>({ enabled: true, live_chat: true, onair_message: true });
 const botLoading = ref(true);
 const BOT_SWITCHES: { key: keyof NotificationSettings; label: string }[] = [
   { key: 'enabled', label: 'Technical alerts' },
   { key: 'live_chat', label: 'Live chat' },
+  { key: 'onair_message', label: 'On-air message' },
 ];
 
 async function loadBotSettings() {
@@ -100,7 +101,8 @@ onMounted(() => {
           <p class="text-muted notification-hint">
             Technical alerts: all bot messages to the admin group (stream alerts, artist
             submissions, show updates, Instagram previews). Live chat: listener messages in On Air
-            and host replies to the live chat group.
+            and host replies to the live chat group. On-air message: the post to the Moafunk channel
+            at go-live.
           </p>
         </div>
       </div>

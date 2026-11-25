@@ -39,7 +39,7 @@ let mode = 'ok';
 const HOST_ID = 1;
 const user = { id: HOST_ID, username: 'local-host', role: 'host', has_show: true };
 /** Moafunkbot switches on the admin Config page. */
-const botSwitches = { enabled: true, live_chat: true };
+const botSwitches = { enabled: true, live_chat: true, onair_message: true };
 /** What the host's browser saved for the episode. */
 let studioLog = {};
 

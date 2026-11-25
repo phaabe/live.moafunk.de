@@ -1630,10 +1630,9 @@ async fn moafunkbot_switches_change_one_at_a_time() {
             reply(set_notifications(State(state.clone()), headers, req(body)).await).await
         }
     };
-    let both =
-        |enabled: bool, live_chat: bool| json!({ "enabled": enabled, "live_chat": live_chat });
+    let all = |enabled: bool, live_chat: bool, onair_message: bool| json!({ "enabled": enabled, "live_chat": live_chat, "onair_message": onair_message });
 
-    assert_eq!(get(Some(p.admin)).await, (OK, both(true, true)));
+    assert_eq!(get(Some(p.admin)).await, (OK, all(true, true, true)));
     assert_eq!(get(Some(p.host)).await.0, DENIED);
     assert_eq!(
         set(Some(p.host), json!({ "live_chat": false })).await.0,
@@ -1642,13 +1641,17 @@ async fn moafunkbot_switches_change_one_at_a_time() {
 
     assert_eq!(
         set(Some(p.admin), json!({ "live_chat": false })).await,
-        (OK, both(true, false))
+        (OK, all(true, false, true))
     );
     assert_eq!(
         set(Some(p.admin), json!({ "enabled": false })).await,
-        (OK, both(false, false))
+        (OK, all(false, false, true))
     );
-    assert_eq!(get(Some(p.admin)).await, (OK, both(false, false)));
+    assert_eq!(
+        set(Some(p.admin), json!({ "onair_message": false })).await,
+        (OK, all(false, false, false))
+    );
+    assert_eq!(get(Some(p.admin)).await, (OK, all(false, false, false)));
 }
 
 // ── Studio log ──────────────────────────────────────────────────────────────

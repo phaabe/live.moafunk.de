@@ -12,6 +12,8 @@ pub struct NotificationSettingsResponse {
     pub enabled: bool,
     /// The live chat between the Telegram live chat group and On Air.
     pub live_chat: bool,
+    /// The on-air message to the Moafunk channel.
+    pub onair_message: bool,
 }
 
 /// Each field is optional, so one switch never resets another.
@@ -19,12 +21,14 @@ pub struct NotificationSettingsResponse {
 pub struct UpdateNotificationSettings {
     pub enabled: Option<bool>,
     pub live_chat: Option<bool>,
+    pub onair_message: Option<bool>,
 }
 
 async fn load_notifications(state: &AppState) -> NotificationSettingsResponse {
     NotificationSettingsResponse {
         enabled: db::is_notifications_enabled(&state.db).await,
         live_chat: db::is_service_enabled(&state.db, db::TELEGRAM_LIVE_CHAT_ENABLED).await,
+        onair_message: db::is_service_enabled(&state.db, db::TELEGRAM_ONAIR_ENABLED).await,
     }
 }
 
@@ -67,6 +71,11 @@ pub async fn set_notifications(
     for (key, name, on) in [
         ("notifications_enabled", "Notifications", req.enabled),
         (db::TELEGRAM_LIVE_CHAT_ENABLED, "Live chat", req.live_chat),
+        (
+            db::TELEGRAM_ONAIR_ENABLED,
+            "On-air message",
+            req.onair_message,
+        ),
     ] {
         let Some(on) = on else { continue };
         let value = if on { "true" } else { "false" };
