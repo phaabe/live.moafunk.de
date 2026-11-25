@@ -5,7 +5,8 @@ import type { SeriesHost, ShowDetail } from '../../api';
 import { episodeDay } from '../../episodeRow';
 import BoardIcon from '../BoardIcon.vue';
 import EpisodeDetailsCard from '../EpisodeDetailsCard.vue';
-import { episodeHostsText } from '../show-page/showPage';
+import { episodeHostsText, hostGroups, profilePath } from '../show-page/showPage';
+import { useAuthStore } from '../../stores/auth';
 import EpisodeIcon from './EpisodeIcon.vue';
 import { timeRange, type EpisodePhase } from './phase';
 
@@ -28,6 +29,15 @@ const hostCount = computed(() => props.show.hosts?.length ?? (props.show.host_us
 const hostsText = computed(() =>
   props.show.hosts ? episodeHostsText(props.show.hosts) : (props.show.host_username ?? '')
 );
+/** Name groups ("lena, jonas · mira"); read-only, each name opens the host's profile (#1117). */
+const hostNames = computed<string[][]>(() =>
+  props.show.hosts
+    ? hostGroups(props.show.hosts).map((g) => g.map((h) => h.username))
+    : props.show.host_username
+      ? [[props.show.host_username]]
+      : []
+);
+const auth = useAuthStore();
 const when = computed(() =>
   [episodeDay(props.show.date), timeRange(props.show)].filter(Boolean).join(' · ')
 );
@@ -106,9 +116,23 @@ function saved() {
             >
             <span class="chip">{{ mode }}</span>
             <span v-if="hostCount" class="hosts"
-              ><BoardIcon :name="hostCount > 1 ? 'users' : 'user'" :size="16" />{{
-                hostCount > 1 ? 'Hosts' : 'Host'
-              }}: {{ hostsText }}</span
+              ><BoardIcon :name="hostCount > 1 ? 'users' : 'user'" :size="16" /><template
+                v-if="canEdit"
+                >{{ hostCount > 1 ? 'Hosts' : 'Host' }}: {{ hostsText }}</template
+              ><span v-else class="host-names"
+                ><template v-for="(group, g) in hostNames" :key="g"
+                  ><span v-if="g"> · </span
+                  ><template v-for="(name, i) in group" :key="name"
+                    ><span v-if="i">, </span
+                    ><router-link :to="profilePath(name, auth.user?.username)" class="host-link"
+                      ><span v-if="!g && !i" class="host-label">{{
+                        hostCount > 1 ? 'Hosts' : 'Host'
+                      }}</span
+                      ><span>{{ name }}</span></router-link
+                    ></template
+                  ></template
+                ></span
+              ></span
             >
           </div>
         </div>
@@ -240,6 +264,23 @@ function saved() {
   gap: 8px;
   font-weight: 600;
   color: #d0d0dc;
+}
+
+/* The label is part of the first link, so the row reads "Host | jonas"; the
+   colon is decoration. */
+.host-label::after {
+  content: ': ';
+  white-space: pre;
+}
+
+.host-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.host-link:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .hosts svg,

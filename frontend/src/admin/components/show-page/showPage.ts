@@ -79,6 +79,11 @@ export function rhythmText(series: Pick<Series, 'rhythm' | 'rhythm_line'>): stri
     : series.rhythm_line;
 }
 
+/** A host's profile (#1117): the own one at /profile, others' read-only. */
+export function profilePath(username: string, me: string | undefined): string {
+  return username === me ? '/profile' : `/profile/${encodeURIComponent(username)}`;
+}
+
 /** "Host: lena"; a Show with several hosts reads "Hosts: lena, jonas". */
 export function hostsLine(hosts: readonly SeriesHost[] | undefined): string {
   const names = (hosts ?? []).map((h) => h.username);

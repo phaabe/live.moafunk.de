@@ -408,7 +408,7 @@ async function mount(
   const pinia = createPinia();
   app = createApp({ render: () => h(RouterView) });
   app.use(pinia).use(router);
-  const username = { 1: 'lena', 2: 'jonas', 3: 'mira' }[userId] ?? 'lena';
+  const username = { 1: 'lena', 2: 'jonas', 3: 'mira', 7: 'jonas' }[userId] ?? 'lena';
   useAuthStore(pinia).user = { id: userId, username, role };
   viewerId = userId;
   await router.push(state ? { path, state } : path);
@@ -2239,9 +2239,13 @@ describe('who sees what', () => {
     const router = await mount('host', 7);
     await vi.waitFor(() => expect(root.querySelector('h1')?.textContent).toBe('Brunchtime #31'));
     expect(root.querySelector('.when')?.textContent).toBe('So 04.01. · 12:00–14:00');
-    for (const part of ['Upcoming', 'Host: lena', 'Read only · only its hosts can edit']) {
+    for (const part of ['Upcoming', 'Read only · only its hosts can edit']) {
       expect(text()).toContain(part);
     }
+    // The host's name opens their profile, read-only (#1117).
+    const host = root.querySelector<HTMLAnchorElement>('.host-link');
+    expect(host?.textContent).toBe('Hostlena');
+    expect(host?.getAttribute('href')).toBe('/profile/lena');
     expect(frames().map((f) => f.title)).toEqual(['Social media', 'Recording & SoundCloud']);
     expect(text()).not.toContain("Today's show page");
     // The same four tab tiles as the owner's page; the tabs are the only buttons.

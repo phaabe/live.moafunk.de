@@ -1,6 +1,6 @@
 {
   "screen": "schedule",
-  "hash": "465ea943",
+  "hash": "5ab91009",
   "status": "drift",
   "leftOut": [
     {
@@ -13,6 +13,7 @@
     "nav: Dashboard",
     "nav: Schedule",
     "nav: My Shows",
+    "nav: Profile",
     "nav: Change Password",
     "nav: Recovery Email",
     "nav: Logout"

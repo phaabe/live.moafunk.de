@@ -640,12 +640,23 @@ describe('Show page (owner)', () => {
   });
 });
 
+describe('Show page (own)', () => {
+  it('the own name opens the own profile', async () => {
+    await mount('host', '/shows/brunchtime');
+    const hostLinks = [...root.querySelectorAll('.show-card a.host')];
+    expect(hostLinks.map((a) => a.getAttribute('href'))).toEqual(['/profile']);
+  });
+});
+
 describe('Show page (another host)', () => {
   it('is read-only: no Edit, no free slots, episodes open read-only', async () => {
     const router = await mount('host', '/shows/night-shift');
     expect(root.querySelector('h1')?.textContent).toBe('Night Shift');
     const card = (root.querySelector('.show-card')?.textContent ?? '').replace(/\s+/g, ' ');
     expect(card).toContain('Host: jonas');
+    // The host's name opens their profile, read-only (#1117).
+    const hostLinks = [...root.querySelectorAll('.show-card a.host')];
+    expect(hostLinks.map((a) => a.getAttribute('href'))).toEqual(['/profile/jonas']);
     expect(card).toContain('Instagram: Not linked');
     expect(root.querySelector('.cover-initials')?.textContent).toBe('NS');
     expect(root.querySelector('.back-link')?.textContent).toBe('< Dashboard');

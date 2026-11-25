@@ -93,6 +93,8 @@ export interface User {
   artist_name?: string;
   has_show?: boolean;
   must_change_password?: boolean;
+  /** The profile photo for the nav bar (#1117): a srcset of small copies. */
+  photo_srcset?: string | null;
 }
 
 export interface LoginResponse {
@@ -1832,4 +1834,74 @@ export const instagramAdminApi = {
   act: (id: number, action: 'approve' | 'reject' | 'retry') =>
     api.post<QueuedAnnouncement>(`/api/admin/announcements/${id}/${action}`),
   status: () => api.get<InstagramStatus>('/api/admin/instagram/status'),
+};
+
+// Profiles (#1117)
+export interface ProfileLink {
+  platform: string;
+  /** The platform's name, or the host's own name for a Custom link. */
+  name: string;
+  label: string | null;
+  /** The handle, or the whole address. */
+  value: string;
+  url: string;
+  /** "@lena.brunch", "soundcloud.com/lena-brunch" */
+  text: string;
+}
+
+export interface Profile {
+  username: string;
+  display_name: string | null;
+  /** The display name, else the username. */
+  name: string;
+  role: User['role'];
+  about: string | null;
+  photo_url: string | null;
+  photo_srcset: string | null;
+  shows: { slug: string; name: string }[];
+  links: ProfileLink[];
+}
+
+/** A platform a link can point to; prefix "https://" means a whole address. */
+export interface ProfilePlatform {
+  key: string;
+  name: string;
+  group: 'common' | 'music' | 'social' | 'other';
+  prefix: string;
+  suffix: string;
+  at: boolean;
+  hint: string;
+}
+
+export interface ProfileInput {
+  display_name: string;
+  about: string;
+  links: { platform: string; value: string; label?: string }[];
+}
+
+export const profileApi = {
+  /** The own profile, with the platform list for the edit form. */
+  own: () => api.get<{ profile: Profile; platforms: ProfilePlatform[] }>('/api/profile'),
+  /** Another host's profile, read-only; null when there is none (404). */
+  of: async (username: string): Promise<Profile | null> => {
+    const resp = await apiFetch(`/api/profiles/${encodeURIComponent(username)}`, {
+      credentials: 'include',
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
+  save: (body: ProfileInput) => api.put<Profile>('/api/profile', body),
+  uploadPhoto: async (file: File): Promise<Profile> => {
+    const form = new FormData();
+    form.append('photo', file);
+    const resp = await apiFetch('/api/profile/photo', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
+  removePhoto: () => api.delete<Profile>('/api/profile/photo'),
 };

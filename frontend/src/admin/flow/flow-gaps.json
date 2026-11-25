@@ -104,6 +104,11 @@
   ],
   "allowed": [
     {
+      "screen": "profile-edit",
+      "items": ["button: Remove Website", "button: Remove Mixtapes"],
+      "why": "Each added line has a remove button (×); the flow note of + Add link describes it (#1117)."
+    },
+    {
       "screen": "episode-recording",
       "items": ["button: Waveform"],
       "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
@@ -192,6 +197,7 @@
         "nav: Dashboard",
         "nav: Schedule",
         "nav: My Shows",
+        "nav: Profile",
         "nav: Change Password",
         "nav: Recovery Email",
         "nav: Logout"
@@ -435,7 +441,6 @@
         "h1: Di 27.10. · Night Shift",
         "pill: Upcoming · Live · 20:00–22:00",
         "h2: Details",
-        "row: Host | jonas",
         "h1: Night Shift",
         "h2: Social media",
         "pill: Upcoming"

@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 39,
+  "rev": 40,
   "screens": [
     {
       "id": "dashboard",
@@ -10,8 +10,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "2e9bf3ce",
-      "notesHash": "a4ea25a1",
+      "hash": "0c483340",
+      "notesHash": "3f923b31",
       "elements": [
         {
           "k": "h1",
@@ -202,6 +202,11 @@
         },
         {
           "k": "nav",
+          "text": "Profile",
+          "to": "profile"
+        },
+        {
+          "k": "nav",
           "text": "Change Password",
           "to": "set-password"
         },
@@ -223,7 +228,7 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "465ea943",
+      "hash": "5ab91009",
       "notesHash": "b90df5bf",
       "elements": [
         {
@@ -390,6 +395,11 @@
         },
         {
           "k": "nav",
+          "text": "Profile",
+          "to": "profile"
+        },
+        {
+          "k": "nav",
           "text": "Change Password",
           "to": "set-password"
         },
@@ -411,7 +421,7 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "f5a0f035",
+      "hash": "a95e8f5b",
       "notesHash": "ab9dea67",
       "elements": [
         {
@@ -465,6 +475,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -553,8 +568,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "1f945984",
-      "notesHash": "8ff80e8c",
+      "hash": "106ff9fa",
+      "notesHash": "04656bea",
       "elements": [
         {
           "k": "back",
@@ -590,7 +605,7 @@
           "k": "row",
           "text": "Host:",
           "meta": "lena",
-          "to": null
+          "to": "profile"
         },
         {
           "k": "row",
@@ -1653,8 +1668,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/44",
-      "hash": "daadd459",
-      "notesHash": "c48ff876",
+      "hash": "fc7f14af",
+      "notesHash": "bf421e4d",
       "elements": [
         {
           "k": "back",
@@ -1687,7 +1702,7 @@
           "k": "row",
           "text": "Host",
           "meta": "jonas",
-          "to": null
+          "to": "profile-view"
         }
       ]
     },
@@ -2810,7 +2825,7 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "02a3e12b",
+      "hash": "6ed03dd1",
       "notesHash": "70e29443",
       "elements": [
         {
@@ -2902,6 +2917,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -3578,6 +3598,286 @@
           "text": "Save policy",
           "to": null,
           "primary": true
+        }
+      ]
+    },
+    {
+      "id": "profile",
+      "title": "Profile",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile",
+      "hash": "e945aab3",
+      "notesHash": "4e0f368b",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Profile"
+        },
+        {
+          "k": "button",
+          "text": "Edit profile",
+          "to": "profile-edit",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Lena K.**"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Host"
+        },
+        {
+          "k": "row",
+          "text": "Show:",
+          "meta": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "text",
+          "text": "**About me**"
+        },
+        {
+          "k": "text",
+          "text": "Sunday brunch sounds: soul, disco and slow house. Every Sunday from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "@lena.brunch",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "soundcloud.com/lena-brunch",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Bandcamp",
+          "meta": "lenabrunch.bandcamp.com",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Website",
+          "meta": "lena.example.org",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Mixtapes",
+          "meta": "lena.example.org/mixes",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "profile-edit",
+      "title": "Profile · editing",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile",
+      "hash": "9339f4f6",
+      "notesHash": "92d6f1a8",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Edit profile"
+        },
+        {
+          "k": "text",
+          "text": "Empty fields stay hidden on your profile."
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Upload photo",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Remove",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "JPG or PNG. A square photo works best."
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Lena K."
+        },
+        {
+          "k": "field",
+          "text": "About me",
+          "value": "Sunday brunch sounds: soul, disco and slow house. Every Sunday from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "text",
+          "text": "Type only your handle."
+        },
+        {
+          "k": "field",
+          "text": "Instagram",
+          "value": "lena.brunch"
+        },
+        {
+          "k": "field",
+          "text": "SoundCloud",
+          "value": "lena-brunch"
+        },
+        {
+          "k": "field",
+          "text": "Mixcloud",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Bandcamp",
+          "value": "lenabrunch"
+        },
+        {
+          "k": "field",
+          "text": "Platform",
+          "value": "Website"
+        },
+        {
+          "k": "field",
+          "text": "Website",
+          "value": "lena.example.org"
+        },
+        {
+          "k": "field",
+          "text": "Platform",
+          "value": "Custom…"
+        },
+        {
+          "k": "field",
+          "text": "Link name",
+          "value": "Mixtapes"
+        },
+        {
+          "k": "field",
+          "text": "Link URL",
+          "value": "https://lena.example.org/mixes"
+        },
+        {
+          "k": "button",
+          "text": "+ Add link",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": "profile",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "profile",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "profile-view",
+      "title": "Profile (other host)",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile/jonas",
+      "hash": "1f1e9a11",
+      "notesHash": "bf6960db",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Back",
+          "to": "back"
+        },
+        {
+          "k": "h1",
+          "text": "Profile"
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**jonas**"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Host"
+        },
+        {
+          "k": "row",
+          "text": "Show:",
+          "meta": "Night Shift",
+          "to": "show"
+        },
+        {
+          "k": "text",
+          "text": "**About me**"
+        },
+        {
+          "k": "text",
+          "text": "Club records after dark, every Tuesday from 20:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "@nightshift.jonas",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Mixcloud",
+          "meta": "mixcloud.com/nightshift",
+          "to": null
         }
       ]
     }
