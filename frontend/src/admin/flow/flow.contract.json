@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 34,
+  "rev": 36,
   "screens": [
     {
       "id": "dashboard",
@@ -893,8 +893,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "b5111603",
-      "notesHash": "fed8525f",
+      "hash": "35d8aab3",
+      "notesHash": "f604f797",
       "elements": [
         {
           "k": "back",
@@ -992,41 +992,65 @@
         },
         {
           "k": "h2",
-          "text": "Promotion · Instagram"
+          "text": "Social media"
         },
         {
           "k": "text",
-          "text": "Posted by @moafunk_radio. @brunchtime is invited as collaborator."
+          "text": "Posts go out on @moafunk_radio."
         },
         {
           "k": "row",
-          "text": "Pre · feed post 4:5",
-          "meta": "Scheduled · Fr 23.10. · 18:00",
-          "to": "announce"
+          "text": "Pre-announcement",
+          "meta": "Scheduled",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Goes out",
+          "meta": "Fr 23.10. · 18:00 · in 3 days",
+          "to": "book-time"
         },
         {
           "k": "button",
-          "text": "Edit pre-announcement",
+          "text": "Edit",
           "to": "announce",
           "primary": false
         },
         {
-          "k": "button",
-          "text": "Cancel pre-announcement",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "check",
-          "text": "On air · story 9:16",
-          "meta": "Sent when you go live",
-          "on": true
+          "k": "row",
+          "text": "On-air story",
+          "meta": "Scheduled",
+          "to": null
         },
         {
           "k": "row",
-          "text": "Post · feed post 4:5",
-          "meta": "Set up when the SoundCloud track is public",
+          "text": "Goes out",
+          "meta": "So 25.10. · 12:00 · when you go live",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Edit",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Post-announcement",
+          "meta": "Not set up",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Book a time",
+          "meta": "",
+          "to": "book-time"
+        },
+        {
+          "k": "button",
+          "text": "Set up",
+          "to": "announce",
+          "primary": true
         },
         {
           "k": "h2",
@@ -1041,7 +1065,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "3c48f279",
-      "notesHash": "54d26fa5",
+      "notesHash": "b84497d9",
       "elements": [
         {
           "k": "h2",
@@ -1208,8 +1232,8 @@
       "who": "host",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
-      "hash": "b3ca3db6",
-      "notesHash": "db3d3c75",
+      "hash": "bb6c95e6",
+      "notesHash": "575604fd",
       "elements": [
         {
           "k": "back",
@@ -1273,28 +1297,10 @@
           "text": "When"
         },
         {
-          "k": "choice",
-          "text": "Fr 23.10. · 18:00",
-          "to": null,
-          "on": true
-        },
-        {
-          "k": "choice",
-          "text": "Sa 24.10. · 12:00",
-          "to": null,
-          "on": false
-        },
-        {
-          "k": "choice",
-          "text": "Sa 24.10. · 18:00",
-          "to": null,
-          "on": false
-        },
-        {
-          "k": "choice",
-          "text": "Post now",
-          "to": null,
-          "on": false
+          "k": "row",
+          "text": "Goes out",
+          "meta": "Fr 23.10. · 18:00 · in 3 days",
+          "to": "book-time"
         },
         {
           "k": "h2",
@@ -1316,6 +1322,82 @@
         {
           "k": "button",
           "text": "Schedule post",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "back",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "book-time",
+      "title": "Book a time",
+      "who": "host",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "c6a2bf8d",
+      "notesHash": "45ad4010",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Book a time"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Pre-announcement · before your show"
+        },
+        {
+          "k": "media",
+          "text": "Week grid · one column per day with 12:00 and 18:00 · your show as a yellow marker",
+          "to": null
+        },
+        {
+          "k": "choice",
+          "text": "Fr 23.10. · 18:00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 12:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 18:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "notice",
+          "text": "It goes out only if your SoundCloud track is public by then. If not, the time is unset and you book a new one."
+        },
+        {
+          "k": "h2",
+          "text": "Goes out"
+        },
+        {
+          "k": "text",
+          "text": "Fr 23.10. · 18:00"
+        },
+        {
+          "k": "text",
+          "text": "in 3 days · 2 days before your show"
+        },
+        {
+          "k": "button",
+          "text": "Book this time",
           "to": "episode",
           "primary": true
         },
@@ -3396,7 +3478,7 @@
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/admin/instagram",
       "hash": "807be5fd",
-      "notesHash": "8dd7ca5f",
+      "notesHash": "6eaec4c5",
       "elements": [
         {
           "k": "h1",

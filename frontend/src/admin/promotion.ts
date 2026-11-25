@@ -29,6 +29,38 @@ export function postTime(iso: string): string {
   return `${episodeDay(berlin.slice(0, 10))} · ${berlin.slice(11, 16)}`;
 }
 
+/** The Berlin calendar day ("2026-10-23") of an instant. */
+const berlinDay = (t: Date) => t.toLocaleDateString('sv-SE', { timeZone: 'Europe/Berlin' });
+/** Whole days between two Berlin days ("2026-10-23"). */
+const dayDiff = (from: string, to: string) =>
+  Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+const days = (n: number) => (n === 1 ? '1 day' : `${n} days`);
+
+/** How far away a booked time is, in Berlin days: "today", "tomorrow", "in 5 days". */
+export function untilText(iso: string, now = new Date()): string {
+  const n = dayDiff(berlinDay(now), berlinDay(new Date(iso)));
+  if (n <= 0) return 'today';
+  return n === 1 ? 'tomorrow' : `in ${n} days`;
+}
+
+/** "2 days before your show", "on your show day", "1 day after your show". */
+export function showDistance(iso: string, showDate: string): string {
+  const n = dayDiff(showDate, berlinDay(new Date(iso)));
+  if (n === 0) return 'on your show day';
+  return n < 0 ? `${days(-n)} before your show` : `${days(n)} after your show`;
+}
+
+/** The booked time the backend unset because the post could not go out then. */
+export function unsetNote(a: SlotReading | undefined): string | null {
+  if (!a || a.scheduled_at || !a.requested_at) return null;
+  return `Your time ${postTime(a.requested_at)} was unset. Book a new one.`;
+}
+
+/** On a time booked before its post is set up. */
+export const NOT_READY_NOTE = 'Not ready by then? The time is unset.';
+/** On a post-announcement whose SoundCloud track is still private. */
+export const PUBLIC_TRACK_NOTE = 'Needs a public track by then, or the time is unset.';
+
 /** Instagram takes at most 3 collaborators and 20 tagged accounts on a post (the backend checks it too). */
 export const COLLABORATORS_MAX = 3;
 export const TAGS_MAX = 20;
@@ -100,6 +132,7 @@ export function defaultPostTime(date: string): string {
  */
 export type SlotReading = Pick<Announcement, 'slot' | 'state' | 'scheduled_at' | 'sent_at'> & {
   error?: string | null;
+  requested_at?: string | null;
 };
 
 /** The announcement in a slot that still counts (a cancelled one does not). */
@@ -114,7 +147,7 @@ export function editable(a: SlotReading | undefined): boolean {
 
 /**
  * The row reading of a slot. `trackPublic` only matters for the post slot,
- * which is sent only when the SoundCloud track is public.
+ * which goes out at its time only when the SoundCloud track is public.
  */
 export function slotState(list: SlotReading[], slot: AnnouncementSlot, trackPublic = true): string {
   const a = inSlot(list, slot);
@@ -126,16 +159,17 @@ export function slotState(list: SlotReading[], slot: AnnouncementSlot, trackPubl
   const at = a.scheduled_at ? postTime(a.scheduled_at) : '';
   switch (a.state) {
     case 'draft':
-      return 'Not set up';
+      return at ? `Booked · post not ready · ${at}` : 'Not set up';
     case 'sent':
       return a.sent_at ? `Sent · ${postTime(a.sent_at)}` : 'Sent';
     case 'failed':
       return `Failed · ${a.error || 'Instagram did not take the post.'}`;
     case 'pending_approval':
       return at ? `Needs approval · ${at}` : 'Needs approval';
+    case 'waiting_soundcloud':
+      return 'Ready · no time booked';
     default:
-      if (slot === 'post' && !trackPublic)
-        return at ? `${at} · waits for the public track` : 'Waiting for SoundCloud';
+      if (slot === 'post' && !trackPublic && at) return `Scheduled · ${at} · needs a public track`;
       return at ? `Scheduled · ${at}` : 'Scheduled';
   }
 }

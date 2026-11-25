@@ -17,8 +17,9 @@
     "button: 2 · Soundcheck",
     "button: 3 · Show time · in 7 days · until 20:00",
     "button: 4 · Recording",
-    "row: Pre-announcement · Instagram feed post · before the show | Not set up",
-    "row: On-air story · Instagram story · at go-live | Not set up",
-    "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
+    "row: Pre-announcement | Not set up",
+    "row: On-air story | Not set up",
+    "row: Goes out | Di 27.10. · 20:00 · when you go live",
+    "row: Post-announcement | Not set up"
   ]
 }

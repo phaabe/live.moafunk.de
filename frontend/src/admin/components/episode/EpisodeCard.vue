@@ -19,7 +19,8 @@ const props = defineProps<{
   step: number;
   /** Where that step is. */
   state: StepState;
-  status: Status;
+  /** The card's summary; the Social media card has none (its tiles say it). */
+  status?: Status;
 }>();
 
 const narrow = usePhone();
@@ -50,7 +51,7 @@ const bodyId = useId();
         <template v-else><slot name="icon" />{{ title }}</template>
       </h2>
       <span v-if="!phone" class="ep-card-phase">Step {{ step }}</span>
-      <span :class="['ep-status', status.tone]"
+      <span v-if="status" :class="['ep-status', status.tone]"
         ><span class="dot" aria-hidden="true"></span>{{ status.text }}</span
       >
       <EpisodeIcon v-if="phone" name="down" :size="18" class="chev" />

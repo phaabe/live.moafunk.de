@@ -1,6 +1,6 @@
 {
   "screen": "episode",
-  "hash": "b5111603",
+  "hash": "35d8aab3",
   "status": "drift",
   "leftOut": [
     {
@@ -24,18 +24,11 @@
     "button: Cancel booking",
     "row: Hosts | lena, jonas · mira · DJ Lumen (guest)",
     "button: Add host",
-    "h2: Promotion · Instagram",
-    "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
-    "button: Edit pre-announcement",
-    "button: Cancel pre-announcement",
-    "check: On air · story 9:16 | Sent when you go live",
-    "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
     "h2: Recording"
   ],
   "extra": [
     "h1: Brunchtime #31",
     "pill: Upcoming",
-    "button: Edit",
     "button: 1 · Social media (done)",
     "button: 2 · Soundcheck",
     "button: 3 · Show time · in 5 days · until 12:00",

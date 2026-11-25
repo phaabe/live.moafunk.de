@@ -298,6 +298,26 @@ beforeEach(() => {
       }
       if (url.startsWith('/api/shows/42/announcements/slots?'))
         return Response.json({ slots: times });
+      // Book a time: a time without a post is a draft; a set-up post keeps its state.
+      const booked = url.match(/^\/api\/shows\/42\/announcements\/(pre|post)\/time$/)?.[1] as
+        | AnnouncementSlot
+        | undefined;
+      if (booked && method === 'PUT') {
+        if (saveError) return saveError;
+        const at = (body as { scheduled_at: string }).scheduled_at;
+        const old = announcements.find((a) => a.slot === booked && a.state !== 'cancelled');
+        const saved =
+          old && old.state !== 'draft'
+            ? {
+                ...old,
+                state: old.state === 'waiting_soundcloud' ? ('scheduled' as const) : old.state,
+                scheduled_at: at,
+                requested_at: null,
+              }
+            : announcement(booked, { state: 'draft', headline: '', scheduled_at: at });
+        announcements = [...announcements.filter((a) => a.slot !== booked), saved];
+        return Response.json(saved);
+      }
       const slot = url.match(/^\/api\/shows\/42\/announcements\/(pre|onair|post)$/)?.[1] as
         | AnnouncementSlot
         | undefined;
@@ -1379,51 +1399,66 @@ describe('Recording card after the show (no Wrap-up page)', () => {
 });
 
 describe('Episode · Social media card', () => {
-  const row = (name: string) =>
-    [...root.querySelectorAll('.promotion li')].find(
-      (li) => li.querySelector('b')?.textContent === name
+  const tile = (name: string) =>
+    [...root.querySelectorAll<HTMLElement>('.promotion .tile')].find(
+      (t) => t.querySelector('b')?.textContent === name
     );
-  const chip = (name: string) => row(name)?.querySelector('.ep-status')?.textContent?.trim();
-  const buttons = (name?: string) =>
-    [...(name ? row(name)! : root.querySelector('.promotion')!).querySelectorAll('button')].map(
-      (b) => b.textContent?.trim()
+  const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+  const status = (name: string) => squash(tile(name)?.querySelector('.tile-status')?.textContent);
+  const box = (name: string) => squash(tile(name)?.querySelector('.box')?.textContent);
+  const notes = (name: string) =>
+    [...tile(name)!.querySelectorAll('.tile-note')].map((n) => squash(n.textContent));
+  const actions = (name: string) =>
+    [...tile(name)!.querySelectorAll('.tile-action button')].map((b) => squash(b.textContent));
+  const tileButton = (name: string, label: string) => {
+    const found = [...tile(name)!.querySelectorAll('button')].find(
+      (b) => squash(b.textContent) === label
     );
-  const picture = (name: string) => row(name)?.querySelector('img')?.getAttribute('src');
+    if (!found) throw new Error(`No button "${label}" in ${name}: ${tile(name)?.textContent}`);
+    return found;
+  };
+  const picture = (name: string) => tile(name)?.querySelector('img')?.getAttribute('src');
+  const SA_2410_1200 = '2026-10-24T10:00:00Z';
 
-  it('starts with every slot not set up, each with its own Set up', async () => {
-    await mount();
-    for (const name of ['Pre-announcement', 'On-air story', 'Post-announcement']) {
-      expect(chip(name)).toBe('Not set up');
-      expect(picture(name)).toBeUndefined();
-    }
-    expect(buttons()).toEqual([
-      'Set up pre-announcement',
-      'Set up on-air story',
-      'Set up post-announcement',
-    ]);
-    expect(row('On-air story')?.textContent).toContain('Instagram story · at go-live');
-    expect(row('Post-announcement')?.textContent).toContain(
-      'Instagram feed post · after the show, once the track is public'
-    );
-    expect(cardStatus('Social media')).toBe('Nothing set up');
-    expect(root.querySelector('.promotion input')).toBeNull();
-    expect(text()).toContain('Instagram posts go out on @moafunk_radio.');
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('shows a scheduled pre-announcement with its picture and edits it in the popup', async () => {
+  /** Today is Di 20.10.; the episode is So 25.10., 12:00. */
+  function soon() {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    current = episode({ date: '2026-10-25' });
+  }
+
+  it('starts with every slot not set up: Set up, and Book a time for feed posts', async () => {
+    await mount();
+    for (const name of ['Pre-announcement', 'On-air story', 'Post-announcement']) {
+      expect(status(name)).toBe('Not set up');
+      expect(picture(name)).toBeUndefined();
+      expect(actions(name)).toEqual(['Set up']);
+    }
+    expect(box('Pre-announcement')).toBe('Book a time');
+    expect(box('On-air story')).toContain('when you go live');
+    expect(box('Post-announcement')).toBe('Book a time');
+    // The tiles say it all: no summary in the card head.
+    expect(cardStatus('Social media')).toBeUndefined();
+    expect(text()).toContain('Posts go out on @moafunk_radio.');
+  });
+
+  it('shows a scheduled pre-announcement with its picture and time, and edits it in the popup', async () => {
+    soon();
     announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
     times = [{ scheduled_at: FR_2310_1800, free: true, default: true }];
     const router = await mount();
-    expect(row('Pre-announcement')?.textContent).toContain(
-      'Instagram feed post · Fr 23.10. · 18:00'
-    );
-    expect(chip('Pre-announcement')).toBe('Scheduled');
-    expect(cardStatus('Social media')).toBe('1 scheduled');
+    expect(status('Pre-announcement')).toBe('Scheduled');
+    expect(box('Pre-announcement')).toBe('Goes out | Fr 23.10. · 18:00 · in 3 days');
     expect(picture('Pre-announcement')).toBe(
       '/api/shows/42/announcements/pre/image.jpg?v=2026-10-20T10%3A00%3A00Z&size=thumb'
     );
+    expect(box('On-air story')).toContain('So 25.10. · 12:00 · when you go live');
 
-    button('Edit pre-announcement').click();
+    tileButton('Pre-announcement', 'Edit').click();
     await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule post'));
     expect(dialog()?.querySelector('h2')?.textContent).toBe('Pre-announcement');
     expect(router.currentRoute.value.fullPath).toBe('/shows/42');
@@ -1434,33 +1469,134 @@ describe('Episode · Social media card', () => {
     ]);
   });
 
+  it('books a time before the post is set up', async () => {
+    soon();
+    times = [
+      { scheduled_at: '2026-10-23T10:00:00Z', free: false, reason: 'Taken by another show' },
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+      { scheduled_at: SA_2410_1200, free: true },
+    ];
+    await mount();
+    tileButton('Pre-announcement', 'Book a time').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+    expect(dialog()?.querySelector('h1')?.textContent).toBe('Book a time');
+    expect(dialog()?.textContent).toContain('Your show');
+    expect(dialog()?.textContent).toContain('in 3 days · 2 days before your show');
+    dialogButton('Book this time').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(requests.find((r) => r.url.endsWith('/time'))).toEqual({
+      url: '/api/shows/42/announcements/pre/time',
+      method: 'PUT',
+      body: { scheduled_at: FR_2310_1800 },
+    });
+    await vi.waitFor(() => expect(status('Pre-announcement')).toBe('Booked · post not ready'));
+    expect(box('Pre-announcement')).toBe('Goes out | Fr 23.10. · 18:00 · in 3 days');
+    expect(notes('Pre-announcement')).toEqual(['Not ready by then? The time is unset.']);
+    expect(actions('Pre-announcement')).toEqual(['Set up']);
+  });
+
+  it('changes the time of a scheduled post in Book a time', async () => {
+    soon();
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    times = [
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+      { scheduled_at: SA_2410_1200, free: true },
+    ];
+    await mount();
+    (tile('Pre-announcement')!.querySelector('.box') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+    const sat = [...dialog()!.querySelectorAll('label')].find((l) =>
+      squash(l.textContent).startsWith('Sa 24.10. · 12:00')
+    )!;
+    sat.querySelector('input')!.click();
+    await nextTick();
+    expect(dialog()?.textContent).toContain('1 day before your show');
+    dialogButton('Book this time').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(requests.find((r) => r.url.endsWith('/time'))?.body).toEqual({
+      scheduled_at: SA_2410_1200,
+    });
+    await vi.waitFor(() => expect(box('Pre-announcement')).toContain('Sa 24.10. · 12:00'));
+  });
+
+  it('says why a time cannot be booked and keeps Book a time open', async () => {
+    soon();
+    times = [{ scheduled_at: FR_2310_1800, free: true, default: true }];
+    saveError = Response.json({ error: 'The station already posts that day.' }, { status: 409 });
+    await mount();
+    tileButton('Pre-announcement', 'Book a time').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+    dialogButton('Book this time').click();
+    await vi.waitFor(() =>
+      expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
+        'The station already posts that day.'
+      )
+    );
+  });
+
+  it('names a booked time that was unset, and books a new one', async () => {
+    announcements = [
+      announcement('pre', {
+        state: 'draft',
+        headline: '',
+        scheduled_at: null,
+        requested_at: FR_2310_1800,
+      }),
+    ];
+    await mount();
+    expect(status('Pre-announcement')).toBe('Not set up');
+    expect(box('Pre-announcement')).toBe('Book a time');
+    expect(notes('Pre-announcement')).toEqual([
+      'Your time Fr 23.10. · 18:00 was unset. Book a new one.',
+    ]);
+  });
+
+  it('shows a post-announcement that is set up but has no time', async () => {
+    announcements = [announcement('post', { state: 'waiting_soundcloud' })];
+    await mount();
+    expect(status('Post-announcement')).toBe('Ready · no time booked');
+    expect(box('Post-announcement')).toBe('Book a time');
+    expect(actions('Post-announcement')).toEqual(['Edit']);
+  });
+
+  it('warns that a booked post-announcement needs a public track', async () => {
+    soon();
+    announcements = [announcement('post', { scheduled_at: '2026-10-28T17:00:00Z' })];
+    await mount();
+    expect(status('Post-announcement')).toBe('Scheduled');
+    expect(notes('Post-announcement')).toEqual([
+      'Needs a public track by then, or the time is unset.',
+    ]);
+  });
+
+  it('closes a pre-announcement that was not sent once the show starts', async () => {
+    current = episode({ on_air: true });
+    announcements = [announcement('onair')];
+    await mount();
+    expect(status('Pre-announcement')).toBe('Not sent');
+    expect(box('Pre-announcement')).toContain('Closed');
+    expect(box('Pre-announcement')).toContain('at your show start');
+    expect(notes('Pre-announcement')).toEqual(['Only before the show. It can no longer go out.']);
+    expect(actions('Pre-announcement')).toEqual([]);
+    expect(tile('Pre-announcement')?.classList.contains('dim')).toBe(true);
+    // The story can't be changed any more either.
+    expect(tileButton('On-air story', 'Edit').disabled).toBe(true);
+    // The post-announcement stays open.
+    expect(actions('Post-announcement')).toEqual(['Set up']);
+  });
+
   it('closes the popup on Cancel without saving', async () => {
     await mount();
-    button('Set up pre-announcement').click();
+    tileButton('Pre-announcement', 'Set up').click();
     await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule post'));
     dialogButton('Cancel').click();
     await vi.waitFor(() => expect(dialog()).toBeNull());
     expect(requests.some((r) => r.method === 'PUT')).toBe(false);
   });
 
-  it('cancels the pre-announcement after one confirm', async () => {
-    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
-    await mount();
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
-    button('Cancel pre-announcement').click();
-    await vi.waitFor(() => expect(chip('Pre-announcement')).toBe('Cancelled'));
-    expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
-      '/api/shows/42/announcements/pre'
-    );
-    expect(row('Pre-announcement')?.textContent).toContain(
-      'Instagram feed post · cancelled, not sent'
-    );
-    expect(buttons('Pre-announcement')).toEqual(['Set up pre-announcement']);
-  });
-
   it('sets up the on-air story in the popup: no text, no people, at go-live', async () => {
     await mount();
-    button('Set up on-air story').click();
+    tileButton('On-air story', 'Set up').click();
     await vi.waitFor(() => expect(dialog()?.textContent).toContain('Schedule story'));
     const popup = dialog()!;
     expect(popup.querySelector('h2')?.textContent).toBe('On-air story');
@@ -1482,22 +1618,11 @@ describe('Episode · Social media card', () => {
         collaborator: false,
       },
     });
-    await vi.waitFor(() => expect(chip('On-air story')).toBe('Scheduled'));
-    expect(row('On-air story')?.textContent).toContain('Instagram story · when you go live');
+    await vi.waitFor(() => expect(status('On-air story')).toBe('Scheduled'));
+    expect(actions('On-air story')).toEqual(['Edit']);
   });
 
-  it('locks the on-air story once the show is on air', async () => {
-    current = episode({ on_air: true });
-    announcements = [announcement('onair')];
-    await mount();
-    expect(button('Edit on-air story').disabled).toBe(true);
-    expect(button('Cancel on-air story').disabled).toBe(true);
-    // A pre-announcement nobody set up can't be set up any more.
-    expect(row('Pre-announcement')?.textContent).toContain('Instagram feed post · not sent');
-    expect(buttons('Pre-announcement')).toEqual([]);
-  });
-
-  it('shows a sent post with its link and picture, and no buttons', async () => {
+  it('shows a sent post with its link, picture and time, and no buttons', async () => {
     announcements = [
       announcement('pre', {
         state: 'sent',
@@ -1507,25 +1632,23 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre-announcement')?.textContent).toContain(
-      'Instagram feed post · sent Fr 23.10. · 18:00'
-    );
-    expect(chip('Pre-announcement')).toBe('Sent');
-    const link = row('Pre-announcement')?.querySelector('a') as HTMLAnchorElement;
+    expect(status('Pre-announcement')).toBe('Sent');
+    expect(box('Pre-announcement')).toContain('Went out');
+    expect(box('Pre-announcement')).toContain('Fr 23.10. · 18:00');
+    const link = tile('Pre-announcement')?.querySelector('a') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('https://instagram.com/p/abc');
     expect(link.textContent).toBe('View post');
-    expect(buttons('Pre-announcement')).toEqual([]);
+    expect(actions('Pre-announcement')).toEqual([]);
     expect(picture('Pre-announcement')).toContain('/api/shows/42/announcements/pre/image.jpg?');
-    expect(cardStatus('Social media')).toBe('1 sent');
   });
 
   it('shows the frame when a picture does not load', async () => {
     announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
     await mount();
-    row('Pre-announcement')!.querySelector('img')!.dispatchEvent(new Event('error'));
+    tile('Pre-announcement')!.querySelector('img')!.dispatchEvent(new Event('error'));
     await nextTick();
     expect(picture('Pre-announcement')).toBeUndefined();
-    expect(row('Pre-announcement')?.querySelector('.frame')).toBeTruthy();
+    expect(tile('Pre-announcement')?.querySelector('.frame')).toBeTruthy();
   });
 
   it('links the sent on-air story', async () => {
@@ -1538,51 +1661,18 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    const link = row('On-air story')?.querySelector('a');
+    const link = tile('On-air story')?.querySelector('a');
     expect(link?.textContent).toBe('View story');
     expect(link?.getAttribute('href')).toBe('https://instagram.com/stories/x');
   });
 
-  it('shows why a post failed', async () => {
+  it('shows why a post failed; it is fixed in the popup, not by a new time', async () => {
     announcements = [announcement('pre', { state: 'failed', error: 'Token expired' })];
     await mount();
-    expect(row('Pre-announcement')?.textContent).toContain('Token expired');
-    expect(chip('Pre-announcement')).toBe('Failed');
-    expect(cardStatus('Social media')).toBe('1 failed');
-    expect(buttons('Pre-announcement')).toContain('Edit pre-announcement');
-  });
-
-  it('shows a post slot that waits for SoundCloud', async () => {
-    announcements = [announcement('post')];
-    await mount();
-    expect(chip('Post-announcement')).toBe('Waiting for SoundCloud');
-    expect(row('Post-announcement')?.textContent).toContain(
-      'Instagram feed post · waits for the public track'
-    );
-    expect(cardStatus('Social media')).toBe('1 waiting');
-  });
-
-  it('counts only the slots that are set up', async () => {
-    announcements = [
-      announcement('pre', {
-        state: 'sent',
-        scheduled_at: FR_2310_1800,
-        sent_at: FR_2310_1800,
-        permalink: 'https://instagram.com/p/abc',
-      }),
-      announcement('onair', { state: 'cancelled' }),
-      announcement('post'),
-    ];
-    await mount();
-    expect(chip('On-air story')).toBe('Cancelled');
-    expect(cardStatus('Social media')).toBe('1 sent · 1 waiting');
-  });
-
-  it('sets up the post-announcement before the show', async () => {
-    await mount();
-    button('Set up post-announcement').click();
-    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Waiting for SoundCloud'));
-    expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement');
+    expect(status('Pre-announcement')).toBe('Failed');
+    expect(notes('Pre-announcement')).toEqual(['Token expired']);
+    expect(actions('Pre-announcement')).toEqual(['Edit']);
+    expect(tile('Pre-announcement')?.querySelector('.box')).toBeNull();
   });
 
   it('sets up the post-announcement after the show', async () => {
@@ -1590,8 +1680,8 @@ describe('Episode · Social media card', () => {
     await mount();
     tab(0).click();
     await settle();
-    expect(buttons('Pre-announcement')).toEqual([]);
-    button('Set up post-announcement').click();
+    expect(actions('Pre-announcement')).toEqual([]);
+    tileButton('Post-announcement', 'Set up').click();
     await vi.waitFor(() =>
       expect(dialog()?.querySelector('h2')?.textContent).toBe('Post-announcement')
     );
@@ -1605,7 +1695,7 @@ describe('Episode · Social media card', () => {
     );
   });
 
-  it('says Instagram is not available and blocks set-up when an admin turned it off', async () => {
+  it('says Instagram is not available and blocks set-up and booking when an admin turned it off', async () => {
     meta = {
       paused: false,
       needs_approval: false,
@@ -1615,13 +1705,10 @@ describe('Episode · Social media card', () => {
     expect(root.querySelector('.promotion .notice')?.textContent).toBe(
       'Instagram is temporarily not available.'
     );
-    for (const label of [
-      'Set up pre-announcement',
-      'Set up on-air story',
-      'Set up post-announcement',
-    ]) {
-      expect(button(label).disabled).toBe(true);
+    for (const name of ['Pre-announcement', 'On-air story', 'Post-announcement']) {
+      expect(tileButton(name, 'Set up').disabled).toBe(true);
     }
+    expect(tileButton('Pre-announcement', 'Book a time').disabled).toBe(true);
   });
 
   it('has no paused note while posting runs', async () => {
@@ -1637,10 +1724,10 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre-announcement')?.textContent).toContain('Fr 23.10. · 18:00');
-    expect(row('Pre-announcement')?.textContent).toContain(
-      'Moved from 12:00: the station already posts that day.'
-    );
+    expect(box('Pre-announcement')).toContain('Fr 23.10. · 18:00');
+    expect(notes('Pre-announcement')).toEqual([
+      'Moved from 12:00: the station already posts that day.',
+    ]);
   });
 
   it('names the day when a post moved to another day', async () => {
@@ -1651,9 +1738,9 @@ describe('Episode · Social media card', () => {
       }),
     ];
     await mount();
-    expect(row('Pre-announcement')?.textContent).toContain(
-      'Moved from Fr 23.10. · 18:00: the station already posts that day.'
-    );
+    expect(notes('Pre-announcement')).toEqual([
+      'Moved from Fr 23.10. · 18:00: the station already posts that day.',
+    ]);
   });
 
   it('has no moved note when the post kept its time', async () => {
@@ -1680,6 +1767,12 @@ describe('Pre-announcement composer', () => {
     [...root.querySelectorAll('label')]
       .find((l) => l.textContent?.trim().startsWith(text))
       ?.querySelector('input') as HTMLInputElement;
+  const whenRow = () => root.querySelector('.goes-out')?.textContent?.replace(/\s+/g, ' ').trim();
+  /** Open Book a time from the When row. */
+  async function bookTime() {
+    (root.querySelector('.goes-out') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+  }
 
   beforeEach(() => {
     current = episode({ description: 'Guest mix with Juno Park.' });
@@ -1698,9 +1791,7 @@ describe('Pre-announcement composer', () => {
   it('drafts the caption from the episode and schedules the default time', async () => {
     const router = await open();
     expect(field('Caption').value).toBe('Guest mix with Juno Park.');
-    expect(radio('Fr 23.10. · 18:00').checked).toBe(true);
-    expect(radio('Fr 23.10. · 12:00').disabled).toBe(true);
-    expect(text()).toContain('Fr 23.10. · 12:00 · Taken by another show');
+    expect(whenRow()).toContain('Goes out | Fr 23.10. · 18:00');
     expect(radio('Upload a photo').disabled).toBe(false);
     expect(text()).toContain('After it is posted, the caption cannot be changed.');
     expect(text()).toContain('Uses 1 of 3 announcements for this episode.');
@@ -1725,16 +1816,40 @@ describe('Pre-announcement composer', () => {
     });
   });
 
-  it('shows the free times by day, the suggested one dashed', async () => {
+  it('shows the free times by day in Book a time, the suggested one dashed', async () => {
     await open();
-    const days = [...root.querySelectorAll('.week .day')].map((d) => ({
-      day: d.querySelector('legend')?.textContent,
-      times: [...d.querySelectorAll('label')].map((l) => l.className.replace('time', '').trim()),
+    expect(root.querySelector('.when-line')?.textContent).toBe('Goes out Fr 23.10. · 18:00.');
+    await bookTime();
+    const days = [...dialog()!.querySelectorAll('.bt-day')].map((d) => ({
+      day: d.querySelector('legend')?.textContent?.trim(),
+      times: [...d.querySelectorAll('label')].map((l) => l.className.replace('bt-time', '').trim()),
     }));
     expect(days).toEqual([{ day: 'Fr 23.10.', times: ['taken', 'on suggested'] }]);
-    // The suggested time is the picked one: no hint needed.
-    expect(text()).not.toContain('The dashed time is the suggested one.');
-    expect(root.querySelector('.when-line')?.textContent).toBe('Goes out Fr 23.10. · 18:00.');
+    expect(dialog()?.textContent).not.toContain('Post now');
+  });
+
+  it('picks another time in Book a time', async () => {
+    times = [
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+      { scheduled_at: '2026-10-24T10:00:00Z', free: true },
+    ];
+    const router = await open();
+    await bookTime();
+    const sat = [...dialog()!.querySelectorAll('label')].find((l) =>
+      l.textContent?.trim().startsWith('Sa 24.10. · 12:00')
+    )!;
+    sat.querySelector('input')!.click();
+    await nextTick();
+    dialogButton('Book this time').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(whenRow()).toContain('Sa 24.10. · 12:00');
+    type('Headline on the image', 'Sunday brunch');
+    await nextTick();
+    button('Schedule post').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+    expect(requests.find((r) => r.method === 'PUT')?.body).toMatchObject({
+      scheduled_at: '2026-10-24T10:00:00Z',
+    });
   });
 
   it('invites more collaborators and tags people, up to the limits', async () => {
@@ -1852,11 +1967,11 @@ describe('Pre-announcement composer', () => {
     expect(text()).toContain('Uses 2 of 3 announcements for this episode.');
   });
 
-  it('lets the post slot wait for SoundCloud without a time', async () => {
-    times = [];
+  it('saves the post-announcement without a time until the host books one', async () => {
     await open('post');
     expect(text()).toContain('Post-announcement');
-    expect(text()).toContain('Waiting for SoundCloud');
+    expect(text()).toContain('No time booked yet: it waits until you book one.');
+    expect(button('Book a time')).toBeTruthy();
     type('Headline on the image', 'Listen back');
     await nextTick();
     button('Schedule post').click();
@@ -1866,12 +1981,15 @@ describe('Pre-announcement composer', () => {
     expect(put.body).not.toHaveProperty('scheduled_at');
   });
 
-  it('posts now without a time when Post now is chosen', async () => {
+  it('posts now without a time when Post now is chosen on staging', async () => {
+    meta = { ...meta, post_now: true };
     const router = await open();
-    expect(radio('Post now').checked).toBe(false);
     expect(text()).not.toContain('Post now sends it within a minute');
-    radio('Post now').click();
-    await nextTick();
+    await bookTime();
+    expect(dialog()?.textContent).toContain('Staging only');
+    dialogButton('Post now').click();
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    expect(whenRow()).toBe('Goes out | Now');
     expect(text()).toContain('Post now sends it within a minute');
     type('Headline on the image', 'Sunday brunch');
     await nextTick();
@@ -1883,11 +2001,13 @@ describe('Pre-announcement composer', () => {
     expect(put.body).not.toHaveProperty('scheduled_at');
   });
 
-  it('offers Post now when no time is free', async () => {
+  it('offers Post now on staging when no time is free', async () => {
+    meta = { ...meta, post_now: true };
     times = [];
     await open();
-    expect(text()).toContain('No free time left.');
-    expect(radio('Post now')).toBeTruthy();
+    (root.querySelector('.goes-out') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('No free time left.'));
+    expect(dialogButton('Post now')).toBeTruthy();
   });
 
   it('opens a sent-now row with Post now selected and asks for approval', async () => {
@@ -1896,16 +2016,30 @@ describe('Pre-announcement composer', () => {
       announcement('pre', { state: 'pending_approval', send_now: true, headline: 'Now!' }),
     ];
     await open('pre', 'Send for approval');
-    expect(radio('Post now').checked).toBe(true);
-    expect(radio('Fr 23.10. · 18:00').checked).toBe(false);
+    expect(whenRow()).toBe('Goes out | Now');
     button('Send for approval').click();
     await vi.waitFor(() => expect(requests.find((r) => r.method === 'PUT')).toBeDefined());
     expect(requests.find((r) => r.method === 'PUT')!.body).toMatchObject({ send_now: true });
   });
 
-  it('has no Post now in the post slot', async () => {
+  it('has no Post now in the post slot, also on staging', async () => {
+    meta = { ...meta, post_now: true };
     await open('post');
-    expect(radio('Post now')).toBeUndefined();
+    button('Book a time').click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+    expect(dialog()?.textContent).not.toContain('Post now');
+    expect(dialog()?.textContent).toContain('It goes out only if your SoundCloud track is public');
+  });
+
+  it('cancels a set-up post after one confirm (the tile has no Cancel)', async () => {
+    announcements = [announcement('pre', { scheduled_at: FR_2310_1800 })];
+    const router = await open();
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    button('Cancel pre-announcement').click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/42'));
+    expect(requests.find((r) => r.method === 'DELETE')?.url).toBe(
+      '/api/shows/42/announcements/pre'
+    );
   });
 
   it('says when posting is paused and when an admin checks the post first', async () => {
@@ -2045,7 +2179,9 @@ describe('who sees what', () => {
         'https://instagram.com/p/abc'
       )
     );
-    expect(cardStatus('Social media')).toBe('1 sent · 1 scheduled');
+    expect(
+      [...root.querySelectorAll('.promotion .tile-status')].map((s) => s.textContent?.trim())
+    ).toEqual(['Sent', 'Scheduled', 'Not set up']);
     // Only the sent post's picture; the armed story stays with its hosts.
     expect(root.querySelector('.promotion .pre img')?.getAttribute('src')).toContain(
       '/api/shows/42/announcements/pre/image.jpg?'
@@ -2229,10 +2365,15 @@ describe('flow', () => {
     current = episode({ date: '2026-10-25' });
     announcements = [announcement('pre', { scheduled_at: FR_2310_1800 }), announcement('onair')];
     await mount();
+    // The flow screen shows the Social media section: open its tab.
+    tab(0).click();
+    await settle();
     await expectFlow('episode', root);
   });
 
   it('Pre-announcement matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
     current = episode({ date: '2026-10-25', description: 'Guest mix with Juno Park.' });
     times = [
       { scheduled_at: FR_2310_1800, free: true, default: true },
@@ -2242,6 +2383,24 @@ describe('flow', () => {
     await mount('host', 1, undefined, '/shows/42/announce/pre');
     await vi.waitFor(() => expect(text()).toContain('Fr 23.10. · 18:00'));
     await expectFlow('announce', root);
+  });
+
+  it('Book a time matches the flow', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:00Z'));
+    current = episode({ date: '2026-10-25', description: 'Guest mix with Juno Park.' });
+    times = [
+      { scheduled_at: FR_2310_1800, free: true, default: true },
+      { scheduled_at: '2026-10-24T10:00:00Z', free: true },
+      { scheduled_at: '2026-10-24T16:00:00Z', free: true },
+    ];
+    await mount('host', 1, undefined, '/shows/42/announce/pre');
+    await vi.waitFor(() => expect(text()).toContain('Fr 23.10. · 18:00'));
+    (root.querySelector('.goes-out') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(dialog()?.textContent).toContain('Book this time'));
+    // The popup's own content; its frame (Close) belongs to every popup.
+    const popup = dialog()!.querySelector('.book-time')!;
+    await expectFlow('book-time', popup);
   });
 
   it('Episode · Pre-recorded matches the flow', async () => {

@@ -80,7 +80,8 @@ export function socialItems(list: SlotReading[], trackPublic: boolean): TabItem[
     const a = inSlot(list, slot);
     let badge: Badge;
     if (!a) badge = list.some((x) => x.slot === slot && x.state === 'cancelled') ? 'off' : 'todo';
-    else if (a.state === 'draft') badge = 'todo';
+    // Not set up, or set up with no time booked: the host has a step to do.
+    else if (a.state === 'draft' || a.state === 'waiting_soundcloud') badge = 'todo';
     else if (a.state === 'sent') badge = 'ok';
     else if (a.state === 'failed') badge = 'fail';
     else if (a.state === 'pending_approval') badge = 'approve';

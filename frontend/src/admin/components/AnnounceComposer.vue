@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { BaseButton } from '@shared/components';
+import { BaseButton, BaseModal } from '@shared/components';
 import {
   announcementsApi,
   seriesApi,
@@ -12,12 +12,13 @@ import {
   type ShowDetail,
 } from '../api';
 import BoardIcon from './BoardIcon.vue';
+import BookTime from './BookTime.vue';
 import {
   CAPTION_MAX,
   cleanHandle,
   COLLABORATORS_MAX,
+  editable,
   EPISODE_LIMIT,
-  groupTimes,
   handleError,
   HEADLINE_MAX,
   inSlot,
@@ -26,7 +27,9 @@ import {
   PHOTO_MAX_MB,
   photoError as checkPhoto,
   postTime,
+  SLOT_NAMES,
   TAGS_MAX,
+  untilText,
 } from '../promotion';
 
 // The post widget of one announcement slot (#1052): photo, text, people,
@@ -48,6 +51,10 @@ const loading = ref(true);
 const paused = ref(false);
 const instagramOff = ref(false);
 const needsApproval = ref(false);
+/** "Post now" is offered (Instagram test account, staging only). */
+const postNow = ref(false);
+/** The Book a time popup is open. */
+const picking = ref(false);
 
 const image = ref<AnnouncementImage>('cover');
 /** The uploaded photo; only used with `image === 'upload'`. */
@@ -76,11 +83,11 @@ const sent = computed(() => current.value?.state === 'sent');
 const used = computed(
   () => list.value.filter((a) => a.state !== 'cancelled' && a.slot !== props.slot).length + 1
 );
-const days = computed(() => groupTimes(times.value));
-/** A suggested time exists and another one is picked. */
-const suggested = computed(() =>
-  times.value.some((t) => t.default && t.free && t.scheduled_at !== when.value)
+/** The When row: the booked time, "Now", or nothing booked yet. */
+const whenAt = computed(() =>
+  when.value === NOW ? 'Now' : when.value ? postTime(when.value) : ''
 );
+const whenRel = computed(() => (when.value && when.value !== NOW ? untilText(when.value) : ''));
 /** The show account counts as one of the collaborators when it is invited. */
 const collaborators = computed(
   () => extras.value.length + (handle.value && collaborator.value ? 1 : 0)
@@ -92,7 +99,7 @@ const headlineError = computed(() =>
 const captionError = computed(() =>
   caption.value.length > CAPTION_MAX ? `Caption: max ${CAPTION_MAX} characters.` : null
 );
-/** The post slot may have no time yet: it waits for the public SoundCloud track. */
+/** The post slot may be saved without a time: it waits until the host books one. */
 const needsTime = computed(() => props.slot === 'pre');
 const valid = computed(
   () =>
@@ -115,10 +122,12 @@ const whenLine = computed(() => {
   if (props.slot === 'onair')
     return 'Goes out when you go live. A pre-recorded show sends it when its file starts playing.';
   if (when.value === NOW)
-    return 'Post now sends it within a minute, for example when there is not enough time before the show. The station limits per day and week still apply, and a new host’s post still waits for an admin.';
-  if (!when.value) return '';
+    return 'Post now sends it within a minute. For tests on staging: the station limits per day and week still apply, and a new host’s post still waits for an admin.';
+  if (!when.value) return 'No time booked yet: it waits until you book one.';
   const at = `Goes out ${postTime(when.value)}.`;
-  return props.slot === 'post' ? `${at} Only once the SoundCloud track is public.` : at;
+  return props.slot === 'post'
+    ? `${at} Only if the SoundCloud track is public by then, else the time is unset.`
+    : at;
 });
 
 async function load() {
@@ -135,6 +144,7 @@ async function load() {
     paused.value = meta.paused;
     instagramOff.value = !meta.services.instagram;
     needsApproval.value = meta.needs_approval;
+    postNow.value = !!meta.post_now;
     list.value = announcements;
     times.value = offered;
     const series = loaded.series_slug ? await seriesApi.get(loaded.series_slug) : null;
@@ -151,11 +161,13 @@ async function load() {
     tags.value = [...(a?.user_tags ?? [])];
     layout.value = a?.layout ?? 'band';
     const free = offered.filter((t) => t.free);
+    // The booked time stays; a new pre-announcement gets the suggested one.
+    // A post-announcement may wait without a time until the host books one.
     when.value = a?.send_now
       ? NOW
-      : ((a?.scheduled_at && offered.some((t) => t.scheduled_at === a.scheduled_at)
-          ? a.scheduled_at
-          : (free.find((t) => t.default) ?? free[0])?.scheduled_at) ?? '');
+      : (a?.scheduled_at ??
+        (props.slot === 'pre' ? (free.find((t) => t.default) ?? free[0])?.scheduled_at : '') ??
+        '');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the announcement';
   } finally {
@@ -285,6 +297,29 @@ async function schedule() {
   } finally {
     saving.value = false;
   }
+}
+
+/** A set-up post that is not sent can be cancelled here (the tile has no Cancel). */
+const canCancel = computed(() => !loading.value && editable(current.value));
+const cancelLabel = computed(() => `Cancel ${SLOT_NAMES[props.slot].toLowerCase()}`);
+
+async function cancelPost() {
+  if (!window.confirm(`${cancelLabel.value}?`)) return;
+  saving.value = true;
+  error.value = null;
+  try {
+    await announcementsApi.cancel(props.showId, props.slot);
+    emit('done');
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'Could not cancel the announcement';
+  } finally {
+    saving.value = false;
+  }
+}
+
+function picked(value: string) {
+  when.value = value;
+  picking.value = false;
 }
 </script>
 
@@ -435,39 +470,32 @@ async function schedule() {
 
         <fieldset class="group" :disabled="sent || loading">
           <h2 class="board-card-title"><BoardIcon name="calendar" />When</h2>
-          <template v-if="feed">
-            <div v-if="times.length || slot === 'pre'" class="week">
-              <fieldset v-for="d in days" :key="d.day" class="day">
-                <legend>{{ d.day }}</legend>
-                <label
-                  v-for="t in d.times"
-                  :key="t.scheduled_at"
-                  :class="[
-                    'time',
-                    { on: when === t.scheduled_at, suggested: t.default, taken: !t.free },
-                  ]"
-                  ><input
-                    v-model="when"
-                    class="sr-only"
-                    type="radio"
-                    name="when"
-                    :value="t.scheduled_at"
-                    :disabled="!t.free"
-                  /><span class="sr-only">{{ d.day }} · </span><span class="at">{{ t.time }}</span
-                  ><span v-if="!t.free" class="taken-why"> · {{ t.reason || 'Full' }}</span></label
-                >
-              </fieldset>
-            </div>
-            <p v-if="suggested" class="hint">The dashed time is the suggested one.</p>
-            <label v-if="slot === 'pre'" class="check"
-              ><input v-model="when" type="radio" :value="NOW" />Post now</label
+          <!-- Read by the flow check as "Goes out | <time> · <in n days>". -->
+          <button v-if="feed && whenAt" type="button" class="goes-out" @click="picking = true">
+            <span class="go-head">Goes out</span><span class="sep"> | </span
+            ><span class="go-at">{{ whenAt }}</span
+            ><template v-if="whenRel"
+              ><span class="sep"> · </span><span class="go-rel">{{ whenRel }}</span></template
             >
-            <p v-if="!times.length" class="hint">
-              {{ slot === 'post' ? 'Waiting for SoundCloud' : 'No free time left.' }}
-            </p>
-          </template>
+          </button>
+          <button v-else-if="feed" type="button" class="goes-out book" @click="picking = true">
+            <BoardIcon name="calendar" />Book a time
+          </button>
           <p v-if="whenLine" class="when-line" role="status">{{ whenLine }}</p>
         </fieldset>
+        <BaseModal :open="picking" size="lg" @close="picking = false">
+          <div v-if="picking && show && slot !== 'onair'" class="host-page">
+            <BookTime
+              :show-id="showId"
+              :slot="slot"
+              :show="show"
+              :picked="when === NOW ? null : when"
+              :post-now="postNow"
+              @pick="picked"
+              @cancel="picking = false"
+            />
+          </div>
+        </BaseModal>
       </div>
     </section>
 
@@ -497,6 +525,14 @@ async function schedule() {
         <p class="hint">Uses {{ used }} of {{ EPISODE_LIMIT }} announcements for this episode.</p>
         <p v-if="error" class="field-error" role="alert">{{ error }}</p>
         <div class="actions">
+          <BaseButton
+            v-if="canCancel"
+            variant="secondary"
+            class="cancel-post"
+            :disabled="saving"
+            @click="cancelPost"
+            >{{ cancelLabel }}</BaseButton
+          >
           <BaseButton variant="secondary" @click="emit('cancel')">Cancel</BaseButton>
           <BaseButton
             class="xl"
@@ -613,76 +649,64 @@ async function schedule() {
   outline: 2px solid var(--color-primary);
 }
 
-/* Book a slot: one column per day, its times as pills. */
-.week {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
-  gap: 8px;
-}
-
-.day {
+/* When: the booked time, large; a click opens Book a time. */
+.goes-out {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.day legend {
-  padding: 0 0 6px;
-  font-size: var(--font-size-sm);
-  font-weight: 700;
-  text-align: center;
-}
-
-.time {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;
-  padding: 4px;
-  border: 1px solid #3a3a55;
-  border-radius: 10px;
-  font-weight: 700;
-  text-align: center;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #34345a;
+  border-radius: var(--radius-lg);
+  background: #1b1b38;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-.time.suggested {
-  border-style: dashed;
-  border-color: var(--color-primary);
+.goes-out.book {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  border: 1.5px dashed var(--color-primary);
+  background: transparent;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.go-head {
+  display: flex;
+  justify-content: space-between;
+  color: #8e8ea4;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Shown, not read: the flow check reads the row as "Goes out | <time>". */
+.go-head::after {
+  content: 'Change';
   color: var(--color-primary);
 }
 
-.time.on {
-  border-style: solid;
-  border-color: var(--color-primary);
-  background: var(--color-primary);
-  color: #0f0f23;
+.go-at {
+  font-size: 18px;
+  font-weight: 600;
 }
 
-.time.taken {
-  border-color: #23233d;
-  background: #15152a;
-  color: #8a8aa0;
-  font-weight: 400;
-  cursor: not-allowed;
+.go-rel {
+  color: #a5a5b8;
+  font-size: var(--font-size-sm);
 }
 
-.time.taken .at {
-  text-decoration: line-through;
-}
-
-.time:has(input:focus-visible) {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
-
-.taken-why {
-  font-size: 11px;
+.sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
 }
 
 .when-line {
