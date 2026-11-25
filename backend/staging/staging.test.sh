@@ -642,15 +642,14 @@ sm_secrets() {
     {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
     {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
     {"key":"STAGING_E2E_HOST_PASSWORD","value":"%s"},
+    {"key":"STAGING_TELEGRAM_BOT_TOKEN","value":"8880403786:AApushed-token_x"},
     {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" "${2-$E2E_PW}" >"$SM"
 }
 sm_secrets stationclientsecret
 
-# The items added by hand: R2 keys (secret = $1) and the Telegram test bot token.
-manual_items() {
+r2_items() {
   printf '[{"name":"Moafunk STAGING_R2_ACCESS_KEY_ID","login":{"password":"0123456789abcdef0123456789abcdef"}},
-    {"name":"Moafunk STAGING_R2_SECRET_ACCESS_KEY","login":{"password":"%s"}},
-    {"name":"Moafunk STAGING_TELEGRAM_BOT_TOKEN","login":{"password":"8880403786:AApushed-token_x"}}]' "$1" >"$VAULT"
+    {"name":"Moafunk STAGING_R2_SECRET_ACCESS_KEY","login":{"password":"%s"}}]' "$1" >"$VAULT"
 }
 
 push() {
@@ -667,7 +666,7 @@ vault_pw() {
 }
 
 rm -f "$BOX/.env" "$BOX/stream.env"
-manual_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 expect_ok "push-secrets creates the items and installs the env" push
 expect_ok "pushed env files pass check-env" check
 if [[ "$(vault_pw STAGING_HARBOR_LIVE_PASSWORD)" =~ ^[A-Za-z0-9]{48}$ ]]; then
@@ -723,16 +722,15 @@ expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager s
 sm_secrets stationclientsecret ""
 expect_refused "an empty e2e login stops the push" "Secrets Manager secret STAGING_E2E_HOST_PASSWORD is empty" push
 sm_secrets stationclientsecret
+jq 'map(select(.key != "STAGING_TELEGRAM_BOT_TOKEN"))' "$SM" >"$SM.new" && mv "$SM.new" "$SM"
+expect_refused "a missing Telegram test bot token stops the push" "0 Secrets Manager secrets named STAGING_TELEGRAM_BOT_TOKEN" push
+sm_secrets stationclientsecret
 
-manual_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 jq '.[1:]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
 expect_refused "a missing R2 item stops the push" "add exactly one Bitwarden item 'Moafunk STAGING_R2_ACCESS_KEY_ID'" push
 
-manual_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
-jq 'map(select(.name != "Moafunk STAGING_TELEGRAM_BOT_TOKEN"))' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
-expect_refused "a missing Telegram token item stops the push" "add exactly one Bitwarden item 'Moafunk STAGING_TELEGRAM_BOT_TOKEN'" push
-
-manual_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 jq '. + [{"name":"Moafunk STAGING_SECRET_KEY","login":{"password":{"type":1}}}]' "$VAULT" >"$VAULT.new" && mv "$VAULT.new" "$VAULT"
 expect_refused "an item whose password is not a string stops the push" "Moafunk STAGING_SECRET_KEY has no password" push
 
