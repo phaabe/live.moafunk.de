@@ -203,6 +203,7 @@ let seriesGate: Promise<void> | undefined;
 let streamStatus: { active: boolean; user?: string } | null;
 /** The edit of the picked recording file (GET /api/shows/42/recording/edit). */
 let recordingEdit: RecordingEdit | null;
+let recordingSource: { url: string; duration: number | null } | null;
 const ACCOUNTS = [
   { id: 2, username: 'jonas' },
   { id: 4, username: 'kai' },
@@ -214,6 +215,7 @@ beforeEach(() => {
   current = episode();
   announcements = [];
   recordingEdit = null;
+  recordingSource = null;
   times = [];
   saveError = undefined;
   requests = [];
@@ -270,7 +272,7 @@ beforeEach(() => {
       }
       if (url === '/api/shows/42/recording/edit')
         return Response.json({
-          source: null,
+          source: recordingSource,
           edit: recordingEdit,
           status: 'none',
           error: null,
@@ -1847,10 +1849,88 @@ describe('Pre-announcement composer', () => {
     );
   });
 
+  it('previews the snippet slides and plays one of them at a time', async () => {
+    const players: FakeAudio[] = [];
+    class FakeAudio {
+      currentTime = 0;
+      paused = true;
+      ontimeupdate: (() => void) | null = null;
+      onended: (() => void) | null = null;
+      constructor(public src: string) {
+        players.push(this);
+      }
+      play() {
+        this.paused = false;
+        return Promise.resolve();
+      }
+      pause() {
+        this.paused = true;
+      }
+    }
+    const realAudio = globalThis.Audio;
+    vi.stubGlobal('Audio', FakeAudio);
+    try {
+      recordingSource = { url: 'https://r2/recordings/42/final.mp3', duration: 3600 };
+      recordingEdit = {
+        start: 0,
+        end: 3600,
+        gainDb: 0,
+        sections: [],
+        snippets: [
+          { slot: 2, start: 1800, length: 20 },
+          { slot: 1, start: 2712, length: 30 },
+        ],
+      };
+      await open('post');
+      const slides = () =>
+        [...root.querySelectorAll('.slides li')].map((li) =>
+          [...li.children]
+            .map((c) => c.textContent?.trim())
+            .filter(Boolean)
+            .join(' | ')
+        );
+      expect(slides()).toEqual([
+        'Slide 2 · Snippet 1 · 30 s | Play',
+        'Slide 3 · Snippet 2 · 20 s | Play',
+      ]);
+      const play = (slot: number) =>
+        (root.querySelector(`[aria-label$="snippet ${slot}"]`) as HTMLButtonElement).click();
+
+      play(1);
+      await nextTick();
+      expect(players[0]).toMatchObject({
+        src: recordingSource.url,
+        currentTime: 2712,
+        paused: false,
+      });
+      expect(slides()[0]).toBe('Slide 2 · Snippet 1 · 30 s | Stop');
+
+      // Snippet 2 stops snippet 1: one at a time.
+      play(2);
+      await nextTick();
+      expect(players[0].paused).toBe(true);
+      expect(players[1]).toMatchObject({ currentTime: 1800, paused: false });
+      expect(slides()).toEqual([
+        'Slide 2 · Snippet 1 · 30 s | Play',
+        'Slide 3 · Snippet 2 · 20 s | Stop',
+      ]);
+
+      // It stops by itself at the end of the snippet.
+      players[1].currentTime = 1820;
+      players[1].ontimeupdate?.();
+      await nextTick();
+      expect(players[1].paused).toBe(true);
+      expect(slides()[1]).toBe('Slide 3 · Snippet 2 · 20 s | Play');
+    } finally {
+      vi.stubGlobal('Audio', realAudio);
+    }
+  });
+
   it('says the post is one image when no snippets are placed', async () => {
     await open('post');
     await vi.waitFor(() => expect(text()).toContain('No snippets placed. The post is one image.'));
     expect(root.querySelector('.snippets')).toBeNull();
+    expect(root.querySelector('.slides')).toBeNull();
   });
 
   it('shows the free times by day in Book a time, the suggested one dashed', async () => {
