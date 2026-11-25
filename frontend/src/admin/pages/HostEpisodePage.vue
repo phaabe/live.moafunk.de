@@ -110,6 +110,11 @@ function endedOnAir(): boolean {
   const state = router.options.history.state as { episodeEnded?: number } | null;
   return state?.episodeEnded === id.value;
 }
+/** Start show now on Book Slot opens the new episode on its Social media tab. */
+function bookedNow(): boolean {
+  const state = router.options.history.state as { episodeSocial?: number } | null;
+  return state?.episodeSocial === id.value;
+}
 /** The episode ended in this tab: Recording shows and the page waits for the file. */
 const ended = ref(false);
 
@@ -120,7 +125,7 @@ async function load(reset: boolean) {
     if (show.value.on_air) await loadOnAirUser();
     if (reset) {
       ended.value = endedOnAir();
-      picked.value = ended.value ? 3 : null;
+      picked.value = ended.value ? 3 : bookedNow() ? 0 : null;
     }
     if (isMine.value) await loadPromotion();
     else await loadSlots();

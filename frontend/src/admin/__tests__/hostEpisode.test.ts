@@ -917,6 +917,18 @@ describe('Episode · phases', () => {
     expect(yellow()).toEqual([]);
   });
 
+  it('opens an episode booked with Start show now on its Social media tab', async () => {
+    at('12:00');
+    current = day();
+    await mount('host', 1, { episodeSocial: 42 });
+    expect(tabs()[0].selected).toBe(true);
+    // Without that, the start time opens a later step.
+    app?.unmount();
+    root.replaceChildren();
+    await mount();
+    expect(tabs()[0].selected).toBe(false);
+  });
+
   it('keeps Set up social media current until both posts are set up', async () => {
     at('11:00');
     current = day({ date: '2026-10-27' });
