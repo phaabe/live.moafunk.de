@@ -11,9 +11,9 @@
 #   export BWS_ACCESS_TOKEN=<Secrets Manager token>
 #   BW_FOLDER="<folder>" backend/staging/push-secrets.sh root@<staging-ip> -i ~/.ssh/<key>
 #
-# The two R2 items (STAGING_R2_ACCESS_KEY_ID, STAGING_R2_SECRET_ACCESS_KEY) are
-# not generated: Cloudflare shows them once, so add them in the Bitwarden app
-# (password field) before running this.
+# The two R2 items (STAGING_R2_ACCESS_KEY_ID, STAGING_R2_SECRET_ACCESS_KEY) and
+# STAGING_TELEGRAM_BOT_TOKEN are not generated: Cloudflare and BotFather show
+# them once, so add them in the Bitwarden app (password field) before running this.
 set -euo pipefail
 
 PREFIX="Moafunk"
@@ -22,7 +22,7 @@ HOST_USER="staging-host"
 GENERATED="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWORD STAGING_HARBOR_TEST_PASSWORD
 STAGING_HARBOR_LIVE_PASSWORD STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD
 STAGING_ICECAST_RELAY_PASSWORD"
-MANUAL="STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY"
+MANUAL="STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY STAGING_TELEGRAM_BOT_TOKEN"
 # Secrets Manager key=staging name. Staging shares the station's SoundCloud app
 # (SoundCloud allows one app per account), so its values are not copied. The
 # e2e login lives only in Secrets Manager: CI (e2e-staging.yml) reads it there.
