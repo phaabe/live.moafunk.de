@@ -244,19 +244,8 @@ impl CreateSeriesForm {
             })?;
         let start = self.start_time.as_deref().unwrap_or("");
         let end = self.end_time.as_deref().unwrap_or("");
-        match (series::parse_hhmm(start), series::parse_hhmm(end)) {
-            (Some(s), Some(e)) if s < e => {}
-            (Some(_), Some(_)) => {
-                return Err(AppError::BadRequest(
-                    "The end time must be after the start time".to_string(),
-                ))
-            }
-            _ => {
-                return Err(AppError::BadRequest(
-                    "Start and end time must be HH:MM".to_string(),
-                ))
-            }
-        }
+        // An end at or before the start is on the next day (23:00–01:00).
+        super::api::check_show_times(start, end)?;
         Ok(Some(Rhythm {
             repeat_rule,
             weekday,

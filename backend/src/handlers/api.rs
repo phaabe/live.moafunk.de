@@ -3079,25 +3079,98 @@ struct EpisodeViewRow {
     studio_log: Option<String>,
 }
 
-/// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so
-/// lexical comparison matches chronological order. A missing end is treated as a
-/// zero-length point at its start; identical starts always clash (catches the
-/// "two shows booked at the same time" case even when end times are absent).
-pub(crate) fn time_windows_overlap(
-    start_a: &str,
-    end_a: Option<&str>,
-    start_b: &str,
-    end_b: Option<&str>,
-) -> bool {
-    let end_a = end_a.unwrap_or(start_a);
-    let end_b = end_b.unwrap_or(start_b);
-    // Half-open overlap [start, end), plus an explicit equal-start collision.
-    (start_a < end_b && start_b < end_a) || start_a == start_b
+/// A show's time window in local (Berlin) wall-clock time. An end at or
+/// before the start is on the next day, as the scheduler reads it; a missing
+/// end makes the window a point at its start. `None` for a bad date or time.
+pub(crate) fn show_window(
+    date: &str,
+    start_time: &str,
+    end_time: Option<&str>,
+) -> Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)> {
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let start = crate::series::parse_hhmm(start_time)?;
+    let from = day.and_time(start);
+    let to = match end_time.and_then(crate::series::parse_hhmm) {
+        Some(end) if end > start => day.and_time(end),
+        Some(end) => day.succ_opt()?.and_time(end),
+        None => from,
+    };
+    Some((from, to))
 }
 
-/// Reject if the proposed window overlaps another show on the same date.
-/// `exclude_id` skips the show being edited (so it never clashes with itself).
-/// No start time → nothing to check (the window is undefined).
+/// Whether two show windows clash: half-open overlap, and equal starts always
+/// clash (two shows booked at the same time, also without end times).
+pub(crate) fn windows_overlap(
+    a: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    b: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+) -> bool {
+    (a.0 < b.1 && b.0 < a.1) || a.0 == b.0
+}
+
+/// The shortest and the longest show a host can book or set as a rhythm.
+pub(crate) const MIN_SHOW_MINUTES: i64 = 15;
+pub(crate) const MAX_SHOW_HOURS: i64 = 12;
+
+/// Start and end as "HH:MM". An end at or before the start is on the next
+/// day, so a show can pass midnight. It runs 15 minutes to 12 hours.
+pub(crate) fn check_show_times(start_time: &str, end_time: &str) -> Result<()> {
+    let (Some(start), Some(end)) = (
+        crate::series::parse_hhmm(start_time),
+        crate::series::parse_hhmm(end_time),
+    ) else {
+        return Err(AppError::BadRequest(
+            "Start and end time must be HH:MM".to_string(),
+        ));
+    };
+    let mut length = end - start;
+    if length <= chrono::Duration::zero() {
+        length += chrono::Duration::days(1);
+    }
+    if length < chrono::Duration::minutes(MIN_SHOW_MINUTES) {
+        return Err(AppError::BadRequest(
+            "The end must be at least 15 minutes after the start".to_string(),
+        ));
+    }
+    if length > chrono::Duration::hours(MAX_SHOW_HOURS) {
+        return Err(AppError::BadRequest(
+            "A show can be 12 h at most".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The first other show whose window clashes with `window` (title, date). It
+/// looks at the day before (an overnight show reaches into `date`), `date`
+/// and the day after (this window may pass midnight). `exclude_id` skips the
+/// show being edited.
+pub(crate) async fn clashing_show(
+    state: &AppState,
+    date: chrono::NaiveDate,
+    window: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    exclude_id: Option<i64>,
+) -> Result<Option<(String, String)>> {
+    let day = |d: Option<chrono::NaiveDate>| d.unwrap_or(date).format("%Y-%m-%d").to_string();
+    let others: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT title, date, start_time, end_time FROM shows \
+         WHERE date BETWEEN ? AND ? AND id != ? AND start_time IS NOT NULL",
+    )
+    .bind(day(date.pred_opt()))
+    .bind(day(date.succ_opt()))
+    .bind(exclude_id.unwrap_or(-1))
+    .fetch_all(&state.db)
+    .await?;
+    Ok(others
+        .into_iter()
+        .find_map(|(title, other_date, start, end)| {
+            show_window(&other_date, &start, end.as_deref())
+                .filter(|other| windows_overlap(window, *other))
+                .map(|_| (title, other_date))
+        }))
+}
+
+/// Reject if the proposed window overlaps another show, also one that passes
+/// midnight. `exclude_id` skips the show being edited (so it never clashes
+/// with itself). No start time or a bad date → nothing to check.
 pub(crate) async fn ensure_no_show_conflict(
     state: &AppState,
     date: &str,
@@ -3108,25 +3181,66 @@ pub(crate) async fn ensure_no_show_conflict(
     let Some(start) = start_time else {
         return Ok(());
     };
-
-    let others: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT title, start_time, end_time FROM shows \
-         WHERE date = ? AND id != ? AND start_time IS NOT NULL",
-    )
-    .bind(date)
-    .bind(exclude_id.unwrap_or(-1))
-    .fetch_all(&state.db)
-    .await?;
-
-    for (title, other_start, other_end) in others {
-        if time_windows_overlap(start, end_time, &other_start, other_end.as_deref()) {
-            return Err(AppError::Conflict(format!(
-                "This time overlaps an existing show \"{}\" on {}",
-                title, date
-            )));
-        }
+    let (Ok(day), Some(window)) = (
+        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+        show_window(date, start, end_time),
+    ) else {
+        return Ok(());
+    };
+    if let Some((title, other_date)) = clashing_show(state, day, window, exclude_id).await? {
+        return Err(AppError::Conflict(format!(
+            "This time overlaps an existing show \"{}\" on {}",
+            title, other_date
+        )));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BookedTimesQuery {
+    from: String,
+    to: String,
+}
+
+/// The longest range `GET /api/booked-times` answers.
+const BOOKED_TIMES_MAX_DAYS: i64 = 62;
+
+/// GET /api/booked-times?from=YYYY-MM-DD&to=YYYY-MM-DD — the date, start and
+/// end of every booked show from the day before `from` (an overnight show
+/// reaches into `from`) to `to`, so Book Slot can mark taken times. Times
+/// only, no names. Hosts and admins.
+pub async fn api_booked_times(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<BookedTimesQuery>,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let parse = |v: &str| {
+        chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
+            .map_err(|_| AppError::BadRequest("from and to must be YYYY-MM-DD".to_string()))
+    };
+    let (from, to) = (parse(&query.from)?, parse(&query.to)?);
+    if to < from || (to - from).num_days() > BOOKED_TIMES_MAX_DAYS {
+        return Err(AppError::BadRequest(format!(
+            "to must be after from, at most {BOOKED_TIMES_MAX_DAYS} days"
+        )));
+    }
+    let first = from.pred_opt().unwrap_or(from);
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT date, start_time, end_time FROM shows \
+         WHERE date BETWEEN ? AND ? AND start_time IS NOT NULL ORDER BY date, start_time",
+    )
+    .bind(first.format("%Y-%m-%d").to_string())
+    .bind(to.format("%Y-%m-%d").to_string())
+    .fetch_all(&state.db)
+    .await?;
+    let times: Vec<_> = rows
+        .into_iter()
+        .map(|(date, start_time, end_time)| {
+            serde_json::json!({ "date": date, "start_time": start_time, "end_time": end_time })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "times": times })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -6071,7 +6185,8 @@ pub async fn require_show_manager(
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_prerecorded_start, occurrence_outcome, time_windows_overlap, OccurrenceOutcome,
+        check_show_times, claim_prerecorded_start, occurrence_outcome, show_window,
+        windows_overlap, OccurrenceOutcome,
     };
     use crate::AppError;
 
@@ -6129,59 +6244,91 @@ mod tests {
         assert!(!claim_prerecorded_start(&pool, 999).await.unwrap());
     }
 
+    /// Two windows on one date, as the old same-day check compared them.
+    fn same_day(start_a: &str, end_a: Option<&str>, start_b: &str, end_b: Option<&str>) -> bool {
+        let window = |start, end| show_window("2026-11-28", start, end).unwrap();
+        windows_overlap(window(start_a, end_a), window(start_b, end_b))
+    }
+
     #[test]
     fn distinct_windows_do_not_overlap() {
         // 20:00–22:00 vs 22:00–23:00: touch at the boundary, half-open → no clash.
-        assert!(!time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "22:00",
-            Some("23:00")
-        ));
+        assert!(!same_day("20:00", Some("22:00"), "22:00", Some("23:00")));
         // Fully separate.
-        assert!(!time_windows_overlap(
-            "18:00",
-            Some("19:00"),
-            "20:00",
-            Some("21:00")
-        ));
+        assert!(!same_day("18:00", Some("19:00"), "20:00", Some("21:00")));
     }
 
     #[test]
     fn partially_overlapping_windows_clash() {
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "21:00",
-            Some("23:00")
-        ));
+        assert!(same_day("20:00", Some("22:00"), "21:00", Some("23:00")));
         // Containment.
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("23:00"),
-            "21:00",
-            Some("22:00")
-        ));
+        assert!(same_day("20:00", Some("23:00"), "21:00", Some("22:00")));
     }
 
     #[test]
     fn identical_start_always_clashes() {
         // Same start, even with no end times recorded.
-        assert!(time_windows_overlap("20:00", None, "20:00", None));
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "20:00",
-            Some("21:00")
-        ));
+        assert!(same_day("20:00", None, "20:00", None));
+        assert!(same_day("20:00", Some("22:00"), "20:00", Some("21:00")));
     }
 
     #[test]
     fn missing_end_is_a_point_inside_another_window() {
         // A start-only show at 21:00 falls inside 20:00–22:00.
-        assert!(time_windows_overlap("21:00", None, "20:00", Some("22:00")));
+        assert!(same_day("21:00", None, "20:00", Some("22:00")));
         // ...but a point at 22:00 is outside the half-open [20:00, 22:00).
-        assert!(!time_windows_overlap("22:00", None, "20:00", Some("22:00")));
+        assert!(!same_day("22:00", None, "20:00", Some("22:00")));
+    }
+
+    #[test]
+    fn an_end_before_the_start_is_on_the_next_day() {
+        let (from, to) = show_window("2026-11-28", "23:00", Some("01:00")).unwrap();
+        assert_eq!(from.to_string(), "2026-11-28 23:00:00");
+        assert_eq!(to.to_string(), "2026-11-29 01:00:00");
+        // Over the year end too.
+        let (_, to) = show_window("2026-12-31", "22:00", Some("00:30")).unwrap();
+        assert_eq!(to.to_string(), "2027-01-01 00:30:00");
+        assert!(show_window("2026-11-28", "8:00", Some("10:00")).is_none());
+        assert!(show_window("soon", "20:00", Some("22:00")).is_none());
+    }
+
+    #[test]
+    fn overnight_windows_clash_with_the_next_day() {
+        let sat = show_window("2026-11-28", "23:00", Some("01:00")).unwrap();
+        // Sunday 00:30–02:00 starts inside Saturday's show.
+        let sun = show_window("2026-11-29", "00:30", Some("02:00")).unwrap();
+        assert!(windows_overlap(sat, sun));
+        assert!(windows_overlap(sun, sat));
+        // Sunday 01:00 starts when Saturday's show ends: no clash.
+        let after = show_window("2026-11-29", "01:00", Some("03:00")).unwrap();
+        assert!(!windows_overlap(sat, after));
+        // Saturday 21:00–23:00 ends when the overnight show starts.
+        let before = show_window("2026-11-28", "21:00", Some("23:00")).unwrap();
+        assert!(!windows_overlap(sat, before));
+    }
+
+    #[test]
+    fn show_times_pass_midnight_and_run_15_minutes_to_12_hours() {
+        for (start, end) in [
+            ("20:00", "22:00"),
+            ("23:00", "01:00"),
+            ("22:13", "00:13"),
+            ("18:00", "06:00"),
+        ] {
+            assert!(check_show_times(start, end).is_ok(), "{start}–{end}");
+        }
+        let message = |start, end| match check_show_times(start, end) {
+            Err(AppError::BadRequest(m)) => m,
+            other => panic!("{start}–{end}: {other:?}"),
+        };
+        assert_eq!(
+            message("20:00", "20:10"),
+            "The end must be at least 15 minutes after the start"
+        );
+        assert_eq!(message("18:00", "06:15"), "A show can be 12 h at most");
+        // Same start and end = 24 h.
+        assert_eq!(message("20:00", "20:00"), "A show can be 12 h at most");
+        assert_eq!(message("8:00", "10:00"), "Start and end time must be HH:MM");
     }
 
     fn recording_version(
