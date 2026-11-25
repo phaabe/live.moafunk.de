@@ -651,6 +651,19 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::chalkboard::api_list_chalkboard)
                 .post(handlers::chalkboard::api_add_chalkboard_note),
         )
+        // Profiles (#1117): own profile and photo, other hosts' read-only
+        .route(
+            "/api/profile",
+            get(handlers::profile::api_get_profile).put(handlers::profile::api_save_profile),
+        )
+        .route(
+            "/api/profile/photo",
+            post(handlers::profile::api_upload_photo).delete(handlers::profile::api_remove_photo),
+        )
+        .route(
+            "/api/profiles/:username",
+            get(handlers::profile::api_get_user_profile),
+        )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",

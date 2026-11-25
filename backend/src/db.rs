@@ -849,6 +849,31 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Profiles (#1117): one row per user, links in the order of the edit form.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            display_name TEXT,
+            about TEXT,
+            photo_key TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_links (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            value TEXT NOT NULL,
+            label TEXT,
+            PRIMARY KEY (user_id, position)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     // Recording editor: one edit per show and file (`source`: 'show' or 'own').
     // `edited_key` is the last good render (default bucket); it stays while a
     // new render runs or fails. `source_key` is the file it was made from, so a

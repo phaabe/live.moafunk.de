@@ -6,6 +6,7 @@ pub mod chalkboard;
 pub mod chat_ws;
 pub mod download;
 pub mod hosts;
+pub mod profile;
 pub mod recording;
 pub mod recovery;
 pub mod series;
