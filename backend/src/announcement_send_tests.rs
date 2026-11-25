@@ -957,3 +957,129 @@ async fn instagram_off_sends_nothing_and_refuses_new_posts() {
     check_due_announcements(&state, berlin(5, 20)).await;
     assert_eq!(row(&state, pre).await.state, "sent");
 }
+
+/// Show 1, public on SoundCloud, with a finalized 20 s recording and an
+/// edit with `snippets` (JSON). `upload: false` leaves the file out of R2.
+async fn with_snippets(state: &Arc<AppState>, r2: &FakeR2, snippets: &str, upload: bool) {
+    let key = "recordings/1/final.mp3";
+    sqlx::query(
+        "INSERT INTO recording_versions (show_id, version, status, final_key, duration_ms) \
+         VALUES (1, 'v1', 'finalized', ?, 20000)",
+    )
+    .bind(key)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    if upload {
+        let mp3 = crate::recording_tests::tone(20, &["-c:a", "libmp3lame"], "mp3").await;
+        r2.insert(state, key, &mp3);
+    }
+    let edit =
+        format!(r#"{{"start":0.0,"end":20.0,"gainDb":0.0,"sections":[],"snippets":{snippets}}}"#);
+    sqlx::query("INSERT INTO recording_edits (show_id, source, edit_json) VALUES (1, 'show', ?)")
+        .bind(edit)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_post_with_snippets_goes_out_as_a_carousel() {
+    let (state, _t, tg, ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let snippets = r#"[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":5.0}]"#;
+    with_snippets(&state, &r2, snippets, true).await;
+    let id = add(&state, SHOW, "post", "scheduled", Some(berlin(8, 18)), host).await;
+    sqlx::query("UPDATE announcements SET user_tags = '[\"label\"]' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    check_due_announcements(&state, berlin(8, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+
+    let posts = media_posts(&ig);
+    assert_eq!(posts.len(), 4, "image, 2 videos, carousel");
+    // The image first: alt text and tagged accounts go on it.
+    let image = &posts[0];
+    assert_eq!(image.param("is_carousel_item"), Some("true"));
+    assert!(image
+        .param("image_url")
+        .unwrap()
+        .contains("shows/1/announcements/post.jpg"));
+    assert_eq!(image.param("alt_text"), Some("Tonight – Late Night Bass"));
+    assert_eq!(
+        image.json("user_tags"),
+        json!([{ "username": "label", "x": 0.5, "y": 0.5 }])
+    );
+    assert_eq!(image.param("caption"), None);
+    // Then the clips in slot order.
+    for (call, slot) in posts[1..3].iter().zip([1, 2]) {
+        assert_eq!(call.param("media_type"), Some("VIDEO"));
+        assert_eq!(call.param("is_carousel_item"), Some("true"));
+        let url = call.param("video_url").unwrap();
+        assert!(url.contains(&format!("post-snippet-{slot}.mp4")), "{url}");
+        let key = format!("shows/1/announcements/post-snippet-{slot}.mp4");
+        assert!(r2.object(&state, &key).is_some(), "{key}");
+    }
+    // The carousel carries caption and collaborators.
+    let carousel = &posts[3];
+    assert_eq!(carousel.param("media_type"), Some("CAROUSEL"));
+    assert_eq!(
+        carousel.param("children"),
+        Some("container-1,container-1,container-1")
+    );
+    assert_eq!(
+        carousel.param("caption"),
+        Some("Deep cuts all night.\n\n#moafunk")
+    );
+    assert_eq!(carousel.json("collaborators"), json!(["nightbass"]));
+    assert_eq!(
+        ig.call("/media_publish").param("creation_id"),
+        Some("container-1")
+    );
+
+    let notes = tg.of("sendmessage");
+    assert_eq!(notes.len(), 1, "only the sent note");
+    assert!(notes[0].text().contains("post announcement sent"));
+}
+
+#[tokio::test]
+async fn failed_snippet_clips_send_the_post_as_one_image_and_tell_the_admin() {
+    let (state, _t, tg, ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    // The recording is missing in R2, so no clip can be made.
+    with_snippets(
+        &state,
+        &r2,
+        r#"[{"slot":1,"start":2.0,"length":5.0}]"#,
+        false,
+    )
+    .await;
+    let id = add(&state, SHOW, "post", "scheduled", Some(berlin(8, 18)), host).await;
+
+    check_due_announcements(&state, berlin(8, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+    let posts = media_posts(&ig);
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].param("is_carousel_item"), None);
+    assert!(posts[0]
+        .param("image_url")
+        .unwrap()
+        .contains("shows/1/announcements/post.jpg"));
+
+    let notes = tg.of("sendmessage");
+    assert_eq!(notes.len(), 2);
+    assert!(notes[0]
+        .text()
+        .contains("Post-announcement of Bass Episode: the snippet clips failed"));
+    assert!(notes[1].text().contains("post announcement sent"));
+    tg.assert_all_sends_in_topic();
+}

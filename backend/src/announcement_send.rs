@@ -21,9 +21,10 @@ use crate::announcement_image::{
 };
 use crate::announcements::{self, to_db_time, Announcement, AnnouncementSettings};
 use crate::instagram::{is_quota_used_up, InstagramClient, PublishedMedia};
-use crate::{models, storage, telegram_notify, AppError, AppState, Result};
+use crate::{models, recording_edit, storage, telegram_notify, AppError, AppState, Result};
 
-/// A send takes a few minutes at most (quota, container poll, publish).
+/// A send takes a few minutes at most (quota, snippet clips, container poll,
+/// publish).
 const STALE_CLAIM: Duration = Duration::minutes(15);
 
 /// The scheduler tick (every 60 s).
@@ -253,7 +254,7 @@ async fn publish(
     let show_name = input.show_name.clone();
     let headline = row.headline.clone().unwrap_or_default();
     let jpeg = render_jpeg(input).await?;
-    let key = store_announcement_jpeg(state, row.show_id, kind, jpeg).await?;
+    let key = store_announcement_jpeg(state, row.show_id, kind, jpeg.clone()).await?;
     let url = storage::get_presigned_url(state, &key, 3600).await?;
 
     let client = InstagramClient::for_environment(&state.config, &state.db).await?;
@@ -264,9 +265,53 @@ async fn publish(
     let alt_text = format!("{headline} – {show_name}");
     let collaborators = announcements::collaborators_of(row, handle.as_deref());
     let tags = announcements::handles(&row.user_tags);
+    if kind == AnnouncementKind::Post {
+        // The snippets placed in Edit recording go out as video slides.
+        let carousel = async {
+            let Some((source, edit)) = recording_edit::post_snippets(state, &show).await? else {
+                return Ok(None);
+            };
+            // Before the render, so a used-up quota costs no clips.
+            client.ensure_quota_available().await?;
+            let clips =
+                recording_edit::snippet_clips(state, show.id, &source, &edit, &jpeg).await?;
+            client
+                .prepare_feed_carousel(
+                    &url,
+                    &clips,
+                    &caption,
+                    Some(&alt_text),
+                    &collaborators,
+                    &tags,
+                )
+                .await
+                .map(Some)
+        }
+        .await;
+        match carousel {
+            Ok(Some(container)) => return client.publish_carousel(&container).await,
+            Ok(None) => {}
+            Err(e) if is_quota_used_up(&e) => return Err(e),
+            // Nothing is published yet: the post still goes out on time, as one image.
+            Err(e) => snippet_notice(state, &show, &e).await,
+        }
+    }
     client
         .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators, &tags)
         .await
+}
+
+/// The snippet clips failed and the post goes out as one image: tell the admin.
+async fn snippet_notice(state: &Arc<AppState>, show: &models::Show, e: &AppError) {
+    tracing::error!(
+        "Announcements: snippet clips of show {} failed: {e}",
+        show.id
+    );
+    let msg = format!(
+        "⚠️ Post-announcement of {}: the snippet clips failed, so it goes out as one image. {e}",
+        show.title
+    );
+    telegram_notify::notify(state, &msg).await;
 }
 
 /// The host's caption plus the station hashtags.
