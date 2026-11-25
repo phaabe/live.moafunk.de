@@ -71,7 +71,7 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
 
   await test.step('upload the recording on the episode page', async () => {
     await page.getByRole('tab', { name: /Recording/ }).click();
-    await page.getByLabel('Recording file').setInputFiles(SET_MP3);
+    await page.getByLabel('Own file').setInputFiles(SET_MP3);
     // The button opens once the episode has its recording.
     await expect(send).toBeEnabled({ timeout: 2 * 60_000 });
   });
