@@ -1,13 +1,12 @@
 {
   "screen": "episode-view",
-  "hash": "daadd459",
+  "hash": "fc7f14af",
   "status": "drift",
   "leftOut": [],
   "missing": [
     "h1: Di 27.10. · Night Shift",
     "pill: Upcoming · Live · 20:00–22:00",
-    "h2: Details",
-    "row: Host | jonas"
+    "h2: Details"
   ],
   "extra": [
     "h1: Night Shift",

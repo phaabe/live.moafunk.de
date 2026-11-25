@@ -2,7 +2,8 @@
 import { computed } from 'vue';
 import { BaseButton } from '@shared/components';
 import type { SeriesDetail } from '../../api';
-import { initials, rhythmText } from './showPage';
+import { useAuthStore } from '../../stores/auth';
+import { initials, profilePath, rhythmText } from './showPage';
 
 // The Show's header card on its detail page (issue 1051, design D1): cover,
 // name, Edit, description and the facts rhythm, hosts and Instagram.
@@ -17,6 +18,8 @@ const emit = defineEmits<{ edit: [] }>();
 
 const rhythm = computed(() => rhythmText(props.series));
 const hosts = computed(() => (props.series.hosts ?? []).map((h) => h.username));
+const hostsLabel = computed(() => (hosts.value.length === 1 ? 'Host' : 'Hosts'));
+const auth = useAuthStore();
 const handle = computed(() => props.series.instagram_handle || null);
 </script>
 
@@ -58,12 +61,17 @@ const handle = computed(() => props.series.instagram_handle || null);
           <dd>{{ rhythm }}</dd>
         </div>
         <div v-if="hosts.length" class="fact">
-          <dt>{{ hosts.length === 1 ? 'Host' : 'Hosts' }}<span class="sep">: </span></dt>
+          <!-- Each name opens the host's profile (#1117). The first link carries
+               the label for screen readers and the flow check ("Host: | lena"). -->
+          <dt aria-hidden="true">{{ hostsLabel }}<span class="sep">: </span></dt>
           <dd class="hosts">
-            <span v-for="(name, i) in hosts" :key="name" class="host"
+            <template v-for="(name, i) in hosts" :key="name"
               ><span v-if="i" class="sep">, </span
-              ><span class="avatar" :data-initial="name.charAt(0).toUpperCase()"></span
-              >{{ name }}</span
+              ><router-link :to="profilePath(name, auth.user?.username)" class="host"
+                ><span v-if="!i" class="sep">{{ hostsLabel }}: </span
+                ><span class="avatar" :data-initial="name.charAt(0).toUpperCase()"></span
+                ><span>{{ name }}</span></router-link
+              ></template
             >
           </dd>
         </div>
@@ -185,6 +193,13 @@ const handle = computed(() => props.series.instagram_handle || null);
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.host:hover span:last-child {
+  color: var(--color-primary);
+  text-decoration: underline;
 }
 
 .avatar {

@@ -439,6 +439,20 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
+      // Flow screens profile / profile-edit (#1117): the own profile.
+      path: '/profile',
+      name: 'profile',
+      component: () => import('./pages/ProfilePage.vue'),
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      // Flow screen profile-view: another host's profile, read-only.
+      path: '/profile/:username',
+      name: 'profile-view',
+      component: () => import('./pages/ProfilePage.vue'),
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
       path: '/change-password',
       name: 'change-password',
       component: ChangePasswordPage,

@@ -45,6 +45,8 @@ pub struct UserResponse {
     artist_name: Option<String>,
     has_show: bool,
     must_change_password: bool,
+    /// The profile photo for the nav bar (#1117), see `thumbs::srcset`.
+    photo_srcset: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,8 +135,10 @@ pub async fn api_login(
         60 * 60 * 24 * 7 // 7 days
     );
 
+    let photo_srcset = super::profile::photo_srcset(&state, user.id).await?;
     let response = LoginResponse {
         user: UserResponse {
+            photo_srcset,
             id: user.id,
             username: user.username,
             role: user.role,
@@ -198,6 +202,7 @@ pub async fn api_me(
             };
 
             Ok(Json(UserResponse {
+                photo_srcset: super::profile::photo_srcset(&state, u.id).await?,
                 id: u.id,
                 username: u.username,
                 role: u.role,
