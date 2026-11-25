@@ -70,7 +70,10 @@ SOUNDCLOUD_ACCOUNT=moafunk-test
 SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
 SOUNDCLOUD_AUTO_UPLOAD=true
 SOUNDCLOUD_KEEP_TRACKS=10
-TELEGRAM_ENABLED=false
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=8880403786:AAtest-token_x
+TELEGRAM_LIVE_CHAT_ID=-1005857809589
+TELEGRAM_ANNOUNCE_CHAT_ID=-1005857809589
 INSTAGRAM_ACCOUNT=dev
 INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
 INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
@@ -154,14 +157,20 @@ case_env "SoundCloud cleanup unset" "SOUNDCLOUD_KEEP_TRACKS must be '10'" SOUNDC
 case_env "SoundCloud station account" "SOUNDCLOUD_ACCOUNT must not be the station account radio-moafunk" SOUNDCLOUD_ACCOUNT radio-moafunk
 case_env "SoundCloud test account unset" "SOUNDCLOUD_ACCOUNT must be set" SOUNDCLOUD_ACCOUNT -
 case_env "SoundCloud app secret unset" "SOUNDCLOUD_CLIENT_SECRET must be set" SOUNDCLOUD_CLIENT_SECRET -
-case_env "Telegram switched on" "TELEGRAM_ENABLED must be 'false'" TELEGRAM_ENABLED true
+case_env "Telegram switched off" "TELEGRAM_ENABLED must be 'true'" TELEGRAM_ENABLED false
+case_env "production live chat group" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -1006079057775
+case_env "live chat group unset" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -
+case_env "on-air message to the Moafunk channel" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -1001899120046
+case_env "on-air message chat unset" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -
+case_env "production bot token" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN 123:abc
+case_env "bot token unset" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN -
+case_env "admin chat set (technical alerts)" "TELEGRAM_ADMIN_CHAT_ID must not be set" TELEGRAM_ADMIN_CHAT_ID -1003507800985
 case_env "production admin URL" "ADMIN_BASE_URL must be" ADMIN_BASE_URL https://admin.live.moafunk.de
 case_env "production app env" "APP_ENV must be 'staging'" APP_ENV production
 case_env "producer pushes to the production box" "ICECAST_URL must be" ICECAST_URL "icecast://source:$LIVE_PW@178.104.160.103:8005/live"
 case_env "test stream goes to the live mount" "ICECAST_TEST_URL must be" ICECAST_TEST_URL "icecast://source:$TEST_PW@host.docker.internal:8005/live"
 case_env "status from the production Icecast" "ICECAST_STATUS_URL must be" ICECAST_STATUS_URL "https://admin.live.moafunk.de/status-json.xsl"
 case_env "GitHub dispatch token set" "GITHUB_DISPATCH_TOKEN must not be set" GITHUB_DISPATCH_TOKEN ghp_x
-case_env "Telegram bot token set" "TELEGRAM_BOT_TOKEN must not be set" TELEGRAM_BOT_TOKEN 123:abc
 case_env "Telegram setting added later" "TELEGRAM_NEW_SETTING must not be set" TELEGRAM_NEW_SETTING x
 case_env "SoundCloud static token set" "SOUNDCLOUD_ACCESS_TOKEN must not be set" SOUNDCLOUD_ACCESS_TOKEN x
 case_env "SoundCloud setting added later" "SOUNDCLOUD_NEW_SETTING must not be set" SOUNDCLOUD_NEW_SETTING x
@@ -216,6 +225,7 @@ STAGING_ICECAST_ADMIN_PASSWORD=adminadminadminadminadmin1
 STAGING_ICECAST_RELAY_PASSWORD=relayrelayrelayrelayrelay1
 STAGING_SOUNDCLOUD_CLIENT_ID=stagingclientid
 STAGING_SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+STAGING_TELEGRAM_BOT_TOKEN=8880403786:AAtest-token_x
 STAGING_INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
 STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
@@ -635,6 +645,7 @@ sm_secrets() {
     {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
     {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
     {"key":"STAGING_E2E_HOST_PASSWORD","value":"%s"},
+    {"key":"STAGING_TELEGRAM_BOT_TOKEN","value":"8880403786:AApushed-token_x"},
     {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" "${2-$E2E_PW}" >"$SM"
 }
 sm_secrets stationclientsecret
@@ -689,6 +700,11 @@ else
 fi
 if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
 if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the listed secrets come from Secrets Manager"; fi
+if grep -qx "TELEGRAM_BOT_TOKEN=8880403786:AApushed-token_x" "$BOX/.env"; then
+  pass "the box gets the Telegram test bot token"
+else
+  fail "the box gets the Telegram test bot token"
+fi
 if grep -qx "INSTAGRAM_ACCESS_TOKEN_DEV=igdevtoken" "$BOX/.env" && grep -qx "INSTAGRAM_ACCOUNT=dev" "$BOX/.env"; then
   pass "the box gets the Instagram test account"
 else
@@ -708,6 +724,9 @@ printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"}]' >"$SM"
 expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager secrets named SOUNDCLOUD_CLIENT_SECRET" push
 sm_secrets stationclientsecret ""
 expect_refused "an empty e2e login stops the push" "Secrets Manager secret STAGING_E2E_HOST_PASSWORD is empty" push
+sm_secrets stationclientsecret
+jq 'map(select(.key != "STAGING_TELEGRAM_BOT_TOKEN"))' "$SM" >"$SM.new" && mv "$SM.new" "$SM"
+expect_refused "a missing Telegram test bot token stops the push" "0 Secrets Manager secrets named STAGING_TELEGRAM_BOT_TOKEN" push
 sm_secrets stationclientsecret
 
 r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210

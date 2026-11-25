@@ -617,6 +617,25 @@ async fn live_chat_messages_reach_the_panel() {
 }
 
 #[tokio::test]
+async fn live_chat_switched_off_drops_listener_messages() {
+    let (state, _temp, fake) = telegram_state(json!({ "telegram_live_chat_id": OTHER_CHAT })).await;
+    crate::db::set_setting(&state.db, crate::db::TELEGRAM_LIVE_CHAT_ENABLED, "false")
+        .await
+        .unwrap();
+
+    handle_non_command_message(
+        bot(&state),
+        text_message(OTHER_CHAT, None, "hello radio"),
+        state.clone(),
+    )
+    .await
+    .unwrap();
+
+    assert!(state.chat_hub.recent().await.is_empty());
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
 async fn caption_reply_updates_the_artist_preview() {
     let (state, _temp, fake) = telegram_state(json!({})).await;
     let nova = add_artist_with(&state, "Nova", "track1_video_key", "'v1.mp4'").await;

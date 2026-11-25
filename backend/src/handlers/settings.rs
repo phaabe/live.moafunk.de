@@ -5,17 +5,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::{auth, db, telegram_notify, AppError, AppState, Result};
 
+/// The Moafunkbot switches on the Config page.
 #[derive(Serialize)]
 pub struct NotificationSettingsResponse {
+    /// Technical alerts: bot messages to the admin group.
     pub enabled: bool,
+    /// The live chat between the Telegram live chat group and On Air.
+    pub live_chat: bool,
+    /// The on-air message to the Moafunk channel.
+    pub onair_message: bool,
 }
 
+/// Each field is optional, so one switch never resets another.
 #[derive(Deserialize)]
 pub struct UpdateNotificationSettings {
-    pub enabled: bool,
+    pub enabled: Option<bool>,
+    pub live_chat: Option<bool>,
+    pub onair_message: Option<bool>,
 }
 
-/// GET /api/settings/notifications — returns the current notification toggle state.
+async fn load_notifications(state: &AppState) -> NotificationSettingsResponse {
+    NotificationSettingsResponse {
+        enabled: db::is_notifications_enabled(&state.db).await,
+        live_chat: db::is_service_enabled(&state.db, db::TELEGRAM_LIVE_CHAT_ENABLED).await,
+        onair_message: db::is_service_enabled(&state.db, db::TELEGRAM_ONAIR_ENABLED).await,
+    }
+}
+
+/// GET /api/settings/notifications — returns the Moafunkbot switches.
 ///
 /// Requires admin or superadmin role.
 pub async fn get_notifications(
@@ -31,11 +48,10 @@ pub async fn get_notifications(
         return Err(AppError::Forbidden("Admin access required".to_string()));
     }
 
-    let enabled = db::is_notifications_enabled(&state.db).await;
-    Ok(Json(NotificationSettingsResponse { enabled }))
+    Ok(Json(load_notifications(&state).await))
 }
 
-/// PUT /api/settings/notifications — update the notification toggle state.
+/// PUT /api/settings/notifications — sets the Moafunkbot switches it is given.
 ///
 /// Requires admin or superadmin role.
 pub async fn set_notifications(
@@ -52,29 +68,36 @@ pub async fn set_notifications(
         return Err(AppError::Forbidden("Admin access required".to_string()));
     }
 
-    let value = if req.enabled { "true" } else { "false" };
-    db::set_setting(&state.db, "notifications_enabled", value)
-        .await
-        .map_err(AppError::Database)?;
+    for (key, name, on) in [
+        ("notifications_enabled", "Notifications", req.enabled),
+        (db::TELEGRAM_LIVE_CHAT_ENABLED, "Live chat", req.live_chat),
+        (
+            db::TELEGRAM_ONAIR_ENABLED,
+            "On-air message",
+            req.onair_message,
+        ),
+    ] {
+        let Some(on) = on else { continue };
+        let value = if on { "true" } else { "false" };
+        db::set_setting(&state.db, key, value)
+            .await
+            .map_err(AppError::Database)?;
 
-    tracing::info!(
-        user = %user.username,
-        enabled = req.enabled,
-        "Notification toggle updated"
-    );
+        tracing::info!(
+            user = %user.username,
+            switch = name,
+            enabled = on,
+            "Notification toggle updated"
+        );
 
-    // Always report via Telegram (bypasses the guard so "disabled" messages still send)
-    let emoji = if req.enabled { "🔔" } else { "🔕" };
-    let status = if req.enabled { "ENABLED" } else { "DISABLED" };
-    let msg = format!(
-        "{emoji} Notifications {status} by {user}",
-        user = user.username
-    );
-    telegram_notify::notify_unconditional(&state, &msg).await;
+        // Always report via Telegram (bypasses the guard so "disabled" messages still send)
+        let emoji = if on { "🔔" } else { "🔕" };
+        let status = if on { "ENABLED" } else { "DISABLED" };
+        let msg = format!("{emoji} {name} {status} by {user}", user = user.username);
+        telegram_notify::notify_unconditional(&state, &msg).await;
+    }
 
-    Ok(Json(NotificationSettingsResponse {
-        enabled: req.enabled,
-    }))
+    Ok(Json(load_notifications(&state).await))
 }
 
 /// The admin switches for the outside services. Off means hosts see

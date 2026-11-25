@@ -5753,9 +5753,10 @@ pub async fn start_prerecorded_show_stream(
         return Err(e);
     }
 
-    // The episode's on-air story, if its host left it on.
+    // The episode's Telegram on-air message and on-air story, if set up.
     let (state, show_id) = (state.clone(), show.id);
     tokio::spawn(async move {
+        crate::telegram_onair::on_air(&state, show_id, chrono::Utc::now()).await;
         crate::announcement_send::announce_on_air(&state, show_id, chrono::Utc::now()).await
     });
 

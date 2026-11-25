@@ -1405,8 +1405,12 @@ export const soundcloudApi = {
 };
 
 // Settings API
+/** Moafunkbot switches: technical alerts (`enabled`), the On Air live chat
+ * and the on-air message to the channel. */
 export interface NotificationSettings {
   enabled: boolean;
+  live_chat: boolean;
+  onair_message: boolean;
 }
 
 /** Admin switches for the outside services. Off blocks every post there. */
@@ -1418,8 +1422,9 @@ export interface ServiceSettings {
 export const settingsApi = {
   getNotifications: () => api.get<NotificationSettings>('/api/settings/notifications'),
 
-  setNotifications: (enabled: boolean) =>
-    api.put<NotificationSettings>('/api/settings/notifications', { enabled }),
+  /** Sends only the switches it is given; the server keeps the others. */
+  setNotifications: (changes: Partial<NotificationSettings>) =>
+    api.put<NotificationSettings>('/api/settings/notifications', changes),
 
   getServices: () => api.get<ServiceSettings>('/api/settings/services'),
 

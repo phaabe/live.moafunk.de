@@ -1611,6 +1611,49 @@ async fn service_switches_read_by_all_set_by_admins() {
     assert_eq!(get(Some(p.host)).await, (OK, off));
 }
 
+/// Moafunkbot switches: admins only, and a PUT changes only the fields it has.
+#[tokio::test]
+async fn moafunkbot_switches_change_one_at_a_time() {
+    use handlers::settings::{get_notifications, set_notifications};
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    let get = |user| {
+        let state = state.clone();
+        async move {
+            reply(get_notifications(State(state.clone()), login(&state, user).await).await).await
+        }
+    };
+    let set = |user, body: Value| {
+        let state = state.clone();
+        async move {
+            let headers = login(&state, user).await;
+            reply(set_notifications(State(state.clone()), headers, req(body)).await).await
+        }
+    };
+    let all = |enabled: bool, live_chat: bool, onair_message: bool| json!({ "enabled": enabled, "live_chat": live_chat, "onair_message": onair_message });
+
+    assert_eq!(get(Some(p.admin)).await, (OK, all(true, true, true)));
+    assert_eq!(get(Some(p.host)).await.0, DENIED);
+    assert_eq!(
+        set(Some(p.host), json!({ "live_chat": false })).await.0,
+        DENIED
+    );
+
+    assert_eq!(
+        set(Some(p.admin), json!({ "live_chat": false })).await,
+        (OK, all(true, false, true))
+    );
+    assert_eq!(
+        set(Some(p.admin), json!({ "enabled": false })).await,
+        (OK, all(false, false, true))
+    );
+    assert_eq!(
+        set(Some(p.admin), json!({ "onair_message": false })).await,
+        (OK, all(false, false, false))
+    );
+    assert_eq!(get(Some(p.admin)).await, (OK, all(false, false, false)));
+}
+
 // ── Studio log ──────────────────────────────────────────────────────────────
 
 #[tokio::test]

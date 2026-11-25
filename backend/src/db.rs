@@ -518,6 +518,37 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // The host's time before the backend moved the post (approve, unlock,
     // retry); NULL while the post goes out at the host's time.
     add_column_if_missing(pool, "announcements", "requested_at", "TEXT").await?;
+
+    // The Telegram on-air message of an episode (telegram_onair.rs), apart
+    // from the Instagram announcements.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS telegram_onair_messages (
+            id INTEGER PRIMARY KEY,
+            show_id INTEGER NOT NULL UNIQUE REFERENCES shows(id) ON DELETE CASCADE,
+            state TEXT NOT NULL CHECK (state IN ('scheduled', 'sent', 'failed', 'cancelled')),
+            text TEXT NOT NULL,
+            image_source TEXT NOT NULL DEFAULT 'cover'
+                CHECK (image_source IN ('cover', 'upload', 'none')),
+            image_key TEXT,
+            silent INTEGER NOT NULL DEFAULT 0,
+            pin INTEGER NOT NULL DEFAULT 1,
+            scheduled_at TEXT,
+            sent_at TEXT,
+            chat_id INTEGER,
+            message_id INTEGER,
+            permalink TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            send_claimed_at TEXT,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
     // More collaborators and tagged accounts of a feed post (JSON lists).
     add_column_if_missing(
         pool,
@@ -1230,6 +1261,10 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
 /// Admin switches for the outside services (ticket 1012).
 pub const SOUNDCLOUD_ENABLED: &str = "soundcloud_enabled";
 pub const INSTAGRAM_ENABLED: &str = "instagram_enabled";
+/// Admin switch for the Telegram live chat in On Air (ticket 1056).
+pub const TELEGRAM_LIVE_CHAT_ENABLED: &str = "telegram_live_chat_enabled";
+/// Admin switch for the Telegram on-air message (ticket 1056).
+pub const TELEGRAM_ONAIR_ENABLED: &str = "telegram_onair_enabled";
 
 /// Whether the service switch `key` is on. Missing or unreadable means on.
 pub async fn is_service_enabled(pool: &SqlitePool, key: &str) -> bool {

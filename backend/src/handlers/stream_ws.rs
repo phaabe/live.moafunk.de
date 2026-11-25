@@ -270,10 +270,11 @@ async fn handle_stream_socket(
             .go_live(LiveFinalize::new(&state), recorded_show)
             .await;
     }
-    // The episode's on-air story, if its host left it on.
+    // The episode's Telegram on-air message and on-air story, if set up.
     if let Some(sid) = show_id {
         let state = state.clone();
         tokio::spawn(async move {
+            crate::telegram_onair::on_air(&state, sid, chrono::Utc::now()).await;
             crate::announcement_send::announce_on_air(&state, sid, chrono::Utc::now()).await
         });
     }

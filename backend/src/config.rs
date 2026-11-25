@@ -170,6 +170,9 @@ pub struct Config {
     /// bridge (#278). Unset = bridge inactive; the panel card shows an error
     /// on reply and no messages are forwarded. Distinct from the admin group.
     pub telegram_live_chat_id: Option<i64>,
+    /// Chat id of the Moafunk channel for the on-air message (staging: the
+    /// test group). Unset = the on-air message is not available.
+    pub telegram_announce_chat_id: Option<i64>,
 
     // Admin panel base URL (used in Telegram notifications to link to artist profiles)
     #[serde(default = "default_admin_base_url")]

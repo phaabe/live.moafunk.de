@@ -3,7 +3,8 @@
 # the staging box:
 #   1. creates every missing generated "Moafunk STAGING_*" item in Bitwarden,
 #   2. reads all values by exact name,
-#   3. reads the SoundCloud app and the e2e login from Bitwarden Secrets Manager,
+#   3. reads the SoundCloud app, the e2e login and the Telegram test bot token
+#      from Bitwarden Secrets Manager,
 #   4. pipes NAME=value lines over ssh into `staging.sh install-env`.
 # No value is printed, written to a file or passed as a program argument.
 #
@@ -26,9 +27,10 @@ MANUAL="STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY"
 # Secrets Manager key=staging name. Staging shares the station's SoundCloud app
 # (SoundCloud allows one app per account), so its values are not copied. The
 # e2e login lives only in Secrets Manager: CI (e2e-staging.yml) reads it there.
+# So does the token of the Telegram test bot (@moafunktestbot).
 SM_KEYS="SOUNDCLOUD_CLIENT_ID=STAGING_SOUNDCLOUD_CLIENT_ID SOUNDCLOUD_CLIENT_SECRET=STAGING_SOUNDCLOUD_CLIENT_SECRET
 INSTAGRAM_ACCESS_TOKEN_DEV=STAGING_INSTAGRAM_ACCESS_TOKEN_DEV INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV
-STAGING_E2E_HOST_PASSWORD=STAGING_E2E_HOST_PASSWORD"
+STAGING_E2E_HOST_PASSWORD=STAGING_E2E_HOST_PASSWORD STAGING_TELEGRAM_BOT_TOKEN=STAGING_TELEGRAM_BOT_TOKEN"
 
 die() {
   echo "push-secrets: $*" >&2

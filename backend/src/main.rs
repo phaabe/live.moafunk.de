@@ -29,6 +29,7 @@ mod stream_metrics;
 mod studio_log;
 mod telegram;
 mod telegram_notify;
+mod telegram_onair;
 mod thumbs;
 mod video;
 
@@ -716,6 +717,12 @@ async fn main() -> anyhow::Result<()> {
                 .delete(handlers::announcements::api_cancel_announcement),
         )
         .route(
+            "/api/shows/:id/telegram/onair",
+            get(telegram_onair::api_get_onair_message)
+                .put(telegram_onair::api_put_onair_message)
+                .delete(telegram_onair::api_cancel_onair_message),
+        )
+        .route(
             "/api/shows/:id/image-proxy",
             get(handlers::api::api_show_image_proxy),
         )
@@ -1067,6 +1074,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 announcement_send::check_due_announcements(&state, chrono::Utc::now()).await;
+                telegram_onair::tick(&state, chrono::Utc::now()).await;
             }
         });
     }

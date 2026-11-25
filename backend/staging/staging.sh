@@ -44,7 +44,13 @@ SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWO
 STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
 STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD
 STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET
-STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV"
+STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV STAGING_TELEGRAM_BOT_TOKEN"
+
+# The Telegram test bot @moafunktestbot (the number before ':' in its token) and
+# the staging test group. Two servers cannot poll one bot, and the production
+# chats are never for tests.
+STAGING_TELEGRAM_BOT_ID=8880403786
+STAGING_TELEGRAM_CHAT_ID=-1005857809589
 
 # The station's production SoundCloud account: never the staging account.
 STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
@@ -145,6 +151,8 @@ forbidden_key() {
     SOUNDCLOUD_CLIENT_ID | SOUNDCLOUD_CLIENT_SECRET | SOUNDCLOUD_REDIRECT_URI | SOUNDCLOUD_ACCOUNT | SOUNDCLOUD_KEEP_TRACKS) return 1 ;;
     # The Instagram test account only (check_env pins INSTAGRAM_ACCOUNT=dev).
     INSTAGRAM_ACCOUNT | INSTAGRAM_ACCESS_TOKEN_DEV | INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV) return 1 ;;
+    # The Telegram test bot and test group only (check_env pins them).
+    TELEGRAM_BOT_TOKEN | TELEGRAM_LIVE_CHAT_ID | TELEGRAM_ANNOUNCE_CHAT_ID) return 1 ;;
     SOUNDCLOUD_* | TELEGRAM_* | INSTAGRAM_* | FACEBOOK_* | OPENAI_* | RECOVERY_* | GITHUB_DISPATCH_TOKEN) return 0 ;;
   esac
   return 1
@@ -159,7 +167,8 @@ check_env() {
   # must use the app's only redirect URI, so every value here is required explicitly.
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
     SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
-    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false INSTAGRAM_ACCOUNT=dev \
+    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=true "TELEGRAM_LIVE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" \
+    "TELEGRAM_ANNOUNCE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" INSTAGRAM_ACCOUNT=dev \
     STAGING_E2E_HOST_USERNAME=e2e-host \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
@@ -194,6 +203,9 @@ check_env() {
   [[ "$value" =~ ^[a-z0-9_-]+$ ]] || problem "SOUNDCLOUD_ACCOUNT must be set (permalink of the test account)"
   [[ "$value" != "$STATION_SOUNDCLOUD_ACCOUNT" ]] ||
     problem "SOUNDCLOUD_ACCOUNT must not be the station account $STATION_SOUNDCLOUD_ACCOUNT"
+
+  [[ "$(env_value TELEGRAM_BOT_TOKEN "$file")" =~ ^$STAGING_TELEGRAM_BOT_ID:[A-Za-z0-9_-]+$ ]] ||
+    problem "TELEGRAM_BOT_TOKEN must be the test bot's token ($STAGING_TELEGRAM_BOT_ID:…)"
 
   for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$file" | cut -d= -f1); do
     if forbidden_key "$key"; then problem "$key must not be set in staging"; fi
@@ -279,7 +291,8 @@ cmd_install_env() {
     esac
     case " $LOGIN_PASSWORDS " in
       *" $name "*) [[ -n "$value" ]] || die "$name is empty" ;;
-      *) [[ "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
+      # ':' for the Telegram bot token (<bot id>:<secret>).
+      *) [[ "$value" =~ ^[A-Za-z0-9._~+/=:-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
     esac
     [[ ! -e "$tmp/$name" ]] || die "$name was sent twice"
     printf '%s' "$value" >"$tmp/$name"
