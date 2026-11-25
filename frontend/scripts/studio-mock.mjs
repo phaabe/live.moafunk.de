@@ -20,6 +20,8 @@
 // - MOCK_EPISODE=after (with MOCK_RECORDING, best a 30 min file): episode 1
 //   ended yesterday, its recording edited and private on SoundCloud, for the
 //   Recording tab (/admin/#/shows/1). Picking the file and Private / Public work.
+// - Profiles (#1117): /admin/#/profile (the host's own, kept in memory; a
+//   photo upload is served at /mock/photo) and /admin/#/profile/jonas.
 // - MOCK_EPISODE=soon: episode 1 is in 5 days at 19:00, for the Social media
 //   tiles and Book a time (#1091). Announcements live in memory: set up, book
 //   a time (pre: 7 days before, post: 14 days after; every third day is full)
@@ -285,6 +287,114 @@ function serveRecording(req, res) {
   createReadStream(RECORDING, { start, end }).pipe(res);
 }
 
+// ---- Profiles (#1117) ----
+const ADDRESS = 'https://';
+const platform = (key, name, group, prefix, suffix = '', at = false, hint = 'yourhandle') => ({
+  key, name, group, prefix, suffix, at, hint,
+});
+const PLATFORMS = [
+  platform('instagram', 'Instagram', 'common', 'instagram.com/', '', true),
+  platform('soundcloud', 'SoundCloud', 'common', 'soundcloud.com/'),
+  platform('mixcloud', 'Mixcloud', 'common', 'mixcloud.com/'),
+  platform('bandcamp', 'Bandcamp', 'common', '', '.bandcamp.com'),
+  platform('ra', 'Resident Advisor', 'music', 'ra.co/dj/'),
+  platform('spotify', 'Spotify', 'music', 'open.spotify.com/artist/', '', false, 'artist ID'),
+  platform('applemusic', 'Apple Music', 'music', ADDRESS, '', false, 'music.apple.com/…'),
+  platform('beatport', 'Beatport', 'music', ADDRESS, '', false, 'beatport.com/artist/…'),
+  platform('discogs', 'Discogs', 'music', ADDRESS, '', false, 'discogs.com/artist/…'),
+  platform('youtube', 'YouTube', 'social', 'youtube.com/@', '', true),
+  platform('tiktok', 'TikTok', 'social', 'tiktok.com/@', '', true),
+  platform('facebook', 'Facebook', 'social', 'facebook.com/'),
+  platform('x', 'X (Twitter)', 'social', 'x.com/', '', true),
+  platform('threads', 'Threads', 'social', 'threads.net/@', '', true),
+  platform('bluesky', 'Bluesky', 'social', 'bsky.app/profile/', '', false, 'you.bsky.social'),
+  platform('mastodon', 'Mastodon', 'social', ADDRESS, '', false, 'mastodon.social/@you'),
+  platform('twitch', 'Twitch', 'social', 'twitch.tv/'),
+  platform('linktree', 'Linktree', 'other', 'linktr.ee/'),
+  platform('website', 'Website', 'other', ADDRESS, '', false, 'yourwebsite.com'),
+  platform('custom', 'Custom', 'other', ADDRESS, '', false, 'yourlink.com'),
+];
+/** Like the backend, without its checks: the link and the text the profile shows. */
+function profileLink({ platform: key, value, label }) {
+  const p = PLATFORMS.find((x) => x.key === key);
+  const address = p.prefix === ADDRESS;
+  const v = address && !value.includes('://') ? `${ADDRESS}${value}` : value.replace(/^@/, '');
+  const url = address ? v : `${ADDRESS}${p.prefix}${v}${p.suffix}`;
+  const text = address ? v.replace(/^https?:\/\//, '').replace(/\/$/, '') : p.at ? `@${v}` : `${p.prefix}${v}${p.suffix}`;
+  return { platform: key, name: key === 'custom' ? label : p.name, label: key === 'custom' ? label : null, value: v, url, text };
+}
+const ownProfile = {
+  username: user.username,
+  display_name: null,
+  about: null,
+  photo_url: null,
+  photo_srcset: null,
+  shows: [{ slug: 'brunchtime', name: 'Brunchtime' }],
+  links: [],
+};
+const profileOut = () => ({ ...ownProfile, name: ownProfile.display_name ?? ownProfile.username, role: user.role });
+const JONAS = {
+  username: 'jonas',
+  display_name: null,
+  name: 'jonas',
+  role: 'host',
+  about: 'Club records after dark, every Tuesday from 20:00.',
+  photo_url: null,
+  photo_srcset: null,
+  shows: [{ slug: 'night-shift', name: 'Night Shift' }],
+  links: [
+    profileLink({ platform: 'instagram', value: 'nightshift.jonas' }),
+    profileLink({ platform: 'mixcloud', value: 'nightshift' }),
+  ],
+};
+let photo = null;
+
+/** The first file part of a multipart body. */
+function multipartFile(body, contentType) {
+  const boundary = Buffer.from(`--${/boundary=(.+)$/.exec(contentType)[1]}`);
+  const start = body.indexOf('\r\n\r\n', body.indexOf(boundary)) + 4;
+  return body.subarray(start, body.indexOf(boundary, start) - 2);
+}
+
+function profileRoute(req, res, path) {
+  const send = (value, status = 200) =>
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+  if (path === '/api/profile' && req.method === 'GET') return send({ profile: profileOut(), platforms: PLATFORMS });
+  if (path === '/api/profile' && req.method === 'PUT') {
+    readJson(req, (body) => {
+      ownProfile.display_name = body.display_name.trim() || null;
+      ownProfile.about = body.about.trim() || null;
+      ownProfile.links = body.links.filter((l) => l.value.trim()).map(profileLink);
+      send(profileOut());
+    });
+    return true;
+  }
+  if (path === '/api/profile/photo' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      photo = multipartFile(Buffer.concat(chunks), req.headers['content-type']);
+      // Vite proxies only /api, so the page loads the photo from the mock itself.
+      ownProfile.photo_url = `http://localhost:${PORT}/mock/photo?${Date.now()}`;
+      ownProfile.photo_srcset = `${ownProfile.photo_url} 640w`;
+      user.photo_srcset = ownProfile.photo_srcset;
+      send(profileOut());
+    });
+    return true;
+  }
+  if (path === '/api/profile/photo' && req.method === 'DELETE') {
+    photo = null;
+    ownProfile.photo_url = null;
+    ownProfile.photo_srcset = null;
+    user.photo_srcset = null;
+    return send(profileOut());
+  }
+  if (path === '/mock/photo' && photo) return res.writeHead(200).end(photo);
+  if (path === '/api/profiles/jonas') return send(JONAS);
+  if (path.startsWith('/api/profiles/')) return send({ error: 'No profile' }, 404);
+  return false;
+}
+
 const server = createServer((req, res) => {
   const path = req.url.split('?')[0];
   if (path.startsWith('/mock/mode/')) {
@@ -426,6 +536,7 @@ const server = createServer((req, res) => {
     });
     return;
   }
+  if (profileRoute(req, res, path) !== false) return;
   const route = routes[`${req.method} ${path}`];
   if (!route) console.log(`not mocked: ${req.method} ${path}`);
   res.writeHead(route ? 200 : 404, { 'content-type': 'application/json' });
