@@ -285,6 +285,43 @@ async fn slot_clash_day_and_not_a_slot() {
 }
 
 #[tokio::test]
+async fn timed_post_for_a_private_track_waits_without_its_time() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+
+    // A composer opened while the track was public still sends a time.
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "post",
+        json!({ "scheduled_at": at(8, 18) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["state"], "waiting_soundcloud");
+    assert_eq!(row["scheduled_at"], Value::Null);
+    assert_eq!(row["anchor_offset_minutes"], Value::Null);
+
+    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let (status, row) = put(
+        &state,
+        host,
+        1,
+        "post",
+        json!({ "scheduled_at": at(8, 18) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_ne!(row["state"], "waiting_soundcloud");
+    assert_eq!(row["scheduled_at"], at(8, 18));
+}
+
+#[tokio::test]
 async fn feed_per_week_stories_per_day_and_per_episode() {
     let (state, _t) = state().await;
     let host = add_user(&state, "host", "host").await;
