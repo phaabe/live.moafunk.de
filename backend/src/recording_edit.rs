@@ -808,6 +808,82 @@ async fn render(
     result
 }
 
+// ============================================================================
+// Snippet clips for the post-announcement
+// ============================================================================
+
+/// The audio filter of one snippet clip: the edit's volume and sections, cut
+/// to the snippet, with the fades and limiter of the render.
+pub fn snippet_filter(edit: &RecordingEdit, snippet: &Snippet) -> String {
+    render_filter(&RecordingEdit {
+        start: snippet.start,
+        end: snippet.start + snippet.length,
+        gain_db: edit.gain_db,
+        sections: edit.sections.clone(),
+        snippets: vec![],
+    })
+}
+
+/// The picked file and its edit, with the snippets in slot order. `None` when
+/// the file is missing or has no snippets.
+pub async fn post_snippets(
+    state: &Arc<AppState>,
+    show: &models::Show,
+) -> Result<Option<(RecordingSource, RecordingEdit)>> {
+    let (file, Some(source)) = picked_file(state, show).await? else {
+        return Ok(None);
+    };
+    let Some(row) = load_row(&state.db, show.id, file).await? else {
+        return Ok(None);
+    };
+    let mut edit: RecordingEdit = serde_json::from_str(&row.edit_json)
+        .map_err(|e| AppError::Internal(format!("Stored recording edit is broken: {e}")))?;
+    edit.snippets.sort_by_key(|s| s.slot);
+    Ok((!edit.snippets.is_empty()).then_some((source, edit)))
+}
+
+/// Render one MP4 per snippet of `edit` (see [`crate::video::snippet_video`])
+/// on `post_jpeg`, upload them next to the post image and return their
+/// presigned URLs in slot order.
+pub async fn snippet_clips(
+    state: &Arc<AppState>,
+    show_id: i64,
+    source: &RecordingSource,
+    edit: &RecordingEdit,
+    post_jpeg: &[u8],
+) -> Result<Vec<String>> {
+    let dir = job_dir("snippet_clips").await?;
+    let result = async {
+        let audio = download_source(state, source, &dir).await?;
+        let image = dir.join("post.jpg");
+        tokio::fs::write(&image, post_jpeg)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to write the post image: {e}")))?;
+        let mut urls = Vec::new();
+        for s in &edit.snippets {
+            let output = dir.join(format!("snippet-{}.mp4", s.slot));
+            crate::video::snippet_video(
+                &image,
+                &audio,
+                &snippet_filter(edit, s),
+                s.length,
+                &output,
+            )
+            .await?;
+            let data = tokio::fs::read(&output)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to read the clip: {e}")))?;
+            let key = format!("shows/{show_id}/announcements/post-snippet-{}.mp4", s.slot);
+            crate::video::upload_video_to_r2(state, &key, data).await?;
+            urls.push(storage::get_presigned_url(state, &key, 3600).await?);
+        }
+        Ok(urls)
+    }
+    .await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    result
+}
+
 async fn peaks_task(state: Arc<AppState>, show_id: i64, source: RecordingSource, key: String) {
     let result = async {
         let dir = job_dir("recording_peaks").await?;

@@ -382,12 +382,25 @@ const WAVE_REST: [u32; 25] = [
     18, 32, 12, 26, 38, 20, 8, 30, 16, 34, 22, 10, 28, 18, 36, 14, 24, 8, 32, 20, 12, 26, 16, 8, 20,
 ];
 
+/// Text sizes and spacing of the post template.
+const POST_PX: (f32, f32, f32) = (116.0, 56.0, 30.0);
+const POST_GAP: u32 = 36;
+
+/// Where the post image draws its waveform strip: `(x, y, width, height)`.
+/// The snippet clips of the post play a moving waveform in the same place.
+pub fn post_wave_box() -> (u32, u32, u32, u32) {
+    let (title_px, name_px, line_px) = POST_PX;
+    let text_h = line_h(title_px, 0.92) + 12 + line_h(name_px, 1.15) + 12 + line_h(line_px, 1.2);
+    let wave_h = 88;
+    let y = FEED_H - 64 - text_h - POST_GAP - wave_h;
+    (PAD_X, y, W - 2 * PAD_X, wave_h)
+}
+
 fn post(input: &AnnouncementRender, f: &Fonts, logo: &RgbaImage) -> RgbaImage {
     let mut c = RgbaImage::from_pixel(W, FEED_H, BLACK);
     let content_w = W - 2 * PAD_X;
-    let (title_px, name_px, line_px, gap) = (116.0, 56.0, 30.0, 36);
-    let text_h = line_h(title_px, 0.92) + 12 + line_h(name_px, 1.15) + 12 + line_h(line_px, 1.2);
-    let wave_h = 88;
+    let ((title_px, name_px, line_px), gap) = (POST_PX, POST_GAP);
+    let (_, wave_y, _, wave_h) = post_wave_box();
 
     // Header: badge left, episode label right.
     let mut y = 56;
@@ -408,7 +421,7 @@ fn post(input: &AnnouncementRender, f: &Fonts, logo: &RgbaImage) -> RgbaImage {
     );
     y += LOGO + gap;
 
-    let image_h = FEED_H - 64 - text_h - gap - wave_h - gap - y;
+    let image_h = wave_y - gap - y;
     imageops::overlay(
         &mut c,
         &station_image(&input.image, content_w, image_h),
@@ -826,6 +839,20 @@ mod tests {
         }
         // The image is inside the safe area.
         assert!(c.pixels().any(|p| p[0] > 200 && p[1] > 200 && p[2] > 200));
+    }
+
+    #[test]
+    fn the_post_wave_box_holds_the_waveform_strip() {
+        let c = render_canvas(&input(AnnouncementKind::Post, AnnouncementLayout::Band)).unwrap();
+        let (x, y, w, h) = post_wave_box();
+        assert_eq!((x, w), (PAD_X, W - 2 * PAD_X));
+        // The first bar (yellow) sits in the middle of the box; the rows just
+        // above and below the box are black.
+        assert_eq!(*c.get_pixel(x + 5, y + h / 2), YELLOW);
+        for x in 0..W {
+            assert_eq!(*c.get_pixel(x, y - 1), BLACK, "ink above at {x}");
+            assert_eq!(*c.get_pixel(x, y + h), BLACK, "ink below at {x}");
+        }
     }
 
     #[test]

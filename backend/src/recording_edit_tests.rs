@@ -992,3 +992,103 @@ fn source_names() {
     }
     assert_eq!(Source::parse("other"), None);
 }
+
+// ── Snippet clips ───────────────────────────────────────────────────────────
+
+#[test]
+fn a_snippet_clip_has_the_volume_of_the_edit() {
+    let mut e = edit(10.0, 100.0, -2.0);
+    e.sections = vec![section("a", 40.0, 60.0, 6.0)];
+    e.snippets = vec![snippet(1, 45.0, 10.0)];
+    let f = snippet_filter(&e, &e.snippets[0]);
+    assert!(f.starts_with("atrim=start=45.000:end=55.000,asetpts=PTS-STARTPTS,volume=-2dB,"));
+    // The section counts from the snippet start: it began 5 s before it.
+    assert!(f.contains("clip(min(t--5.000\\,15.000-t)"), "{f}");
+    assert!(
+        f.ends_with("afade=t=out:st=8.000:d=2,alimiter=limit=0.97:level=0"),
+        "{f}"
+    );
+}
+
+/// Streams and length of a media file, as ffprobe reads them.
+async fn probe(data: &[u8]) -> Value {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    tokio::fs::write(file.path(), data).await.unwrap();
+    let out = tokio::process::Command::new("ffprobe")
+        .args(["-v", "error", "-of", "json", "-show_entries"])
+        .args(["stream=codec_type,width,height:format=duration"])
+        .arg(file.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[tokio::test]
+async fn the_snippets_of_the_picked_file_become_clips_in_slot_order() {
+    let s = setup().await;
+    assert!(
+        post_snippets(&s.state, &show(&s).await)
+            .await
+            .unwrap()
+            .is_none(),
+        "no file"
+    );
+    add_finalized(&s, "v1", "recordings/1/final.mp3", 20).await;
+    assert!(
+        post_snippets(&s.state, &show(&s).await)
+            .await
+            .unwrap()
+            .is_none(),
+        "no edit"
+    );
+    let body = r#"{"start":1.0,"end":19.0,"gainDb":0.0,"sections":[],
+        "snippets":[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":6.0}]}"#;
+    assert_eq!(put_edit(&s, body).await.0, StatusCode::OK);
+
+    let (source, e) = post_snippets(&s.state, &show(&s).await)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.key, "recordings/1/final.mp3");
+    let slots: Vec<i64> = e.snippets.iter().map(|x| x.slot).collect();
+    assert_eq!(slots, [1, 2]);
+
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        1080,
+        1350,
+        image::Rgb([9, 9, 9]),
+    ))
+    .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+    .unwrap();
+    let urls = snippet_clips(&s.state, s.id, &source, &e, jpeg.get_ref())
+        .await
+        .unwrap();
+    assert_eq!(urls.len(), 2);
+    assert!(
+        urls[0].contains("announcements/post-snippet-1.mp4"),
+        "{}",
+        urls[0]
+    );
+    assert!(
+        urls[1].contains("announcements/post-snippet-2.mp4"),
+        "{}",
+        urls[1]
+    );
+
+    let key = format!("shows/{}/announcements/post-snippet-1.mp4", s.id);
+    let p = probe(&s.r2.object(&s.state, &key).unwrap()).await;
+    let streams = p["streams"].as_array().unwrap();
+    assert!(streams
+        .iter()
+        .any(|st| st["codec_type"] == "video" && st["width"] == 1080 && st["height"] == 1350));
+    assert!(streams.iter().any(|st| st["codec_type"] == "audio"));
+    let length: f64 = p["format"]["duration"].as_str().unwrap().parse().unwrap();
+    assert!((length - 6.0).abs() < 0.2, "{length}");
+}

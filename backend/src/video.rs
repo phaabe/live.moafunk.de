@@ -521,11 +521,81 @@ async fn compose_video(
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Snippet clips of the post-announcement
+// ────────────────────────────────────────────────────────────────────────────
+
+/// The post template's yellow, for the moving waveform.
+const SNIPPET_WAVE_COLOR: &str = "0xFFEC44";
+/// A 30 s clip encodes in well under a minute; this only stops a hung ffmpeg.
+const SNIPPET_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// `filter_complex` of a snippet clip: `audio_filter` cuts the snippet from
+/// input 1; the post image (input 0) gets a moving waveform of it in place of
+/// its waveform strip.
+///
+/// `format=rgb24` first: on the full-range JPEG frames `drawbox` black would
+/// come out dark grey.
+fn snippet_filter_complex(audio_filter: &str) -> String {
+    let (x, y, w, h) = crate::announcement_image::post_wave_box();
+    format!(
+        "[1:a]{audio_filter},asplit[a][w];\
+         [w]showwaves=s={w}x{h}:mode={WAVEFORM_MODE}:rate={VIDEO_FPS}:\
+         colors={SNIPPET_WAVE_COLOR}:scale={WAVEFORM_SCALE}:draw=full[wave];\
+         [0:v]format=rgb24,setsar=1,fps={VIDEO_FPS},drawbox=x={x}:y={y}:w={w}:h={h}:color=black:t=fill[bg];\
+         [bg][wave]overlay={x}:{y}:shortest=1[v]"
+    )
+}
+
+/// Render one snippet clip to `output`: the post image (1080×1350) with a
+/// moving waveform, and `length` seconds of `audio` through `audio_filter`.
+pub async fn snippet_video(
+    image: &std::path::Path,
+    audio: &std::path::Path,
+    audio_filter: &str,
+    length: f64,
+    output: &std::path::Path,
+) -> Result<()> {
+    let fps = VIDEO_FPS.to_string();
+    let run = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
+        .args(["-loop", "1", "-framerate", &fps, "-i"])
+        .arg(image)
+        .arg("-i")
+        .arg(audio)
+        .arg("-filter_complex")
+        .arg(snippet_filter_complex(audio_filter))
+        .args(["-map", "[v]", "-map", "[a]", "-t"])
+        .arg(format!("{length:.3}"))
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"])
+        .args(["-pix_fmt", "yuv420p", "-r", &fps])
+        .args(["-c:a", "aac", "-b:a", "192k", "-ar", "44100"])
+        .args(["-movflags", "+faststart"])
+        .arg(output)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(SNIPPET_TIMEOUT, run)
+        .await
+        .map_err(|_| AppError::Internal("Snippet clip: ffmpeg timed out".to_string()))?
+        .map_err(|e| AppError::Internal(format!("Failed to run ffmpeg: {e}")))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let last = stderr.lines().last().unwrap_or("unknown error");
+        return Err(AppError::Internal(format!("Snippet clip failed: {last}")));
+    }
+    Ok(())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // R2 upload helper
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Upload raw MP4 bytes to R2 at a specific key.
-async fn upload_video_to_r2(state: &Arc<AppState>, key: &str, data: Vec<u8>) -> Result<()> {
+pub(crate) async fn upload_video_to_r2(
+    state: &Arc<AppState>,
+    key: &str,
+    data: Vec<u8>,
+) -> Result<()> {
     state
         .s3_client
         .put_object()
