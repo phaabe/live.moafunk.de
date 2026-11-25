@@ -15,8 +15,8 @@
 //   GET /api/shows/1 returns it, like the backend.
 // - /mock/live: how many LIVE broadcasts are open, and the audio chunks each got.
 // - MOCK_RECORDING=<mp3>: episode 1 has that file as its recording, for the
-//   Edit recording page (/admin/#/shows/1/edit-recording): edit, peaks (ffmpeg)
-//   and /mock/recording.mp3 with CORS and Range, like R2. Apply only pretends.
+//   Edit recording page (/admin/#/shows/1/edit-recording): edit, snippets, peaks
+//   (ffmpeg) and /mock/recording.mp3 with CORS and Range, like R2. Apply only pretends.
 // - MOCK_EPISODE=after (with MOCK_RECORDING, best a 30 min file): episode 1
 //   ended yesterday, its recording edited and private on SoundCloud, for the
 //   Recording tab (/admin/#/shows/1). Picking the file and Private / Public work.
@@ -186,7 +186,7 @@ const listeners = new Set();
 
 // ---- Edit recording (#883) ----
 const RECORDING = process.env.MOCK_RECORDING ?? null;
-const recording = { edit: null, status: 'none', peaks: null, reading: false };
+const recording = { edit: null, snippets: [], status: 'none', peaks: null, reading: false };
 const AFTER = !!RECORDING && process.env.MOCK_EPISODE === 'after';
 let recordingSource = 'show';
 const soundcloud = {
@@ -198,17 +198,17 @@ const soundcloud = {
   soundcloud_current: true,
 };
 if (AFTER) {
-  // An applied edit of a 30 min file: cut, one louder part, two snippets.
+  // An applied edit of a 30 min file: cut, one louder part; two snippets.
   recording.edit = {
     start: 60,
     end: 1740,
     gainDb: 2,
     sections: [{ id: 'a', start: 450, end: 540, gainDb: 4 }],
-    snippets: [
-      { slot: 1, start: 720, length: 30 },
-      { slot: 2, start: 1080, length: 20 },
-    ],
   };
+  recording.snippets = [
+    { slot: 1, start: 720, length: 30 },
+    { slot: 2, start: 1080, length: 20 },
+  ];
   recording.status = 'done';
   soundcloud.soundcloud_uploaded_at = new Date(Date.now() - 82_800_000)
     .toISOString()
@@ -248,10 +248,12 @@ function readJson(req, done) {
 }
 
 function editState() {
-  if (!RECORDING) return { source: null, edit: null, status: 'none', error: null, edited_url: null, rendered_at: null };
+  if (!RECORDING)
+    return { source: null, edit: null, snippets: [], status: 'none', error: null, edited_url: null, rendered_at: null };
   return {
     source: { url: `http://localhost:${PORT}/mock/recording.mp3`, duration: recording.peaks?.duration ?? null },
     edit: recording.edit,
+    snippets: recording.snippets,
     status: recording.status,
     error: null,
     edited_url: null,
@@ -332,6 +334,13 @@ const server = createServer((req, res) => {
     req.on('end', () => {
       recording.edit = JSON.parse(body);
       recording.status = 'draft';
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    });
+    return;
+  }
+  if (path === '/api/shows/1/recording/snippets' && req.method === 'PUT') {
+    readJson(req, (body) => {
+      recording.snippets = [...body.snippets].sort((a, b) => a.slot - b.slot);
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
     });
     return;

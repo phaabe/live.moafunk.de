@@ -42,20 +42,25 @@ const EDIT = {
   end: 6829.6,
   gainDb: 2.5,
   sections: [{ id: 'a', start: 1800, end: 2160, gainDb: 4 }],
-  snippets: [
-    { slot: 1, start: 2712, length: 30 },
-    { slot: 2, start: 4296, length: 20 },
-  ],
 };
+const SNIPPETS = [
+  { slot: 1, start: 2712, length: 30 },
+  { slot: 2, start: 4296, length: 20 },
+];
 const READY = { state: 'ok', text: 'Recording ready · 2:00:00' } as const;
 
 let app: App | null = null;
 let root: HTMLElement;
 let router: Router;
 let requests: { url: string; method: string; body: unknown }[];
+let snippets: typeof SNIPPETS;
 
 beforeEach(() => {
   requests = [];
+  snippets = structuredClone(SNIPPETS);
+  // jsdom has no media playback.
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
@@ -68,6 +73,7 @@ beforeEach(() => {
           file: 'show',
           filename: 'v1.mp3',
           edit: EDIT,
+          snippets,
           status: 'done',
           error: null,
           edited_url: 'https://r2.example/edited.mp3',
@@ -76,6 +82,10 @@ beforeEach(() => {
       if (url === '/api/shows/42/recording/peaks')
         return Response.json({ duration: 7200, per_second: 1, peaks: [0.4, 0.6, 0.5] });
       if (url === '/api/shows/42/recording/source' && method === 'PUT') return Response.json(body);
+      if (url === '/api/shows/42/recording/snippets' && method === 'PUT') {
+        snippets = (body as { snippets: typeof SNIPPETS }).snippets;
+        return Response.json({ edit: EDIT, snippets });
+      }
       if (url === '/api/shows/42/soundcloud/upload' && method === 'POST')
         return Response.json({
           success: true,
@@ -93,6 +103,7 @@ afterEach(() => {
   root?.remove();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 async function mount(
@@ -175,6 +186,20 @@ describe('Recording tab · flow', () => {
     expect(openRows()).toEqual(['File']);
     await expectFlow('episode-recording-file', root);
   });
+
+  it('matches the flow with the Instagram row open', async () => {
+    const scheduled: SlotReading = {
+      slot: 'post',
+      state: 'scheduled',
+      scheduled_at: '2026-10-28T17:00:00Z',
+      sent_at: null,
+    };
+    await mount({ soundcloud_public: true }, { announcements: [scheduled] });
+    await playerReady();
+    expect(openRows()).toEqual(['Instagram']);
+    await vi.waitFor(() => expect(root.querySelectorAll('.sn-row')).toHaveLength(3));
+    await expectFlow('episode-recording-instagram', root);
+  });
 });
 
 describe('Recording tab · player', () => {
@@ -184,7 +209,8 @@ describe('Recording tab · player', () => {
     expect(root.querySelector('.rp-title')?.textContent).toBe('Show recording · edited · 1:47:40');
     expect(root.querySelectorAll('.rp-mark.cut')).toHaveLength(2);
     expect(root.querySelectorAll('.rp-mark.section')).toHaveLength(1);
-    expect(root.querySelectorAll('.rp-mark.snippet')).toHaveLength(2);
+    // Snippets are not marks of the edit: they sit in the Instagram row.
+    expect(root.querySelectorAll('.rp-mark.snippet')).toHaveLength(0);
     expect([...root.querySelectorAll('.rp-flag')].map((f) => f.textContent)).toEqual([
       'START',
       'END',
@@ -346,9 +372,80 @@ describe('Recording tab · Instagram', () => {
     await mount({ soundcloud_public: true }, { onSocial: social });
     expect(openRows()).toEqual(['Instagram']);
     expect(summary('Instagram')).toBe('Post-announcement not set up');
-    await vi.waitFor(() => expect(text()).toContain('2 of 3 placed'));
     button('Go to Social media')!.click();
     expect(social).toHaveBeenCalled();
+  });
+
+  it('places, moves and removes snippets and saves each change', async () => {
+    await mount({ soundcloud_public: true });
+    await vi.waitFor(() => expect(root.querySelectorAll('.sn-row')).toHaveLength(3));
+    const times = () =>
+      [...root.querySelectorAll<HTMLInputElement>('.sn-time')].map((i) => i.value);
+    expect(times()).toEqual(['0:45:12.0', '1:11:36.0', '']);
+    expect(text()).toContain('Click the waveform to place snippet 3.');
+
+    // Snippet 3 is empty, so it is picked: a click on the whole set places it there.
+    const map = root.querySelector('.sn-map')!;
+    vi.spyOn(map, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 1000 } as DOMRect);
+    map.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 500 }));
+    await nextTick();
+    expect(times()[2]).toBe('1:00:00.0');
+    // The zoom shows 2 minutes around it; a click there places it to the second.
+    expect(text()).toContain('Zoom · 0:59:15 – 1:01:15');
+    const zoom = root.querySelector('.sn-zoom')!;
+    vi.spyOn(zoom, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 1200 } as DOMRect);
+    zoom.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 600 }));
+    await nextTick();
+    expect(times()[2]).toBe('1:00:15.0');
+
+    button('Snippet 2 1 second longer')!.click();
+    button('Remove snippet 1')!.click();
+    await nextTick();
+    expect(times()).toEqual(['', '1:11:36.0', '1:00:15.0']);
+    expect(text()).toContain('Saving…');
+    // One save for the row of clicks.
+    await vi.waitFor(() => expect(text()).toContain('Saved.'), { timeout: 2000 });
+    const saves = requests.filter((r) => r.url === '/api/shows/42/recording/snippets');
+    expect(saves).toEqual([
+      {
+        url: '/api/shows/42/recording/snippets',
+        method: 'PUT',
+        body: {
+          snippets: [
+            { slot: 2, start: 4296, length: 21 },
+            { slot: 3, start: 3615, length: 30 },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('types a snippet time and keeps the length within 5 to 30 s', async () => {
+    await mount({ soundcloud_public: true });
+    await vi.waitFor(() => expect(root.querySelectorAll('.sn-row')).toHaveLength(3));
+    const first = root.querySelector<HTMLInputElement>('.sn-time')!;
+    first.value = '0:50:00';
+    first.dispatchEvent(new Event('input'));
+    first.dispatchEvent(new Event('blur'));
+    await nextTick();
+    expect(first.value).toBe('0:50:00.0');
+    first.value = 'nonsense';
+    first.dispatchEvent(new Event('input'));
+    first.dispatchEvent(new Event('blur'));
+    await nextTick();
+    expect(first.value).toBe('0:50:00.0');
+    expect(button('Snippet 1 1 second longer')!.disabled).toBe(true);
+    expect(button('Snippet 3 0.1 seconds later')!.disabled).toBe(true);
+  });
+
+  it('says snippets wait for the recording', async () => {
+    await mount(
+      { soundcloud_public: true, latest_recording: undefined },
+      { recording: { state: 'processing', text: 'Recording processing' } }
+    );
+    await openRow('Instagram');
+    expect(text()).toContain('Snippets can be placed once the recording is ready.');
+    expect(root.querySelector('.sn')).toBeNull();
   });
 
   it('names the post time once the track is public: going public schedules it', async () => {

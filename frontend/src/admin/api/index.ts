@@ -1,5 +1,5 @@
 // API client for admin panel
-import type { RecordingEdit } from '../components/recording-editor/edit';
+import type { RecordingEdit, Snippet } from '../components/recording-editor/edit';
 
 // In production, admin panel is hosted at admin.live.moafunk.de (same origin as API)
 const API_BASE = '';
@@ -969,6 +969,8 @@ export interface RecordingEditState {
   file?: RecordingFile;
   filename?: string | null;
   edit: RecordingEdit | null;
+  /** The snippets for the post-announcement, in slot order. Saved apart from the edit. */
+  snippets: Snippet[];
   status: RecordingEditStatus;
   error: string | null;
   edited_url: string | null;
@@ -984,6 +986,10 @@ export const recordingEditApi = {
 
   save: (showId: number, edit: RecordingEdit) =>
     api.put<RecordingEditState>(`/api/shows/${showId}/recording/edit`, edit),
+
+  /** Saves the picked file's snippets; the edit and its file stay as they are. */
+  saveSnippets: (showId: number, snippets: Snippet[]) =>
+    api.put<RecordingEditState>(`/api/shows/${showId}/recording/snippets`, { snippets }),
 
   /** Starts the render on the server: 202 `{status: 'rendering'}`. */
   apply: (showId: number) =>
