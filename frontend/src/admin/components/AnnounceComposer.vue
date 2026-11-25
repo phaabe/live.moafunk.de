@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { BaseButton, BaseModal } from '@shared/components';
 import {
   announcementsApi,
+  recordingEditApi,
   seriesApi,
   showsApi,
   type Announcement,
@@ -13,6 +15,7 @@ import {
 } from '../api';
 import BoardIcon from './BoardIcon.vue';
 import BookTime from './BookTime.vue';
+import { clock, type Snippet } from './recording-editor/edit';
 import {
   CAPTION_MAX,
   cleanHandle,
@@ -130,7 +133,25 @@ const whenLine = computed(() => {
     : at;
 });
 
+const router = useRouter();
+/** Post slot: the snippets of the picked recording file go out as video slides. */
+const snippets = ref<Snippet[]>([]);
+const snippetError = ref<string | null>(null);
+
+async function loadSnippets() {
+  snippets.value = [];
+  snippetError.value = null;
+  if (props.slot !== 'post') return;
+  try {
+    const state = await recordingEditApi.get(props.showId);
+    snippets.value = [...(state.edit?.snippets ?? [])].sort((a, b) => a.slot - b.slot);
+  } catch (e) {
+    snippetError.value = e instanceof Error ? e.message : 'Could not load the snippets';
+  }
+}
+
 async function load() {
+  void loadSnippets();
   error.value = null;
   loading.value = true;
   try {
@@ -382,6 +403,29 @@ function picked(value: string) {
           </template>
         </fieldset>
 
+        <div v-if="slot === 'post'" class="group">
+          <h2 class="board-card-title"><BoardIcon name="music" />Snippets</h2>
+          <ul v-if="snippets.length" class="snippets">
+            <li v-for="s in snippets" :key="s.slot">
+              Snippet {{ s.slot }} · {{ clock(s.start) }} · {{ s.length }} s
+            </li>
+          </ul>
+          <p class="hint">
+            {{
+              snippets.length
+                ? 'They go into the post as video slides after the image, with a moving waveform.'
+                : 'No snippets placed. The post is one image.'
+            }}
+          </p>
+          <p v-if="snippetError" class="field-error">{{ snippetError }}</p>
+          <BaseButton
+            variant="ghost"
+            class="edit-recording"
+            @click="router.push(`/shows/${showId}/edit-recording`)"
+            >Edit recording</BaseButton
+          >
+        </div>
+
         <fieldset v-if="feed" class="group" :disabled="sent || loading">
           <h2 class="board-card-title"><BoardIcon name="users" />People</h2>
           <label v-if="handle" class="check"
@@ -560,6 +604,15 @@ function picked(value: string) {
 
 .group:last-child {
   margin-bottom: 0;
+}
+
+.snippets {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.edit-recording {
+  align-self: flex-start;
 }
 
 .field {

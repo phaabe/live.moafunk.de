@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth';
 import { hostPage } from '../hostPage';
 import { currentReplaceTarget } from '../replaceFile';
 import type { SeriesHost, ShowDetail, User } from '../api';
+import type { RecordingEdit } from '../components/recording-editor/edit';
 import { expectFlow } from '../flow/expectFlow';
 
 // jsdom does not implement font loading used by the composables barrel.
@@ -200,6 +201,8 @@ let photoUpload: Response | undefined;
 let seriesGate: Promise<void> | undefined;
 /** GET /api/stream/status; null: not mocked (the page cannot tell who is on air). */
 let streamStatus: { active: boolean; user?: string } | null;
+/** The edit of the picked recording file (GET /api/shows/42/recording/edit). */
+let recordingEdit: RecordingEdit | null;
 const ACCOUNTS = [
   { id: 2, username: 'jonas' },
   { id: 4, username: 'kai' },
@@ -210,6 +213,7 @@ const ACCOUNTS = [
 beforeEach(() => {
   current = episode();
   announcements = [];
+  recordingEdit = null;
   times = [];
   saveError = undefined;
   requests = [];
@@ -267,7 +271,7 @@ beforeEach(() => {
       if (url === '/api/shows/42/recording/edit')
         return Response.json({
           source: null,
-          edit: null,
+          edit: recordingEdit,
           status: 'none',
           error: null,
           edited_url: null,
@@ -384,6 +388,7 @@ async function mount(
         ),
       },
       { path: '/shows/:id(\\d+)/announce/:slot(pre|post)', component: HostAnnouncePage },
+      { path: '/shows/:id(\\d+)/edit-recording', component: stub('Edit recording page') },
       { path: '/shows/:slug', component: stub('Show page') },
       { path: '/stream/live', component: stub('Studio') },
       { path: '/stream/on-air', component: stub('On Air') },
@@ -1795,6 +1800,7 @@ describe('Pre-announcement composer', () => {
     expect(radio('Upload a photo').disabled).toBe(false);
     expect(text()).toContain('After it is posted, the caption cannot be changed.');
     expect(text()).toContain('Uses 1 of 3 announcements for this episode.');
+    expect(text()).not.toContain('Snippets');
 
     type('Headline on the image', 'Sunday brunch');
     await nextTick();
@@ -1814,6 +1820,37 @@ describe('Pre-announcement composer', () => {
         scheduled_at: FR_2310_1800,
       },
     });
+  });
+
+  it('lists the snippets of the post in slot order and links to Edit recording', async () => {
+    recordingEdit = {
+      start: 0,
+      end: 3600,
+      gainDb: 0,
+      sections: [],
+      snippets: [
+        { slot: 2, start: 1800, length: 20 },
+        { slot: 1, start: 2712, length: 30 },
+      ],
+    };
+    const router = await open('post');
+    const rows = [...root.querySelectorAll('.snippets li')].map((li) =>
+      li.textContent?.replace(/\s+/g, ' ').trim()
+    );
+    expect(rows).toEqual(['Snippet 1 · 0:45:12 · 30 s', 'Snippet 2 · 0:30:00 · 20 s']);
+    expect(text()).toContain(
+      'They go into the post as video slides after the image, with a moving waveform.'
+    );
+    button('Edit recording').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/42/edit-recording')
+    );
+  });
+
+  it('says the post is one image when no snippets are placed', async () => {
+    await open('post');
+    await vi.waitFor(() => expect(text()).toContain('No snippets placed. The post is one image.'));
+    expect(root.querySelector('.snippets')).toBeNull();
   });
 
   it('shows the free times by day in Book a time, the suggested one dashed', async () => {
