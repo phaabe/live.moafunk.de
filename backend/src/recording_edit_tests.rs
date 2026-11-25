@@ -507,6 +507,13 @@ async fn apply_renders_the_cut_and_keeps_the_last_good_file() {
     assert_eq!(apply(&s).await.0, StatusCode::ACCEPTED);
     assert_eq!(rendered(&s).await["status"], "done");
     assert_ne!(edited_key(&s).await.as_deref(), Some(old.as_str()));
+    // The render deletes the old file after it saved "done".
+    for _ in 0..40 {
+        if s.r2.object(&s.state, &old).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(s.r2.object(&s.state, &old).is_none());
 
     // A newer recording makes the edited file stale: upload the new recording.
