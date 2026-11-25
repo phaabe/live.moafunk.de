@@ -1342,8 +1342,10 @@ async fn privacy_toggle_updates_the_track() {
     assert_eq!(show(&state, id).await.soundcloud_public, Some(true));
 }
 
+/// The booking stays; the announcement tick unsets it only if the track is
+/// still private at the booked time.
 #[tokio::test]
-async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
+async fn back_to_private_keeps_the_booked_post_time() {
     let (state, _temp, _fake, _r2) = setup(json!({})).await;
     let id = add_show(&state, "Late Night", None).await;
     sqlx::query("UPDATE shows SET soundcloud_track_id = '555', soundcloud_public = 1 WHERE id = ?")
@@ -1372,7 +1374,11 @@ async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
     assert_eq!(
         rows,
         [
-            ("post".into(), "waiting_soundcloud".into(), None),
+            (
+                "post".into(),
+                "scheduled".into(),
+                Some("2026-11-22T17:00:00Z".into())
+            ),
             (
                 "pre".into(),
                 "scheduled".into(),
@@ -1383,7 +1389,7 @@ async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
 }
 
 #[tokio::test]
-async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
+async fn a_track_made_public_on_soundcloud_is_marked_for_an_unsent_post() {
     let (state, _temp, fake, _r2) = setup(json!({})).await;
     let waiting = add_show(&state, "Late Night", None).await;
     let no_post = add_show(&state, "Early Bird", None).await;

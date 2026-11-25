@@ -888,9 +888,12 @@ export interface Announcement {
   slot: AnnouncementSlot;
   channel: string;
   state: AnnouncementState;
-  /** RFC 3339; null for the on-air story and a post slot that waits for SoundCloud. */
+  /** RFC 3339; null while no time is booked (`draft`, `waiting_soundcloud`). */
   scheduled_at: string | null;
-  /** RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved. */
+  /**
+   * RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved.
+   * With no `scheduled_at`: the booked time that was unset because the post could not go out.
+   */
   requested_at: string | null;
   headline: string;
   caption: string;
@@ -940,6 +943,8 @@ export interface AnnouncementMeta {
   paused: boolean;
   /** This host's posts wait for an admin first. */
   needs_approval: boolean;
+  /** "Post now" is offered (the Instagram test account, staging only). */
+  post_now?: boolean;
   /** Admin switches; a service that is off is "temporarily not available". */
   services: ServiceSettings;
 }
@@ -1021,6 +1026,12 @@ export const announcementsApi = {
   /** Cancel a slot; refused once it is sent. */
   cancel: (showId: number, slot: AnnouncementSlot) =>
     api.delete<Announcement>(`${announcementsPath(showId)}/${slot}`),
+
+  /** Book or change a feed post's time, also before the post is set up. 409 when taken. */
+  book: (showId: number, slot: AnnouncementSlot, scheduledAt: string) =>
+    api.put<Announcement>(`${announcementsPath(showId)}/${slot}/time`, {
+      scheduled_at: scheduledAt,
+    }),
 
   times: async (showId: number, slot: AnnouncementSlot): Promise<AnnouncementTime[]> => {
     const r = await api.get<AnnouncementTime[] | { slots: AnnouncementTime[] }>(

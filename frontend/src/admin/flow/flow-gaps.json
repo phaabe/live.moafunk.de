@@ -380,13 +380,9 @@
         "choice: Pre-recorded",
         "button: Save",
         "button: Cancel booking",
-        "h2: Promotion · Instagram",
-        "row: Pre · feed post 4:5 | Scheduled · Fr 23.10. · 18:00",
-        "row: Post · feed post 4:5 | Set up when the SoundCloud track is public",
         "h2: Recording",
         "h1: Brunchtime #31",
-        "pill: Upcoming",
-        "button: Edit"
+        "pill: Upcoming"
       ],
       "why": "Redesign #1052 (approved in the issue): one layout for every phase. The details move into a read-only heading box (title as the heading, date and time, status pill, mode, host) with Edit, which opens the form with Save and Cancel booking; four step icons Set up social media › Soundcheck › Show time › Publish recording, coloured by state (current yellow, done dim yellow, next gray); four status cards in step order Social media, Soundcheck, Show time and Recording & SoundCloud replace Next step, Details, Promotion · Instagram and Recording. Upload to SoundCloud shows once there is a recording. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -407,8 +403,7 @@
         "h1: Brunchtime #31",
         "h2: Social media",
         "pill: Upcoming",
-        "button: Edit",
-        "button: Set up pre-announcement"
+        "button: Edit"
       ],
       "why": "Redesign #1052 (approved in the issue): the pre-recorded episode uses the same heading box, step icons and four cards as a live one. The Soundcheck card shows the set with Replace file; Show time reads \"Plays at 12:00\"; Open Wrap-up moves to the Recording & SoundCloud card after the show; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -429,8 +424,7 @@
         "h1: Brunchtime #32",
         "h2: Social media",
         "pill: Upcoming",
-        "button: Edit",
-        "button: Set up pre-announcement"
+        "button: Edit"
       ],
       "why": "Redesign #1052 (approved in the issue): the pre-recorded episode without a file uses the same heading box, step icons and four cards. The Soundcheck card asks for the set with Upload your set; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
     },
@@ -456,42 +450,46 @@
       "why": "Redesign #1050 (approved in the issue): the host page is called My Show, so the back link reads < My Show. Update the flow in Flow Lab, then pin the new rev."
     },
     {
-      "screen": "episode",
-      "items": [
-        "check: On air · story 9:16 | Sent when you go live"
-      ],
-      "why": "Social media card, round 2 (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): the slots Pre-announcement, On-air story and Post-announcement, each with its format and time and its own Set up, Edit and Cancel. Every slot starts as Not set up, so the on-air checkbox is gone. Set up and Edit open the post widget in a popup. Update the flow in Flow Lab, then pin the new rev."
-    },
-    {
       "screen": "episode-pre",
       "items": [
-        "button: Set up on-air story",
-        "button: Set up post-announcement",
-        "row: Pre-announcement · Instagram feed post · before the show | Not set up",
-        "row: On-air story · Instagram story · at go-live | Not set up",
-        "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
+        "button: Book a time",
+        "button: Set up",
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | So 08.11. · 12:00 · when you go live",
+        "row: Post-announcement | Not set up"
       ],
-      "why": "Social media card, round 2 (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): the slots Pre-announcement, On-air story and Post-announcement, each with its format and time and its own Set up, Edit and Cancel. Every slot starts as Not set up, so the on-air checkbox is gone. Set up and Edit open the post widget in a popup. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Social media tiles (#1091, flow rev 35 on the Episode screen): one tile per slot with its status, a GOES OUT box (Book a time, or the time; the on-air story shows the show start) and one button (Set up, Edit). See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
     },
     {
       "screen": "episode-pre-nofile",
       "items": [
-        "button: Set up on-air story",
-        "button: Set up post-announcement",
-        "row: Pre-announcement · Instagram feed post · before the show | Not set up",
-        "row: On-air story · Instagram story · at go-live | Not set up",
-        "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
+        "button: Book a time",
+        "button: Set up",
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | So 08.11. · 12:00 · when you go live",
+        "row: Post-announcement | Not set up"
       ],
-      "why": "Social media card, round 2 (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): the slots Pre-announcement, On-air story and Post-announcement, each with its format and time and its own Set up, Edit and Cancel. Every slot starts as Not set up, so the on-air checkbox is gone. Set up and Edit open the post widget in a popup. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Social media tiles (#1091, flow rev 35 on the Episode screen): one tile per slot with its status, a GOES OUT box (Book a time, or the time; the on-air story shows the show start) and one button (Set up, Edit). See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
     },
     {
       "screen": "episode-view",
       "items": [
-        "row: Pre-announcement · Instagram feed post · before the show | Not set up",
-        "row: On-air story · Instagram story · at go-live | Not set up",
-        "row: Post-announcement · Instagram feed post · after the show, once the track is public | Not set up"
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | Di 27.10. · 20:00 · when you go live",
+        "row: Post-announcement | Not set up"
       ],
-      "why": "Social media card, round 2 (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): another host sees the three slots with their format and time, no buttons, and only the pictures of sent posts. Update the flow in Flow Lab, then pin the new rev."
+      "why": "Social media tiles (#1091): another host sees the same tiles without buttons, and only the pictures of sent posts. See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "book-time",
+      "items": [
+        "back: Episode",
+        "notice: It goes out only if your SoundCloud track is public by then. If not, the time is unset and you book a new one."
+      ],
+      "why": "Book a time is a popup (#1091): Close and Cancel take the host back, so it has no back link. The notice shows only for the post-announcement, as its flow note says; this check is the pre-announcement."
     },
     {
       "screen": "announce",
@@ -507,8 +505,6 @@
     {
       "screen": "episode",
       "items": [
-        "button: Edit pre-announcement",
-        "button: Cancel pre-announcement",
         "button: 1 · Social media (done)",
         "button: 2 · Soundcheck",
         "button: 3 · Show time · in 5 days · until 12:00",

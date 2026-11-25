@@ -8,6 +8,12 @@
       "port": 8000
     },
     {
+      "name": "studio-mock-social",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["MOCK_EPISODE=soon", "node", "frontend/scripts/studio-mock.mjs"],
+      "port": 8000
+    },
+    {
       "name": "frontend-studio",
       "runtimeExecutable": "env",
       "runtimeArgs": [

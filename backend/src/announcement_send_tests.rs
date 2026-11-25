@@ -351,99 +351,100 @@ async fn an_armed_story_of_an_episode_that_never_went_live_expires() {
 }
 
 #[tokio::test]
-async fn post_unlock_sets_the_time_then_approval_and_pending_is_never_sent() {
+async fn going_public_books_no_time_and_pending_is_never_sent() {
     let (state, _t, _tg, ig, _r2) = setup().await;
     let host = add_user(&state, "host", "host").await;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, host, 5).await;
-    episode(&state, 2, host, 5).await;
-    let by_host = add(&state, SHOW, "post", "waiting_soundcloud", None, host).await;
-    let by_admin = add(&state, 2, "post", "waiting_soundcloud", None, admin).await;
-    // One day after the episode, so "the next day" below.
-    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
-        .await
-        .unwrap();
-
-    // Not public yet: nothing changes.
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(row(&state, by_host).await.state, "waiting_soundcloud");
-
+    episode(&state, 2, admin, 5).await;
+    let waiting = add(&state, SHOW, "post", "waiting_soundcloud", None, host).await;
+    let pending = add(
+        &state,
+        2,
+        "post",
+        "pending_approval",
+        Some(berlin(7, 18)),
+        host,
+    )
+    .await;
     sqlx::query("UPDATE shows SET soundcloud_public = 1")
         .execute(&state.db)
         .await
         .unwrap();
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    let a = row(&state, by_host).await;
-    assert_eq!(a.state, "pending_approval", "a new host needs approval");
-    assert_eq!(a.scheduled_at, Some(to_db_time(berlin(6, 18))));
-    // 18:00 on the 6th is 2 days − 2 h after the 5th 20:00 start.
-    assert_eq!(a.anchor_offset_minutes, Some(22 * 60));
-    let b = row(&state, by_admin).await;
-    assert_eq!(b.state, "scheduled");
-    // The 6th is taken (one feed post a day): the next day.
-    assert_eq!(b.scheduled_at, Some(to_db_time(berlin(7, 18))));
 
-    // Pending stays pending after its time; only the approved one goes out.
+    // A public track gives a post without a time no time: the host books one.
     check_due_announcements(&state, berlin(7, 19)).await;
-    assert_eq!(row(&state, by_host).await.state, "pending_approval");
-    assert_eq!(row(&state, by_admin).await.state, "sent");
+    let a = row(&state, waiting).await;
+    assert_eq!(a.state, "waiting_soundcloud");
+    assert_eq!(a.scheduled_at, None);
+    // Pending stays pending after its time.
+    assert_eq!(row(&state, pending).await.state, "pending_approval");
+    assert!(media_posts(&ig).is_empty());
+}
+
+#[tokio::test]
+async fn a_booking_that_cannot_go_out_is_unset_and_the_post_kept() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    episode(&state, 2, admin, 5).await;
+    // A time booked before the post was set up.
+    let draft = sqlx::query(
+        "INSERT INTO announcements (show_id, slot, state, scheduled_at) \
+         VALUES (?, 'pre', 'draft', ?)",
+    )
+    .bind(SHOW)
+    .bind(to_db_time(berlin(3, 18)))
+    .execute(&state.db)
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    // Set up, but the track is still private at its time.
+    let private = add(
+        &state,
+        SHOW,
+        "post",
+        "scheduled",
+        Some(berlin(7, 18)),
+        admin,
+    )
+    .await;
+    // Set up and public: goes out.
+    let public = add(&state, 2, "post", "scheduled", Some(berlin(8, 18)), admin).await;
+    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 2")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // Before their times nothing changes.
+    check_due_announcements(&state, berlin(3, 17)).await;
+    assert_eq!(
+        row(&state, draft).await.scheduled_at,
+        Some(to_db_time(berlin(3, 18)))
+    );
+
+    check_due_announcements(&state, berlin(3, 19)).await;
+    let d = row(&state, draft).await;
+    assert_eq!(d.state, "draft");
+    assert_eq!(d.scheduled_at, None);
+    assert_eq!(d.requested_at, Some(to_db_time(berlin(3, 18))));
+
+    check_due_announcements(&state, berlin(8, 19)).await;
+    let p = row(&state, private).await;
+    assert_eq!(p.state, "waiting_soundcloud", "set up, no time");
+    assert_eq!(p.scheduled_at, None);
+    assert_eq!(p.requested_at, Some(to_db_time(berlin(7, 18))));
+    assert_eq!(p.headline.as_deref(), Some("Tonight"), "the post is kept");
+    assert_eq!(row(&state, public).await.state, "sent");
     assert_eq!(media_posts(&ig).len(), 1);
 }
 
 #[tokio::test]
-async fn full_day_pushes_the_post_to_the_next_free_slot() {
-    let (state, _t, _tg, _ig, _r2) = setup().await;
-    let admin = add_user(&state, "admin", "admin").await;
-    crate::db::set_setting(&state.db, "announce_feed_per_day", "2")
-        .await
-        .unwrap();
-    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
-        .await
-        .unwrap();
-    episode(&state, SHOW, admin, 5).await;
-    episode(&state, 2, admin, 9).await;
-    episode(&state, 3, admin, 10).await;
-    // The 6th: evening taken, noon still free.
-    add(&state, 2, "pre", "scheduled", Some(berlin(6, 18)), admin).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(6, 12)))
-    );
-
-    // The 6th full: the 7th.
-    sqlx::query(
-        "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL WHERE id = ?",
-    )
-    .bind(post)
-    .execute(&state.db)
-    .await
-    .unwrap();
-    add(&state, 3, "pre", "scheduled", Some(berlin(6, 12)), admin).await;
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(7, 18)))
-    );
-}
-
-#[tokio::test]
-async fn post_defaults_to_three_days_after_the_episode_at_the_evening_slot() {
+async fn post_slots_suggest_three_days_after_the_episode_also_while_private() {
     let (state, _t, _tg, _ig, _r2) = setup().await;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, admin, 5).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
 
-    // The slots endpoint suggests the same time the unlock picks.
     let (status, body) = outcome(
         ann::api_announcement_slots(
             State(state.clone()),
@@ -457,39 +458,40 @@ async fn post_defaults_to_three_days_after_the_episode_at_the_evening_slot() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let defaults: Vec<&Value> = body
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["default"] == true)
-        .collect();
+    let times = body.as_array().unwrap();
+    let defaults: Vec<&Value> = times.iter().filter(|t| t["default"] == true).collect();
     assert_eq!(defaults.len(), 1);
     assert_eq!(defaults[0]["scheduled_at"], to_db_time(berlin(8, 18)));
-
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    let a = row(&state, post).await;
-    assert_eq!(a.state, "scheduled");
-    assert_eq!(a.scheduled_at, Some(to_db_time(berlin(8, 18))));
+    // 14 days after the episode: the 6th up to the 19th.
+    let first = times.first().unwrap()["scheduled_at"].as_str().unwrap();
+    let last = times.last().unwrap()["scheduled_at"].as_str().unwrap();
+    assert_eq!(first, to_db_time(berlin(6, 12)));
+    assert_eq!(last, to_db_time(berlin(19, 18)));
 }
 
 #[tokio::test]
-async fn track_public_late_takes_the_next_free_slot_from_now() {
-    let (state, _t, _tg, _ig, _r2) = setup().await;
+async fn send_now_is_refused_on_the_production_account() {
+    let (r2, endpoint) = FakeR2::serve().await;
+    let (state, _t, _tg) = telegram_state(json!({
+        "r2_endpoint": endpoint,
+        "instagram_account": "prod",
+        "instagram_access_token_prod": "prod-token",
+        "instagram_business_account_id_prod": "ig-prod",
+    }))
+    .await;
+    let _r2 = r2;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, admin, 5).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
-    // The 8th is long gone; on the 10th both slots have passed at 19:00.
-    unlock_waiting_posts(&state, berlin(10, 19)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(11, 18)))
-    );
+    let (status, body) = put_pre(
+        &state,
+        admin,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("only for tests"), "{body}");
 }
-
 async fn put_pre(state: &Arc<AppState>, user: i64, show: i64, body: Value) -> (StatusCode, Value) {
     outcome(
         ann::api_put_announcement(

@@ -1,0 +1,11 @@
+{
+  "screen": "book-time",
+  "hash": "c6a2bf8d",
+  "status": "drift",
+  "leftOut": [],
+  "missing": [
+    "back: Episode",
+    "notice: It goes out only if your SoundCloud track is public by then. If not, the time is unset and you book a new one."
+  ],
+  "extra": []
+}

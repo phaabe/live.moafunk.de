@@ -25,6 +25,67 @@ const HEADLINE_MAX: usize = 18;
 const CAPTION_MAX: usize = 600;
 /// How far around a send time other posts can matter (day and week limits).
 const NEIGHBOURHOOD_DAYS: i64 = 8;
+/// Days before the episode start in which the pre announcement can be booked.
+const PRE_WINDOW_DAYS: i64 = 7;
+/// Days after the episode start in which the post announcement can be booked.
+pub(crate) const POST_WINDOW_DAYS: i64 = 14;
+
+/// Times a feed slot can be booked in: pre before the start, post after it.
+fn booking_window(
+    settings: &AnnouncementSettings,
+    slot: AnnouncementSlot,
+    start: DateTime<Utc>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    if slot == AnnouncementSlot::Post {
+        return (start, start + Duration::days(POST_WINDOW_DAYS));
+    }
+    let days = PRE_WINDOW_DAYS.max(i64::from(settings.pre_days_before) + 1);
+    (start - Duration::days(days), start)
+}
+
+/// A booked feed time: in the future, one of the feed times and inside the
+/// slot's [`booking_window`].
+fn check_time(
+    settings: &AnnouncementSettings,
+    slot: AnnouncementSlot,
+    start: DateTime<Utc>,
+    at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let bad = |msg: String| Err(AppError::BadRequest(msg));
+    if at <= now {
+        return bad("The send time is in the past".to_string());
+    }
+    if !is_slot_time(settings, at) {
+        return bad(format!(
+            "Feed posts can only go out at {} (Berlin time)",
+            settings.slots.join(", ")
+        ));
+    }
+    let (from, to) = booking_window(settings, slot, start);
+    match slot {
+        AnnouncementSlot::Post if at <= from => {
+            bad("The post announcement must go out after the episode starts".to_string())
+        }
+        AnnouncementSlot::Post if at > to => bad(format!(
+            "The post announcement must go out within {POST_WINDOW_DAYS} days after the episode"
+        )),
+        AnnouncementSlot::Pre if at >= to => {
+            bad("The pre announcement must go out before the episode starts".to_string())
+        }
+        AnnouncementSlot::Pre if at <= from => bad(format!(
+            "The pre announcement can go out at most {} days before the episode",
+            (to - from).num_days()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// "Post now" exists only where posts go to the Instagram test account
+/// (staging, local), for tests.
+fn post_now_allowed(config: &crate::Config) -> bool {
+    config.instagram_account != "prod"
+}
 
 fn parse_slot(slot: &str) -> Result<AnnouncementSlot> {
     AnnouncementSlot::parse(slot)
@@ -64,6 +125,7 @@ fn parse_time(value: &str) -> Result<DateTime<Utc>> {
 
 /// Active announcements with a send time from `from` to `to` (plus the days
 /// the day and week limits look at), except the row of (`show_id`, `slot`).
+/// A time booked before its post is set up (`draft`) holds its day too.
 pub(crate) async fn others_near(
     conn: &mut sqlx::SqliteConnection,
     show_id: i64,
@@ -73,7 +135,8 @@ pub(crate) async fn others_near(
 ) -> Result<Vec<Booked>> {
     let rows: Vec<(i64, String, String)> = sqlx::query_as(&format!(
         "SELECT show_id, slot, scheduled_at FROM announcements \
-         WHERE state IN {ACTIVE_STATES} AND channel = ? AND scheduled_at IS NOT NULL \
+         WHERE (state IN {ACTIVE_STATES} OR state = 'draft') AND channel = ? \
+           AND scheduled_at IS NOT NULL \
            AND scheduled_at >= ? AND scheduled_at <= ? AND NOT (show_id = ? AND slot = ?)"
     ))
     .bind(CHANNEL)
@@ -197,6 +260,8 @@ pub struct AnnouncementMeta {
     pub paused: bool,
     /// Whether a post this user saves now goes to an admin first.
     pub needs_approval: bool,
+    /// Whether "Post now" is offered (test account only).
+    pub post_now: bool,
     /// The admin service switches; off reads "temporarily not available".
     pub services: crate::handlers::settings::ServiceSettings,
 }
@@ -214,6 +279,7 @@ pub async fn api_announcement_meta(
     Ok(Json(AnnouncementMeta {
         paused: settings.paused,
         needs_approval,
+        post_now: post_now_allowed(&state.config),
         services: crate::handlers::settings::load_services(&state).await,
     }))
 }
@@ -280,8 +346,8 @@ pub async fn api_upload_announcement_image(
 #[derive(Debug, Default, Deserialize)]
 pub struct AnnouncementInput {
     /// RFC 3339. `pre`: defaults to `pre_days_before` days before;
-    /// `onair`: ignored (episode start); `post`: optional, without it or
-    /// while the track is private the post waits for the SoundCloud track
+    /// `onair`: ignored (episode start); `post`: optional, without it the
+    /// post is set up and waits until the host books a time
     /// (`waiting_soundcloud`).
     /// Headline: required for pre and post.
     pub scheduled_at: Option<String>,
@@ -379,6 +445,11 @@ pub async fn api_put_announcement(
             "Only the pre announcement can be posted now".to_string(),
         ));
     }
+    if send_now && !post_now_allowed(&state.config) {
+        return Err(AppError::BadRequest(
+            "Post now is only for tests on staging".to_string(),
+        ));
+    }
 
     let settings = announcements::get_settings(&state.db).await;
     let start = episode_start(&state, &show).await?;
@@ -413,40 +484,24 @@ pub async fn api_put_announcement(
             at
         }
     };
-    if let Some(at) = scheduled_at.filter(|_| !send_now) {
-        // The on-air story goes out at go-live, not at its time, so a host who
-        // starts late can still switch it on; a missed one expires later.
-        if slot != AnnouncementSlot::OnAir && at <= Utc::now() {
-            return Err(AppError::BadRequest(
-                "The send time is in the past".to_string(),
-            ));
-        }
-        if slot.is_feed() && !is_slot_time(&settings, at) {
-            return Err(AppError::BadRequest(format!(
-                "Feed posts can only go out at {} (Berlin time)",
-                settings.slots.join(", ")
-            )));
-        }
+    // The on-air story goes out at go-live, not at its time, so a host who
+    // starts late can still switch it on; a missed one expires later.
+    if let Some(at) = scheduled_at.filter(|_| !send_now && slot.is_feed()) {
+        check_time(
+            &settings,
+            slot,
+            start.ok_or_else(need_start)?,
+            at,
+            Utc::now(),
+        )?;
     }
     // Check and write in one write transaction, so two saves can't both take
-    // the last free slot.
+    // the last free slot. A post for a private track keeps its time: the
+    // announcement tick unsets it if the track is still private then.
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(row) = load(&mut tx, id, slot).await? {
         refuse_if_sent(&row)?;
     }
-    // A post for a private track gets no time: it waits, and going public
-    // sets its time. Read here, so a privacy switch can't slip in before the write.
-    let scheduled_at = match (slot, scheduled_at) {
-        (AnnouncementSlot::Post, Some(at)) => {
-            let public: bool =
-                sqlx::query_scalar("SELECT COALESCE(soundcloud_public, 0) FROM shows WHERE id = ?")
-                    .bind(id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            public.then_some(at)
-        }
-        (_, at) => at,
-    };
     let anchor = scheduled_at
         .zip(start)
         .map(|(at, start)| (at - start).num_minutes());
@@ -482,8 +537,8 @@ pub async fn api_put_announcement(
     }
 
     let needs_approval = announcements::needs_approval(&mut tx, &settings, Some(&user)).await?;
-    // An untimed post waits for SoundCloud; `announcement_send` applies the
-    // approval rule when the track goes public and it gets its time.
+    // A post without a time is set up and waits for the host to book one
+    // (`waiting_soundcloud`); booking it applies the approval rule.
     let new_state = match (scheduled_at, needs_approval, slot) {
         (None, _, _) => "waiting_soundcloud",
         (_, true, _) => "pending_approval",
@@ -647,10 +702,94 @@ pub struct SlotTime {
     pub default: bool,
 }
 
-/// GET /api/shows/:id/announcements/slots?slot=pre|post — feed times before
-/// (pre) or after (post) the episode start, free or taken. Post is empty
-/// while the SoundCloud track is not public; its default is the time
-/// `unlock_waiting_posts` would pick.
+#[derive(Debug, Deserialize)]
+pub struct BookTimeInput {
+    /// RFC 3339; one of the feed times `.../slots` offers.
+    pub scheduled_at: String,
+}
+
+/// PUT /api/shows/:id/announcements/:slot/time — book or change the send
+/// time of a feed post, also before the post is set up: a `draft` row that
+/// holds its day. A post set up without a time (`waiting_soundcloud`) gets
+/// the approval rule now. Refused once sent, while sending, or when failed
+/// (the host edits a failed post in the composer).
+pub async fn api_book_announcement_time(
+    State(state): State<Arc<AppState>>,
+    Path((id, slot)): Path<(i64, String)>,
+    headers: HeaderMap,
+    Json(input): Json<BookTimeInput>,
+) -> Result<impl IntoResponse> {
+    let (user, show) = require_show_editor(&state, &headers, id).await?;
+    crate::instagram::ensure_enabled(&state).await?;
+    let slot = parse_slot(&slot)?;
+    if !slot.is_feed() {
+        return Err(AppError::BadRequest(
+            "The on-air story goes out at the episode start".to_string(),
+        ));
+    }
+    let at = parse_time(&input.scheduled_at)?;
+    let settings = announcements::get_settings(&state.db).await;
+    let start = episode_start(&state, &show)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("The episode has no start time".to_string()))?;
+    check_time(&settings, slot, start, at, Utc::now())?;
+
+    let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
+    let row = load(&mut tx, id, slot).await?;
+    if let Some(row) = &row {
+        refuse_if_sent(row)?;
+        if row.state == "failed" {
+            return Err(AppError::Conflict(
+                "Edit the post to send it again".to_string(),
+            ));
+        }
+    }
+    let candidate = Booked {
+        show_id: id,
+        slot,
+        scheduled_at: at,
+    };
+    let others = others_near(&mut tx, id, slot, at, at).await?;
+    check_limits(&settings, &candidate, &others).map_err(AppError::Conflict)?;
+    let new_state = match row.as_ref().map(|r| r.state.as_str()) {
+        Some(s @ ("scheduled" | "pending_approval")) => s,
+        Some("waiting_soundcloud") => {
+            if announcements::needs_approval(&mut tx, &settings, Some(&user)).await? {
+                "pending_approval"
+            } else {
+                "scheduled"
+            }
+        }
+        // No row, a draft, or a cancelled or rejected one: a time, no post yet.
+        _ => "draft",
+    };
+    sqlx::query(
+        "INSERT INTO announcements (show_id, slot, channel, state, anchor_offset_minutes, \
+           scheduled_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (show_id, slot, channel) DO UPDATE SET \
+           state = excluded.state, anchor_offset_minutes = excluded.anchor_offset_minutes, \
+           scheduled_at = excluded.scheduled_at, send_now = 0, requested_at = NULL, \
+           error = NULL, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(id)
+    .bind(slot.as_str())
+    .bind(CHANNEL)
+    .bind(new_state)
+    .bind((at - start).num_minutes())
+    .bind(to_db_time(at))
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
+    let row = load(&mut tx, id, slot)
+        .await?
+        .ok_or_else(|| AppError::Internal("Announcement vanished".to_string()))?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+
+/// GET /api/shows/:id/announcements/slots?slot=pre|post — feed times in the
+/// slot's [`booking_window`], free or taken, also while the SoundCloud track
+/// is private. Post's default is `post_days_after` days after the episode.
 pub async fn api_announcement_slots(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -664,24 +803,12 @@ pub async fn api_announcement_slots(
             "The on-air story goes out at the episode start".to_string(),
         ));
     }
-    if slot == AnnouncementSlot::Post && show.soundcloud_public != Some(true) {
-        return Ok(Json(Vec::new()));
-    }
     let start = episode_start(&state, &show)
         .await?
         .ok_or_else(|| AppError::BadRequest("The episode has no start time".to_string()))?;
     let settings = announcements::get_settings(&state.db).await;
     let now = Utc::now();
-    let (from, to) = match slot {
-        AnnouncementSlot::Pre => {
-            let days = 7.max(i64::from(settings.pre_days_before) + 1);
-            (start - Duration::days(days), start)
-        }
-        _ => {
-            let days = 7.max(i64::from(settings.post_days_after) + 1);
-            (start, start.max(now) + Duration::days(days))
-        }
-    };
+    let (from, to) = booking_window(&settings, slot, start);
     let mut conn = state.db.acquire().await?;
     let others = others_near(&mut conn, id, slot, from, to).await?;
 

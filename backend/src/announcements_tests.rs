@@ -144,7 +144,7 @@ async fn pre_defaults_to_two_days_before_and_needs_approval_for_a_new_host() {
     assert_eq!(row["scheduled_at"], "2030-06-05T18:00:00Z");
     assert_eq!(row["anchor_offset_minutes"], 0);
 
-    // Post without a time: set later when the track goes public.
+    // Post without a time: set up, waits until the host books a time.
     let (status, row) = put(&state, host, 1, "post", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{row}");
     assert_eq!(row["scheduled_at"], Value::Null);
@@ -273,24 +273,23 @@ async fn slot_clash_day_and_not_a_slot() {
     assert_eq!(d[0]["free"], true);
     assert_ne!(d[0]["scheduled_at"], at(4, 18));
 
-    // Post: empty while the track is not public.
-    assert_eq!(slots(&state, host, 2, "post").await.1, json!([]));
-    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 2")
-        .execute(&state.db)
-        .await
-        .unwrap();
+    // Post: offered also while the track is private, after the start.
     let (_, body) = slots(&state, host, 2, "post").await;
     assert!(!body.as_array().unwrap().is_empty());
+    assert!(body
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|t| t["scheduled_at"].as_str().unwrap() > "2030-06-06T18:00:00Z"));
     assert_eq!(defaults(&body).len(), 1);
 }
 
 #[tokio::test]
-async fn timed_post_for_a_private_track_waits_without_its_time() {
+async fn timed_post_for_a_private_track_keeps_its_time() {
     let (state, _t) = state().await;
     let host = add_user(&state, "host", "host").await;
     episode(&state, 1, host, "2030-06-05").await;
 
-    // A composer opened while the track was public still sends a time.
     let (status, row) = put(
         &state,
         host,
@@ -300,25 +299,135 @@ async fn timed_post_for_a_private_track_waits_without_its_time() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{row}");
-    assert_eq!(row["state"], "waiting_soundcloud");
-    assert_eq!(row["scheduled_at"], Value::Null);
-    assert_eq!(row["anchor_offset_minutes"], Value::Null);
-
-    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
-    let (status, row) = put(
-        &state,
-        host,
-        1,
-        "post",
-        json!({ "scheduled_at": at(8, 18) }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{row}");
-    assert_ne!(row["state"], "waiting_soundcloud");
+    assert_eq!(row["state"], "pending_approval", "a new host's post");
     assert_eq!(row["scheduled_at"], at(8, 18));
+}
+
+#[tokio::test]
+async fn booking_windows_pre_seven_days_before_post_fourteen_after() {
+    let (state, _t) = state().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, 1, admin, "2030-06-20").await;
+
+    let (status, body) = put(
+        &state,
+        admin,
+        1,
+        "pre",
+        json!({ "scheduled_at": at(13, 18) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("at most 7 days before"), "{body}");
+    let (status, body) = put(
+        &state,
+        admin,
+        1,
+        "pre",
+        json!({ "scheduled_at": at(14, 18) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = put(
+        &state,
+        admin,
+        1,
+        "post",
+        json!({ "scheduled_at": at(30, 18) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let late = "2030-07-05T16:00:00Z"; // 18:00 Berlin, 15 days after
+    let (status, body) = put(&state, admin, 1, "post", json!({ "scheduled_at": late })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("within 14 days"), "{body}");
+}
+
+async fn book(
+    state: &Arc<AppState>,
+    user: i64,
+    show: i64,
+    slot: &str,
+    scheduled_at: &str,
+) -> (StatusCode, Value) {
+    outcome(
+        ann::api_book_announcement_time(
+            State(state.clone()),
+            Path((show, slot.to_string())),
+            headers(state, user).await,
+            Json(ann::BookTimeInput {
+                scheduled_at: scheduled_at.to_string(),
+            }),
+        )
+        .await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_time_booked_before_the_post_is_a_draft_that_holds_its_day() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    episode(&state, 2, host, "2030-06-06").await;
+
+    let (status, row) = book(&state, host, 1, "pre", &at(3, 18)).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["state"], "draft");
+    assert_eq!(row["scheduled_at"], at(3, 18));
+    assert_eq!(row["headline"], Value::Null);
+
+    // The day is taken for another episode, in the picker and on save.
+    let (_, times) = slots(&state, host, 2, "pre").await;
+    let noon = times
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["scheduled_at"] == at(3, 12))
+        .unwrap();
+    assert_eq!(noon["free"], false);
+    let (status, body) = book(&state, host, 2, "pre", &at(3, 12)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Setting the post up keeps the booked time.
+    let (status, row) = put(&state, host, 1, "pre", json!({ "scheduled_at": at(3, 18) })).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["state"], "pending_approval");
+
+    // Changing the time keeps the state; out of the window is refused.
+    let (status, row) = book(&state, host, 1, "pre", &at(4, 18)).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["state"], "pending_approval");
+    assert_eq!(row["scheduled_at"], at(4, 18));
+    let (status, _) = book(&state, host, 1, "pre", &at(6, 18)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = book(&state, host, 1, "onair", &at(4, 18)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn booking_a_set_up_post_without_a_time_applies_approval() {
+    let (state, _t) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, 1, host, "2030-06-05").await;
+    episode(&state, 2, admin, "2030-06-05").await;
+
+    put(&state, host, 1, "post", json!({})).await;
+    let (status, row) = book(&state, host, 1, "post", &at(8, 18)).await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["state"], "pending_approval");
+    assert_eq!(row["headline"], "Tonight", "the post is kept");
+
+    put(&state, admin, 2, "post", json!({})).await;
+    let (_, row) = book(&state, admin, 2, "post", &at(9, 18)).await;
+    assert_eq!(row["state"], "scheduled");
+
+    // A failed post is fixed in the composer, not by a new time.
+    mark(&state, 2, "post", "failed").await;
+    let (status, _) = book(&state, admin, 2, "post", &at(10, 18)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }
 
 #[tokio::test]
@@ -936,12 +1045,12 @@ async fn meta_tells_paused_and_needs_approval() {
         meta(&state, host, 1).await,
         (
             StatusCode::OK,
-            json!({ "paused": false, "needs_approval": true, "services": { "soundcloud": true, "instagram": true } })
+            json!({ "paused": false, "needs_approval": true, "post_now": true, "services": { "soundcloud": true, "instagram": true } })
         )
     );
     assert_eq!(
         meta(&state, admin, 1).await.1,
-        json!({ "paused": false, "needs_approval": false, "services": { "soundcloud": true, "instagram": true } })
+        json!({ "paused": false, "needs_approval": false, "post_now": true, "services": { "soundcloud": true, "instagram": true } })
     );
     assert_eq!(meta(&state, other, 1).await.0, StatusCode::FORBIDDEN);
 
@@ -954,7 +1063,7 @@ async fn meta_tells_paused_and_needs_approval() {
     set(&state, crate::db::INSTAGRAM_ENABLED, "false").await;
     assert_eq!(
         meta(&state, host, 1).await.1,
-        json!({ "paused": true, "needs_approval": false,
+        json!({ "paused": true, "needs_approval": false, "post_now": true,
                 "services": { "soundcloud": true, "instagram": false } })
     );
 }

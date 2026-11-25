@@ -23,8 +23,8 @@ import type { RecordingPill } from './episode/useEpisode';
 // File (show recording or own file; both can be edited), SoundCloud (the track,
 // which file it has, private or public) and Instagram (the post-announcement
 // waits for a public track). A picked own file uploads at once and becomes the
-// file for SoundCloud. Only an admin upload starts SoundCloud on its own. Public
-// unlocks the post-announcement. Publish episode turns "Finished · wrap-up
+// file for SoundCloud. Only an admin upload starts SoundCloud on its own. The
+// post-announcement goes out at its booked time only while public. Publish episode turns "Finished · wrap-up
 // open" into "Finished". Other hosts see the status and a public track's link.
 
 const props = defineProps<{
@@ -295,7 +295,7 @@ async function setPublic(makePublic: boolean) {
 const igSummary = computed(() => {
   if (!post.value) return 'Goes out after the show, once the track is public';
   if (!isPublic.value || !link.value) return 'Post-announcement waits for a public track';
-  // Its time, like the Social media card: going public schedules it, it does not send it.
+  // Its time, like the Social media card. Going public books no time: the host books it.
   const list = props.announcements ?? [];
   return inSlot(list, 'post')
     ? `Post-announcement: ${slotState(list, 'post')}`
@@ -656,8 +656,8 @@ async function publish() {
         </div>
         <div v-if="open === 'instagram'" :id="rowId('instagram')" class="rec-detail">
           <p class="rec-text">
-            The post-announcement goes out once the SoundCloud track is public. You set it up in
-            step 1 Social media. {{ snippetLine }}
+            The post-announcement goes out at its booked time once the SoundCloud track is public.
+            You set it up in step 1 Social media. {{ snippetLine }}
           </p>
           <BaseButton variant="ghost" @click="emit('social')">Go to Social media</BaseButton>
         </div>

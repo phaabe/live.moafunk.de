@@ -720,6 +720,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::api::api_show_image_proxy),
         )
         .route(
+            "/api/shows/:id/announcements/:slot/time",
+            axum::routing::put(handlers::announcements::api_book_announcement_time),
+        )
+        .route(
             "/api/shows/:id/announcements/:slot/preview.jpg",
             get(announcement_image::api_announcement_preview),
         )
@@ -1067,8 +1071,8 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Notice tracks made public on soundcloud.com: the next announcement
-    // tick then sets their post times.
+    // Notice tracks made public on soundcloud.com, so their booked
+    // post-announcements can go out.
     {
         let state = state.clone();
         tokio::spawn(async move {
