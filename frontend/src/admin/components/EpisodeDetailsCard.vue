@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { BaseButton } from '@shared/components';
 import { seriesApi, showsApi, type SeriesHost, type SeriesSlot, type ShowDetail } from '../api';
 import { slotDate, slotTime } from '../episodeRow';
+import { lengthBetween, MAX_LENGTH, MIN_LENGTH, parseHhmm } from '../bookSlot';
 import { berlinToUtcDate } from '../showTime';
 import BoardIcon from './BoardIcon.vue';
 import HostsField from './HostsField.vue';
@@ -70,9 +71,12 @@ const coverSrcset = computed(
 /** The chosen date and time, or null while the free time is not valid. */
 const slot = computed<SeriesSlot | null>(() => {
   if (slots.value === null) {
-    if (!date.value || !freeStart.value || !freeEnd.value || freeEnd.value <= freeStart.value) {
-      return null;
-    }
+    const start = parseHhmm(freeStart.value);
+    const end = parseHhmm(freeEnd.value);
+    if (!date.value || start === null || end === null) return null;
+    // An end before the start is on the next day (#1118).
+    const length = lengthBetween(start, end);
+    if (length < MIN_LENGTH || length > MAX_LENGTH) return null;
     return { date: date.value, start_time: freeStart.value, end_time: freeEnd.value };
   }
   return choices.value.find((s) => s.date === date.value && slotTime(s) === time.value) ?? null;

@@ -1,4 +1,5 @@
 import type { NewSeries, RepeatRule, Series } from './api';
+import { lengthBetween, MAX_LENGTH, MIN_LENGTH, parseHhmm } from './bookSlot';
 
 /** The New Show / Show Details form. `repeatRule: 'none'` is "No fixed rhythm". */
 export interface SeriesDraft {
@@ -34,10 +35,14 @@ export function draftOf(series: Series): SeriesDraft {
   };
 }
 
+/** An end at or before the start is on the next day (23:00–01:00), as in Book Slot. */
 export function timeError(d: SeriesDraft): string | null {
-  return d.repeatRule !== 'none' && d.startTime && d.endTime && d.endTime <= d.startTime
-    ? 'The end time must be after the start time'
-    : null;
+  const start = parseHhmm(d.startTime);
+  const end = parseHhmm(d.endTime);
+  if (d.repeatRule === 'none' || start === null || end === null) return null;
+  const length = lengthBetween(start, end);
+  if (length < MIN_LENGTH) return 'The end must be at least 15 minutes after the start';
+  return length > MAX_LENGTH ? 'A show can be 12 h at most' : null;
 }
 
 export function draftValid(d: SeriesDraft): boolean {

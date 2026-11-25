@@ -348,14 +348,19 @@ describe('New Show', () => {
     });
   });
 
-  it('refuses an end time before the start', async () => {
+  it('takes a rhythm past midnight, up to 12 h', async () => {
     await mount('host', '/shows/new');
     await vi.waitFor(() => expect(root.textContent).toContain('Create show'));
     input('.form-input input', 'Brunchtime');
+    input('input[aria-label="Start time"]', '23:00');
+    input('input[aria-label="End time"]', '01:00');
+    await nextTick();
+    expect(button('Create show').disabled).toBe(false);
+    // 14:00 to 12:00 the next day is 22 h.
     input('input[aria-label="Start time"]', '14:00');
     input('input[aria-label="End time"]', '12:00');
     await nextTick();
-    expect(root.textContent).toContain('The end time must be after the start time');
+    expect(root.textContent).toContain('A show can be 12 h at most');
     expect(button('Create show').disabled).toBe(true);
   });
 });
