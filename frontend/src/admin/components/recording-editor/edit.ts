@@ -11,7 +11,7 @@ export interface GainSection {
   gainDb: number;
 }
 
-/** A short clip for the Instagram post that announces the recording. */
+/** A short clip for the Instagram post that announces the recording. Stored apart from the edit. */
 export interface Snippet {
   slot: number;
   start: number;
@@ -25,8 +25,6 @@ export interface RecordingEdit {
   /** Volume of the whole set. */
   gainDb: number;
   sections: GainSection[];
-  /** Only placed snippets; slots 1–3. */
-  snippets: Snippet[];
 }
 
 export const SNIPPET_SLOTS = [1, 2, 3];
@@ -54,7 +52,7 @@ export const clampGain = (db: number): number =>
   clamp(Math.round(db / GAIN_STEP) * GAIN_STEP, GAIN_MIN, GAIN_MAX);
 
 export function newEdit(duration: number): RecordingEdit {
-  return { start: 0, end: duration, gainDb: 0, sections: [], snippets: [] };
+  return { start: 0, end: duration, gainDb: 0, sections: [] };
 }
 
 /** 0 outside the section, 1 inside, linear ramps of RAMP_S at both edges. */
@@ -88,10 +86,6 @@ export function problems(edit: RecordingEdit, duration: number): string[] {
     const next = sorted[i + 1];
     if (next && next.start < s.end) out.push('Volume sections must not overlap.');
   });
-  for (const s of edit.snippets) {
-    if (s.start < edit.start || s.start + s.length > edit.end)
-      out.push(`Snippet ${s.slot} must be inside the set.`);
-  }
   return out;
 }
 

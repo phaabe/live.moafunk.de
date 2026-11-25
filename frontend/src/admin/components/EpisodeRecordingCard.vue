@@ -13,6 +13,7 @@ import {
 import { inSlot, postTime, slotState, type SlotReading } from '../promotion';
 import { span } from './recording-editor/edit';
 import RecordingPlayer from './recording-editor/RecordingPlayer.vue';
+import SnippetEditor from './recording-editor/SnippetEditor.vue';
 import EpisodeCard from './episode/EpisodeCard.vue';
 import EpisodeIcon from './episode/EpisodeIcon.vue';
 import type { EpisodePhase, Status, StepState } from './episode/phase';
@@ -22,7 +23,7 @@ import type { RecordingPill } from './episode/useEpisode';
 // Design option C (#1082): a player on top, then three rows, one open at a time:
 // File (show recording or own file; both can be edited), SoundCloud (the track,
 // which file it has, private or public) and Instagram (the post-announcement
-// waits for a public track). A picked own file uploads at once and becomes the
+// waits for a public track; the snippets for it, flow `episode-recording-instagram`). A picked own file uploads at once and becomes the
 // file for SoundCloud. Only an admin upload starts SoundCloud on its own. The
 // post-announcement goes out at its booked time only while public. Publish episode turns "Finished · wrap-up
 // open" into "Finished". Other hosts see the status and a public track's link.
@@ -97,7 +98,7 @@ const fileKey = computed(() =>
     : ''
 );
 
-// The edit of the picked file: its marks and snippets.
+// The edit of the picked file: its marks.
 async function loadEdit() {
   editState.value = null;
   if (!fileKey.value) return;
@@ -300,11 +301,6 @@ const igSummary = computed(() => {
   return inSlot(list, 'post')
     ? `Post-announcement: ${slotState(list, 'post')}`
     : 'Post-announcement not set up';
-});
-const snippetLine = computed(() => {
-  if (!hasFile.value) return 'Its short clips are the snippets you place in Edit recording.';
-  const n = editState.value?.edit?.snippets.length ?? 0;
-  return `Its short clips are the snippets from Edit recording: ${n} of 3 placed.`;
 });
 
 // ---- Rows -----------------------------------------------------------------
@@ -657,8 +653,14 @@ async function publish() {
         <div v-if="open === 'instagram'" :id="rowId('instagram')" class="rec-detail">
           <p class="rec-text">
             The post-announcement goes out at its booked time once the SoundCloud track is public.
-            You set it up in step 1 Social media. {{ snippetLine }}
+            You set it up in step 1 Social media.
           </p>
+          <p class="rec-help">
+            Snippets are up to 3 short clips from your set, 5 to 30 s each. They go into the post as
+            video slides after the image, so pick the moments that make people want to listen.
+          </p>
+          <SnippetEditor v-if="fileKey" :key="fileKey" :show-id="show.id" />
+          <p v-else class="rec-help">Snippets can be placed once the recording is ready.</p>
           <BaseButton variant="ghost" @click="emit('social')">Go to Social media</BaseButton>
         </div>
       </div>

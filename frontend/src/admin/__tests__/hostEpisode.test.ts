@@ -6,7 +6,7 @@ import { useAuthStore } from '../stores/auth';
 import { hostPage } from '../hostPage';
 import { currentReplaceTarget } from '../replaceFile';
 import type { SeriesHost, ShowDetail, User } from '../api';
-import type { RecordingEdit } from '../components/recording-editor/edit';
+import type { RecordingEdit, Snippet } from '../components/recording-editor/edit';
 import { expectFlow } from '../flow/expectFlow';
 
 // jsdom does not implement font loading used by the composables barrel.
@@ -204,6 +204,8 @@ let streamStatus: { active: boolean; user?: string } | null;
 /** The edit of the picked recording file (GET /api/shows/42/recording/edit). */
 let recordingEdit: RecordingEdit | null;
 let recordingSource: { url: string; duration: number | null } | null;
+/** Its snippets for the post (PUT /api/shows/42/recording/snippets saves them). */
+let recordingSnippets: Snippet[];
 const ACCOUNTS = [
   { id: 2, username: 'jonas' },
   { id: 4, username: 'kai' },
@@ -216,6 +218,7 @@ beforeEach(() => {
   announcements = [];
   recordingEdit = null;
   recordingSource = null;
+  recordingSnippets = [];
   times = [];
   saveError = undefined;
   requests = [];
@@ -274,11 +277,16 @@ beforeEach(() => {
         return Response.json({
           source: recordingSource,
           edit: recordingEdit,
+          snippets: recordingSnippets,
           status: 'none',
           error: null,
           edited_url: null,
           rendered_at: null,
         });
+      if (url === '/api/shows/42/recording/snippets' && method === 'PUT') {
+        recordingSnippets = (body as { snippets: Snippet[] }).snippets;
+        return Response.json({ source: recordingSource, edit: null, snippets: recordingSnippets });
+      }
       if (url === '/api/shows/42/recording/peaks')
         return Response.json({ duration: 7120, per_second: 1, peaks: [0.4, 0.6] });
       if (url === '/api/shows/42/announcements') return Response.json(announcements);
@@ -418,6 +426,10 @@ async function settle() {
 }
 
 const text = () => root.textContent ?? '';
+
+/** A button by its aria-label (icon buttons have no text). */
+const aria = (label: string) =>
+  root.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
 
 function button(label: string): HTMLButtonElement {
   const found = [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
@@ -1824,112 +1836,70 @@ describe('Pre-announcement composer', () => {
     });
   });
 
-  it('lists the snippets of the post in slot order and links to Edit recording', async () => {
-    recordingEdit = {
-      start: 0,
-      end: 3600,
-      gainDb: 0,
-      sections: [],
-      snippets: [
-        { slot: 2, start: 1800, length: 20 },
-        { slot: 1, start: 2712, length: 30 },
-      ],
-    };
-    const router = await open('post');
-    const rows = [...root.querySelectorAll('.snippets li')].map((li) =>
-      li.textContent?.replace(/\s+/g, ' ').trim()
-    );
-    expect(rows).toEqual(['Snippet 1 · 0:45:12 · 30 s', 'Snippet 2 · 0:30:00 · 20 s']);
+  it('edits the snippets of the post in slot order and saves each change', async () => {
+    recordingSource = { url: 'https://r2/recordings/42/final.mp3', duration: 3600 };
+    recordingSnippets = [
+      { slot: 2, start: 1800, length: 20 },
+      { slot: 1, start: 2712, length: 30 },
+    ];
+    await open('post');
+    await vi.waitFor(() => expect(root.querySelectorAll('.sn-row')).toHaveLength(3));
+    expect([...root.querySelectorAll<HTMLInputElement>('.sn-time')].map((i) => i.value)).toEqual([
+      '0:45:12.0',
+      '0:30:00.0',
+      '',
+    ]);
     expect(text()).toContain(
       'They go into the post as video slides after the image, with a moving waveform.'
     );
-    button('Edit recording').click();
+    const slides = () =>
+      [...root.querySelectorAll('.slides li')].map((li) =>
+        li.textContent?.replace(/\s+/g, ' ').trim()
+      );
+    expect(slides()).toEqual(['Slide 2 · Snippet 1 · 30 s', 'Slide 3 · Snippet 2 · 20 s']);
+
+    aria('Remove snippet 2')!.click();
+    await nextTick();
+    expect(slides()).toEqual(['Slide 2 · Snippet 1 · 30 s']);
     await vi.waitFor(() =>
-      expect(router.currentRoute.value.fullPath).toBe('/shows/42/edit-recording')
+      expect(requests.find((r) => r.url === '/api/shows/42/recording/snippets')).toEqual({
+        url: '/api/shows/42/recording/snippets',
+        method: 'PUT',
+        body: { snippets: [{ slot: 1, start: 2712, length: 30 }] },
+      })
     );
+    await vi.waitFor(() => expect(text()).toContain('Saved.'));
   });
 
-  it('previews the snippet slides and plays one of them at a time', async () => {
-    const players: FakeAudio[] = [];
-    class FakeAudio {
-      currentTime = 0;
-      paused = true;
-      ontimeupdate: (() => void) | null = null;
-      onended: (() => void) | null = null;
-      constructor(public src: string) {
-        players.push(this);
-      }
-      play() {
-        this.paused = false;
-        return Promise.resolve();
-      }
-      pause() {
-        this.paused = true;
-      }
-    }
-    const realAudio = globalThis.Audio;
-    vi.stubGlobal('Audio', FakeAudio);
-    try {
-      recordingSource = { url: 'https://r2/recordings/42/final.mp3', duration: 3600 };
-      recordingEdit = {
-        start: 0,
-        end: 3600,
-        gainDb: 0,
-        sections: [],
-        snippets: [
-          { slot: 2, start: 1800, length: 20 },
-          { slot: 1, start: 2712, length: 30 },
-        ],
-      };
-      await open('post');
-      const slides = () =>
-        [...root.querySelectorAll('.slides li')].map((li) =>
-          [...li.children]
-            .map((c) => c.textContent?.trim())
-            .filter(Boolean)
-            .join(' | ')
-        );
-      expect(slides()).toEqual([
-        'Slide 2 · Snippet 1 · 30 s | Play',
-        'Slide 3 · Snippet 2 · 20 s | Play',
-      ]);
-      const play = (slot: number) =>
-        (root.querySelector(`[aria-label$="snippet ${slot}"]`) as HTMLButtonElement).click();
+  it('plays one snippet at a time, as it goes into the post', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    recordingSource = { url: 'https://r2/recordings/42/final.mp3', duration: 3600 };
+    recordingSnippets = [
+      { slot: 1, start: 2712, length: 30 },
+      { slot: 2, start: 1800, length: 20 },
+    ];
+    await open('post');
+    await vi.waitFor(() => expect(aria('Play snippet 1')).toBeTruthy());
+    aria('Play snippet 1')!.click();
+    await vi.waitFor(() => expect(aria('Stop snippet 1')).toBeTruthy());
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(play.mock.instances[0]).toMatchObject({
+      src: recordingSource.url,
+      currentTime: 2712,
+    });
 
-      play(1);
-      await nextTick();
-      expect(players[0]).toMatchObject({
-        src: recordingSource.url,
-        currentTime: 2712,
-        paused: false,
-      });
-      expect(slides()[0]).toBe('Slide 2 · Snippet 1 · 30 s | Stop');
-
-      // Snippet 2 stops snippet 1: one at a time.
-      play(2);
-      await nextTick();
-      expect(players[0].paused).toBe(true);
-      expect(players[1]).toMatchObject({ currentTime: 1800, paused: false });
-      expect(slides()).toEqual([
-        'Slide 2 · Snippet 1 · 30 s | Play',
-        'Slide 3 · Snippet 2 · 20 s | Stop',
-      ]);
-
-      // It stops by itself at the end of the snippet.
-      players[1].currentTime = 1820;
-      players[1].ontimeupdate?.();
-      await nextTick();
-      expect(players[1].paused).toBe(true);
-      expect(slides()[1]).toBe('Slide 3 · Snippet 2 · 20 s | Play');
-    } finally {
-      vi.stubGlobal('Audio', realAudio);
-    }
+    aria('Play snippet 2')!.click();
+    await vi.waitFor(() => expect(aria('Stop snippet 2')).toBeTruthy());
+    expect(aria('Play snippet 1')).toBeTruthy();
+    expect(play.mock.instances[1]).toMatchObject({ currentTime: 1800 });
   });
 
   it('says the post is one image when no snippets are placed', async () => {
     await open('post');
     await vi.waitFor(() => expect(text()).toContain('No snippets placed. The post is one image.'));
-    expect(root.querySelector('.snippets')).toBeNull();
+    expect(text()).toContain('Snippets can be placed once the recording is ready.');
     expect(root.querySelector('.slides')).toBeNull();
   });
 

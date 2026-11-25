@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
 import { BaseButton, BaseModal } from '@shared/components';
 import {
   announcementsApi,
-  recordingEditApi,
   seriesApi,
   showsApi,
   type Announcement,
@@ -15,7 +13,8 @@ import {
 } from '../api';
 import BoardIcon from './BoardIcon.vue';
 import BookTime from './BookTime.vue';
-import { clock, type Snippet } from './recording-editor/edit';
+import type { Snippet } from './recording-editor/edit';
+import SnippetEditor from './recording-editor/SnippetEditor.vue';
 import {
   CAPTION_MAX,
   cleanHandle,
@@ -133,59 +132,10 @@ const whenLine = computed(() => {
     : at;
 });
 
-const router = useRouter();
 /** Post slot: the snippets of the picked recording file go out as video slides. */
 const snippets = ref<Snippet[]>([]);
-const snippetError = ref<string | null>(null);
-/** The original recording; Play in the slide strip plays from it. */
-const sourceUrl = ref<string | null>(null);
-
-async function loadSnippets() {
-  stopSnippet();
-  snippets.value = [];
-  snippetError.value = null;
-  sourceUrl.value = null;
-  if (props.slot !== 'post') return;
-  try {
-    const state = await recordingEditApi.get(props.showId);
-    snippets.value = [...(state.edit?.snippets ?? [])].sort((a, b) => a.slot - b.slot);
-    sourceUrl.value = state.source?.url ?? null;
-  } catch (e) {
-    snippetError.value = e instanceof Error ? e.message : 'Could not load the snippets';
-  }
-}
-
-// Play one snippet of the original recording: no edit volume, no waveform.
-let audio: HTMLAudioElement | null = null;
-const playing = ref<number | null>(null);
-
-function stopSnippet() {
-  audio?.pause();
-  audio = null;
-  playing.value = null;
-}
-
-function toggleSnippet(s: Snippet) {
-  const wasPlaying = playing.value === s.slot;
-  stopSnippet();
-  if (wasPlaying || !sourceUrl.value) return;
-  const a = new Audio(sourceUrl.value);
-  a.currentTime = s.start;
-  a.ontimeupdate = () => {
-    if (a.currentTime >= s.start + s.length) stopSnippet();
-  };
-  a.onended = stopSnippet;
-  audio = a;
-  playing.value = s.slot;
-  a.play().catch((e: unknown) => {
-    if (audio !== a) return;
-    stopSnippet();
-    snippetError.value = e instanceof Error ? e.message : 'Could not play the snippet';
-  });
-}
 
 async function load() {
-  void loadSnippets();
   error.value = null;
   loading.value = true;
   try {
@@ -254,7 +204,6 @@ watch(
 );
 onUnmounted(() => {
   if (previewTimer) clearTimeout(previewTimer);
-  stopSnippet();
 });
 const previewAlt = computed(() => {
   if (!feed.value) return 'Preview · 9:16 story by moafunk_radio';
@@ -440,11 +389,7 @@ function picked(value: string) {
 
         <div v-if="slot === 'post'" class="group">
           <h2 class="board-card-title"><BoardIcon name="music" />Snippets</h2>
-          <ul v-if="snippets.length" class="snippets">
-            <li v-for="s in snippets" :key="s.slot">
-              Snippet {{ s.slot }} · {{ clock(s.start) }} · {{ s.length }} s
-            </li>
-          </ul>
+          <SnippetEditor :key="showId" :show-id="showId" @change="snippets = [...$event]" />
           <p class="hint">
             {{
               snippets.length
@@ -452,13 +397,6 @@ function picked(value: string) {
                 : 'No snippets placed. The post is one image.'
             }}
           </p>
-          <p v-if="snippetError" class="field-error">{{ snippetError }}</p>
-          <BaseButton
-            variant="ghost"
-            class="edit-recording"
-            @click="router.push(`/shows/${showId}/edit-recording`)"
-            >Edit recording</BaseButton
-          >
         </div>
 
         <fieldset v-if="feed" class="group" :disabled="sent || loading">
@@ -595,14 +533,6 @@ function picked(value: string) {
             <span class="slide-name"
               >Slide {{ i + 2 }} · Snippet {{ s.slot }} · {{ s.length }} s</span
             >
-            <BaseButton
-              variant="secondary"
-              size="sm"
-              :disabled="!sourceUrl"
-              :aria-label="`${playing === s.slot ? 'Stop' : 'Play'} snippet ${s.slot}`"
-              @click="toggleSnippet(s)"
-              >{{ playing === s.slot ? 'Stop' : 'Play' }}</BaseButton
-            >
           </li>
         </ol>
         <p v-if="feed && caption.trim()" class="caption-preview">
@@ -655,15 +585,6 @@ function picked(value: string) {
 
 .group:last-child {
   margin-bottom: 0;
-}
-
-.snippets {
-  margin: 0;
-  padding-left: 1.2em;
-}
-
-.edit-recording {
-  align-self: flex-start;
 }
 
 .field {
@@ -828,7 +749,7 @@ function picked(value: string) {
   background: #07071a;
 }
 
-/* The video slides after the image: a small copy of it, the name and Play. */
+/* The video slides after the image: a small copy of it and the name. */
 .slides {
   display: flex;
   flex-direction: column;

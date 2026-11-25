@@ -958,8 +958,8 @@ async fn instagram_off_sends_nothing_and_refuses_new_posts() {
     assert_eq!(row(&state, pre).await.state, "sent");
 }
 
-/// Show 1, public on SoundCloud, with a finalized 20 s recording and an
-/// edit with `snippets` (JSON). `upload: false` leaves the file out of R2.
+/// Show 1, public on SoundCloud, with a finalized 20 s recording and its
+/// `snippets` (JSON). `upload: false` leaves the file out of R2.
 async fn with_snippets(state: &Arc<AppState>, r2: &FakeR2, snippets: &str, upload: bool) {
     let key = "recordings/1/final.mp3";
     sqlx::query(
@@ -974,13 +974,13 @@ async fn with_snippets(state: &Arc<AppState>, r2: &FakeR2, snippets: &str, uploa
         let mp3 = crate::recording_tests::tone(20, &["-c:a", "libmp3lame"], "mp3").await;
         r2.insert(state, key, &mp3);
     }
-    let edit =
-        format!(r#"{{"start":0.0,"end":20.0,"gainDb":0.0,"sections":[],"snippets":{snippets}}}"#);
-    sqlx::query("INSERT INTO recording_edits (show_id, source, edit_json) VALUES (1, 'show', ?)")
-        .bind(edit)
-        .execute(&state.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO recording_snippets (show_id, source, snippets_json) VALUES (1, 'show', ?)",
+    )
+    .bind(snippets)
+    .execute(&state.db)
+    .await
+    .unwrap();
     sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
         .execute(&state.db)
         .await

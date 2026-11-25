@@ -114,20 +114,11 @@
       "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
     },
     {
-      "screen": "dashboard",
-      "items": ["button: Toggle menu", "button: Close menu"],
-      "why": "The flow note says the nav folds into a menu on phones."
-    },
-    {
-      "screen": "my-shows",
-      "items": ["button: Toggle menu", "button: Close menu"],
-      "why": "The flow note says the nav folds into a menu on phones."
-    },
-    {
-      "screen": "edit-recording",
+      "screen": "episode-recording-instagram",
       "items": [
-        "button: Whole set",
         "button: Waveform",
+        "button: Whole set",
+        "button: Zoom",
         "button: Select snippet 1",
         "button: Snippet 1 0.1 seconds earlier",
         "button: Snippet 1 0.1 seconds later",
@@ -150,10 +141,20 @@
         "button: Play snippet 3",
         "button: Remove snippet 3"
       ],
-      "why": "The flow notes describe the whole-set map and the waveform (both clickable) and each snippet row: −.1, start time, +.1, length − and +, Play and Remove; picking a row is its own button."
+      "why": "The flow notes describe the player's waveform, the snippet editor's whole-set and zoom waveforms (both clickable) and each snippet row: pick, −.1 and +.1, the length − and +, Play and Remove (flow rev 39)."
     },
     {
-      "screen": "edit-recording-start-end",
+      "screen": "dashboard",
+      "items": ["button: Toggle menu", "button: Close menu"],
+      "why": "The flow note says the nav folds into a menu on phones."
+    },
+    {
+      "screen": "my-shows",
+      "items": ["button: Toggle menu", "button: Close menu"],
+      "why": "The flow note says the nav folds into a menu on phones."
+    },
+    {
+      "screen": "edit-recording",
       "items": [
         "button: Whole set",
         "button: Waveform",

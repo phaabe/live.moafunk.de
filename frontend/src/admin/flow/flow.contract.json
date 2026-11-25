@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 38,
+  "rev": 39,
   "screens": [
     {
       "id": "dashboard",
@@ -1064,8 +1064,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "3c48f279",
-      "notesHash": "b84497d9",
+      "hash": "8a94cb68",
+      "notesHash": "d788ca79",
       "elements": [
         {
           "k": "h2",
@@ -1135,7 +1135,7 @@
           "k": "row",
           "text": "Instagram",
           "meta": "Post-announcement waits for a public track",
-          "to": null
+          "to": "episode-recording-instagram"
         },
         {
           "k": "button",
@@ -1152,7 +1152,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
       "hash": "b86e06fa",
-      "notesHash": "d85b6657",
+      "notesHash": "e6b60141",
       "elements": [
         {
           "k": "h2",
@@ -1227,13 +1227,84 @@
       ]
     },
     {
+      "id": "episode-recording-instagram",
+      "title": "Recording tab · Instagram",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "611ca77e",
+      "notesHash": "af28ac11",
+      "elements": [
+        {
+          "k": "h2",
+          "text": "Recording & SoundCloud"
+        },
+        {
+          "k": "button",
+          "text": "Download",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Public · Show recording, edited · So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement: Scheduled · Mi 28.10. · 18:00",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "The post-announcement goes out at its booked time once the SoundCloud track is public. You set it up in step 1 Social media."
+        },
+        {
+          "k": "text",
+          "text": "Snippets are up to 3 short clips from your set, 5 to 30 s each. They go into the post as video slides after the image, so pick the moments that make people want to listen."
+        },
+        {
+          "k": "button",
+          "text": "Go to Social media",
+          "to": "episode",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
+        }
+      ]
+    },
+    {
       "id": "announce",
       "title": "Announcement composer",
       "who": "host",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
       "hash": "bb6c95e6",
-      "notesHash": "d97b71fb",
+      "notesHash": "e2641c58",
       "elements": [
         {
           "k": "back",
@@ -1622,100 +1693,12 @@
     },
     {
       "id": "edit-recording",
-      "title": "Edit recording · Snippets",
-      "who": "host",
-      "lane": "showday",
-      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "6a8cdbf5",
-      "notesHash": "d7005ebc",
-      "elements": [
-        {
-          "k": "back",
-          "text": "Episode",
-          "to": "episode-recording"
-        },
-        {
-          "k": "h1",
-          "text": "Edit recording"
-        },
-        {
-          "k": "button",
-          "text": "Zoom out",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Zoom in",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Show all",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Play",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Snippets",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Start & end",
-          "to": "edit-recording-start-end",
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Volume",
-          "to": "edit-recording-volume",
-          "primary": false
-        },
-        {
-          "k": "h2",
-          "text": "For the Instagram post"
-        },
-        {
-          "k": "text",
-          "text": "Snippets are short clips from your set, up to 30 s each. They go into the Instagram post that announces the recording, so pick the moments that make people want to listen."
-        },
-        {
-          "k": "button",
-          "text": "Next: start & end",
-          "to": "edit-recording-start-end",
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Discard",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Apply edit",
-          "to": "episode-recording",
-          "primary": true
-        }
-      ]
-    },
-    {
-      "id": "edit-recording-start-end",
       "title": "Edit recording · Start & end",
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "2ae316a2",
-      "notesHash": "4ae96776",
+      "hash": "db656db2",
+      "notesHash": "3c4f1275",
       "elements": [
         {
           "k": "back",
@@ -1748,12 +1731,6 @@
           "k": "button",
           "text": "Play",
           "to": null,
-          "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Snippets",
-          "to": "edit-recording",
           "primary": false
         },
         {
@@ -1823,8 +1800,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
-      "hash": "baaf987c",
-      "notesHash": "270e386d",
+      "hash": "08f8a85f",
+      "notesHash": "eda1adbe",
       "elements": [
         {
           "k": "back",
@@ -1861,14 +1838,8 @@
         },
         {
           "k": "button",
-          "text": "Snippets",
-          "to": "edit-recording",
-          "primary": false
-        },
-        {
-          "k": "button",
           "text": "Start & end",
-          "to": "edit-recording-start-end",
+          "to": "edit-recording",
           "primary": false
         },
         {

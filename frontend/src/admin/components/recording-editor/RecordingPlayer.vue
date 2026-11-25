@@ -44,7 +44,6 @@ const marks = computed(() => {
     box('cut', 0, e.start),
     box('cut', e.end, duration.value),
     ...e.sections.map((s) => box('section', s.start, s.end)),
-    ...e.snippets.map((s) => box('snippet', s.start, s.start + s.length)),
   ];
 });
 
@@ -185,7 +184,7 @@ onBeforeUnmount(() => {
         <span class="rp-time">{{ clock(head - offset) }} / {{ clock(length) }}</span>
         <span class="rp-sub">{{
           edit
-            ? 'Plays the edit. Hatched parts are cut, blue is louder or quieter, pink are snippets.'
+            ? 'Plays the edit. Hatched parts are cut, blue is louder or quieter.'
             : 'Plays the file as it is.'
         }}</span>
       </div>
@@ -274,13 +273,6 @@ onBeforeUnmount(() => {
 .rp-mark.section {
   background: rgba(96, 165, 250, 0.14);
   border-top: 3px solid #60a5fa;
-}
-
-.rp-mark.snippet {
-  top: auto;
-  height: 6px;
-  min-width: 5px;
-  background: #f472b6;
 }
 
 .rp-edge {

@@ -9,9 +9,6 @@ import { useEditPlayer } from '../components/recording-editor/useEditPlayer';
 import {
   GAIN_MAX,
   GAIN_MIN,
-  SNIPPET_MAX,
-  SNIPPET_MIN,
-  SNIPPET_SLOTS,
   clamp,
   clampGain,
   clock,
@@ -27,16 +24,15 @@ import {
 } from '../components/recording-editor/edit';
 import { episodeDay } from '../episodeRow';
 
-// Flow screens `edit-recording` (Snippets), `edit-recording-start-end` and
-// `edit-recording-volume` (#883): one page, opened from the Recording card.
-// A whole-set map on top, a zoomable waveform with lanes, then three tabs.
-// Nothing is saved until Apply edit: it saves the edit and the server makes a
-// new file from the original recording.
+// Flow screens `edit-recording` (Start & end) and `edit-recording-volume`
+// (#883): one page, opened from the Recording card. A whole-set map on top, a
+// zoomable waveform with a lane, then two tabs. Nothing is saved until Apply
+// edit: it saves the edit and the server makes a new file from the original
+// recording. Snippets for the post are not here (SnippetEditor, flow rev 39).
 
-type Tab = 'snippets' | 'set' | 'volume';
+type Tab = 'set' | 'volume';
 
 const TABS: { id: Tab; title: string }[] = [
-  { id: 'snippets', title: 'Snippets' },
   { id: 'set', title: 'Start & end' },
   { id: 'volume', title: 'Volume' },
 ];
@@ -74,10 +70,7 @@ const lastEnd = computed(() => Math.min(duration.value, sourceDuration.value ?? 
 const edit = reactive<RecordingEdit>(newEdit(0));
 const saved = ref('');
 const dirty = computed(() => saved.value !== '' && JSON.stringify(edit) !== saved.value);
-const tab = ref<Tab>('snippets');
-const slot = ref(1);
-/** Length of each snippet slot, also while it is not placed. */
-const lengths = reactive<Record<number, number>>({ 1: 30, 2: 30, 3: 30 });
+const tab = ref<Tab>('set');
 /** Add section: waiting for the first click, then for the second. */
 const placing = ref<null | { start?: number }>(null);
 const zoom = ref(0);
@@ -136,9 +129,7 @@ watch(
       await loadPeaks(showId);
       if (!peaks.value) return;
       Object.assign(edit, state.edit ?? newEdit(lastEnd.value));
-      for (const sn of edit.snippets) lengths[sn.slot] = sn.length;
       saved.value = JSON.stringify(edit);
-      slot.value = SNIPPET_SLOTS.find((n) => !snippet(n)) ?? 1;
       zoom.value = duration.value > 1800 ? 1 : 0;
       viewStart.value = edit.start;
     } catch (e) {
@@ -205,7 +196,6 @@ function onMap(e: MouseEvent) {
 
 function onWave(e: MouseEvent) {
   const t = timeAt(e, w0.value, w1.value);
-  if (tab.value === 'snippets') return placeSnippet(slot.value, t);
   if (tab.value === 'volume' && placing.value) {
     if (placing.value.start === undefined) {
       placing.value = { start: t };
@@ -228,10 +218,6 @@ const mapMarks = computed(() => [
   ...edit.sections.map((s) => ({
     cls: 'm-section',
     style: { left: `${pctAll(s.start)}%`, width: `${pctAll(s.end - s.start)}%` },
-  })),
-  ...edit.snippets.map((s) => ({
-    cls: 'm-snippet',
-    style: { left: `${pctAll(s.start)}%`, width: `${pctAll(s.length)}%` },
   })),
   { cls: 'm-edge', style: { left: `${pctAll(edit.start)}%` } },
   { cls: 'm-edge', style: { left: `${pctAll(edit.end)}%` } },
@@ -258,16 +244,6 @@ const laneSections = computed(() =>
     .filter((s) => visible(s.start, s.end))
     .map((s) => ({ id: s.id, label: signed(s.gainDb), style: band(s.start, s.end) }))
 );
-const laneSnippets = computed(() =>
-  edit.snippets
-    .filter((s) => visible(s.start, s.start + s.length))
-    .map((s) => ({
-      slot: s.slot,
-      label:
-        pct(s.start + s.length) - pct(s.start) > 6 ? `${s.slot} · ${s.length} s` : String(s.slot),
-      style: band(s.start, s.start + s.length),
-    }))
-);
 const flags = computed(() =>
   [
     { t: edit.start, label: `START ${clock(edit.start)}`, end: false },
@@ -277,9 +253,7 @@ const flags = computed(() =>
 
 // ---- tabs ------------------------------------------------------------------
 
-const placedCount = computed(() => edit.snippets.length);
 const summaries = computed<Record<Tab, string>>(() => ({
-  snippets: `${placedCount.value} of 3 placed`,
   set: `${span(edit.end - edit.start)} · ${signed(edit.gainDb)}`,
   volume:
     edit.sections.length === 0
@@ -293,7 +267,6 @@ function openTab(t: Tab) {
 }
 
 const hint = computed(() => {
-  if (tab.value === 'snippets') return `Click the waveform to place snippet ${slot.value}.`;
   if (tab.value === 'volume') {
     if (!placing.value) return 'Add a section, or click to move the playhead.';
     return placing.value.start === undefined
@@ -302,57 +275,6 @@ const hint = computed(() => {
   }
   return 'Click to move the playhead, then set start or end.';
 });
-
-// ---- snippets ---------------------------------------------------------------
-
-const snippet = (n: number) => edit.snippets.find((s) => s.slot === n);
-
-function placeSnippet(n: number, t: number) {
-  const length = lengths[n];
-  const start = clamp(t, edit.start, edit.end - length);
-  const sn = snippet(n);
-  if (sn) sn.start = start;
-  else {
-    edit.snippets.push({ slot: n, start, length });
-    edit.snippets.sort((a, b) => a.slot - b.slot);
-  }
-  delete drafts[`snip${n}`];
-  player.seek(start);
-  slot.value = SNIPPET_SLOTS.find((k) => !snippet(k)) ?? n;
-}
-
-function setLength(n: number, length: number) {
-  lengths[n] = clamp(length, SNIPPET_MIN, SNIPPET_MAX);
-  const sn = snippet(n);
-  if (sn) {
-    sn.length = lengths[n];
-    sn.start = clamp(sn.start, edit.start, edit.end - sn.length);
-  }
-}
-
-function removeSnippet(n: number) {
-  edit.snippets = edit.snippets.filter((s) => s.slot !== n);
-}
-
-const snippetRows = computed(() =>
-  SNIPPET_SLOTS.map((n) => {
-    const sn = snippet(n);
-    const picked = slot.value === n;
-    return {
-      n,
-      sn,
-      picked,
-      length: sn?.length ?? lengths[n],
-      sub: picked
-        ? sn
-          ? 'Click the waveform to move it'
-          : 'Click the waveform or type a time'
-        : sn
-          ? 'For the Instagram post'
-          : 'Empty',
-    };
-  })
-);
 
 // ---- typed times -----------------------------------------------------------
 
@@ -374,10 +296,6 @@ function setStart(t: number) {
 }
 function setEnd(t: number) {
   edit.end = clamp(t, edit.start + 5, lastEnd.value);
-}
-function nudgeSnippet(n: number, by: number) {
-  const sn = snippet(n);
-  if (sn) sn.start = clamp(sn.start + by, edit.start, edit.end - sn.length);
 }
 
 // ---- volume ----------------------------------------------------------------
@@ -591,19 +509,6 @@ const header = computed(() => {
           >
           <span v-if="inView(now)" class="er-playhead" :style="{ left: `${pct(now)}%` }"></span>
         </button>
-        <div
-          class="er-lane er-lane-snippets"
-          :class="{ faded: tab !== 'snippets' }"
-          aria-hidden="true"
-        >
-          <span
-            v-for="s in laneSnippets"
-            :key="s.slot"
-            :class="['er-lane-snippet', { picked: tab === 'snippets' && slot === s.slot }]"
-            :style="s.style"
-            >{{ s.label }}</span
-          >
-        </div>
         <div class="er-ruler" aria-hidden="true">
           <span v-for="t in ticks" :key="t.left" :style="{ left: t.left }">{{ t.label }}</span>
         </div>
@@ -677,149 +582,8 @@ const header = computed(() => {
         </div>
 
         <div class="er-panel" role="tabpanel" :aria-labelledby="`er-tab-${tab}`">
-          <!-- 1 Snippets -->
-          <template v-if="tab === 'snippets'">
-            <div class="er-info pink">
-              <span class="er-info-icon" aria-hidden="true"
-                ><svg
-                  width="22"
-                  height="22"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <rect x="3" y="3" width="18" height="18" rx="5" />
-                  <circle cx="12" cy="12" r="4" />
-                  <circle cx="17.5" cy="6.5" r="0.6" fill="currentColor" /></svg
-              ></span>
-              <div>
-                <h2>For the Instagram post</h2>
-                <p>
-                  Snippets are short clips from your set, up to 30 s each. They go into the
-                  Instagram post that announces the recording, so pick the moments that make people
-                  want to listen.
-                </p>
-              </div>
-            </div>
-            <div v-for="r in snippetRows" :key="r.n" :class="['er-snip', { picked: r.picked }]">
-              <button
-                type="button"
-                class="er-snip-pick"
-                :aria-pressed="r.picked"
-                :aria-label="`Select snippet ${r.n}`"
-                @click="slot = r.n"
-              >
-                <span :class="['er-snip-badge', { set: r.sn }]">{{ r.n }}</span>
-                <span class="er-snip-text">
-                  <span class="er-snip-name">Snippet {{ r.n }}</span>
-                  <span class="er-mut">{{ r.sub }}</span>
-                </span>
-              </button>
-              <div class="er-step" role="group" :aria-label="`Start of snippet ${r.n}`">
-                <button
-                  type="button"
-                  class="icon-btn"
-                  :aria-label="`Snippet ${r.n} 0.1 seconds earlier`"
-                  :disabled="!r.sn"
-                  @click="nudgeSnippet(r.n, -0.1)"
-                >
-                  −.1
-                </button>
-                <input
-                  class="er-time-input"
-                  type="text"
-                  inputmode="decimal"
-                  spellcheck="false"
-                  autocomplete="off"
-                  placeholder="not placed"
-                  :aria-label="`Start time of snippet ${r.n}`"
-                  :value="timeValue(`snip${r.n}`, r.sn?.start)"
-                  @focus="slot = r.n"
-                  @input="drafts[`snip${r.n}`] = ($event.target as HTMLInputElement).value"
-                  @keydown.enter="($event.target as HTMLInputElement).blur()"
-                  @blur="commitTime(`snip${r.n}`, (t) => placeSnippet(r.n, t))"
-                />
-                <button
-                  type="button"
-                  class="icon-btn"
-                  :aria-label="`Snippet ${r.n} 0.1 seconds later`"
-                  :disabled="!r.sn"
-                  @click="nudgeSnippet(r.n, 0.1)"
-                >
-                  +.1
-                </button>
-              </div>
-              <div class="er-step er-len" role="group" :aria-label="`Length of snippet ${r.n}`">
-                <button
-                  type="button"
-                  class="icon-btn"
-                  :aria-label="`Snippet ${r.n} 1 second shorter`"
-                  :disabled="r.length <= SNIPPET_MIN"
-                  @click="setLength(r.n, r.length - 1)"
-                >
-                  −
-                </button>
-                <output class="er-len-text">{{ r.length }} s</output>
-                <button
-                  type="button"
-                  class="icon-btn"
-                  :aria-label="`Snippet ${r.n} 1 second longer`"
-                  :disabled="r.length >= SNIPPET_MAX"
-                  @click="setLength(r.n, r.length + 1)"
-                >
-                  +
-                </button>
-              </div>
-              <button
-                type="button"
-                class="er-snip-play"
-                :aria-label="`Play snippet ${r.n}`"
-                :disabled="!r.sn"
-                @click="r.sn && player.play(r.sn.start, r.sn.start + r.sn.length)"
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                class="icon-btn"
-                :aria-label="`Remove snippet ${r.n}`"
-                :disabled="!r.sn"
-                @click="removeSnippet(r.n)"
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  aria-hidden="true"
-                >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-            <div class="er-next">
-              <BaseButton variant="secondary" @click="openTab('set')"
-                >Next: start &amp; end</BaseButton
-              >
-            </div>
-          </template>
-
-          <!-- 2 Start & end -->
-          <template v-else-if="tab === 'set'">
+          <!-- 1 Start & end -->
+          <template v-if="tab === 'set'">
             <div class="er-info yellow">
               <span class="er-info-icon" aria-hidden="true"
                 ><svg
@@ -941,7 +705,7 @@ const header = computed(() => {
             </div>
           </template>
 
-          <!-- 3 Volume -->
+          <!-- 2 Volume -->
           <template v-else>
             <div class="er-info blue">
               <span class="er-info-icon" aria-hidden="true"
@@ -1150,12 +914,6 @@ const header = computed(() => {
   background: rgba(96, 165, 250, 0.28);
 }
 
-.m-snippet {
-  min-width: 3px;
-  border-bottom: 4px solid #f472b6;
-  background: rgba(244, 114, 182, 0.3);
-}
-
 .m-edge {
   width: 2px;
   margin-left: -1px;
@@ -1238,16 +996,11 @@ const header = computed(() => {
   height: 22px;
 }
 
-.er-lane-snippets {
-  height: 24px;
-}
-
 .er-lane.faded {
   opacity: 0.35;
 }
 
-.er-lane-section,
-.er-lane-snippet {
+.er-lane-section {
   position: absolute;
   display: flex;
   align-items: center;
@@ -1265,19 +1018,6 @@ const header = computed(() => {
   border-radius: 4px;
   background: #24446e;
   color: #dbeaff;
-}
-
-.er-lane-snippet {
-  top: 3px;
-  bottom: 1px;
-  min-width: 20px;
-  border-radius: 999px;
-  background: #f472b6;
-  color: #1a0010;
-}
-
-.er-lane-snippet.picked {
-  box-shadow: 0 0 0 2px #fff;
 }
 
 .er-curtain {
@@ -1390,7 +1130,7 @@ const header = computed(() => {
 
 .er-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border-bottom: 1px solid #2a2a42;
 }
 
@@ -1501,20 +1241,6 @@ const header = computed(() => {
   border-radius: 10px;
 }
 
-.er-info.pink {
-  border-color: rgba(244, 114, 182, 0.45);
-  background: rgba(244, 114, 182, 0.08);
-}
-
-.er-info.pink h2 {
-  color: #f9a8d4;
-}
-
-.er-info.pink .er-info-icon {
-  background: #f472b6;
-  color: #1a0010;
-}
-
 .er-info.yellow {
   border-color: rgba(255, 236, 68, 0.4);
   background: rgba(255, 236, 68, 0.06);
@@ -1565,98 +1291,6 @@ const header = computed(() => {
 .er-time-input:focus {
   border-color: var(--color-primary);
   outline: none;
-}
-
-.er-snip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-  padding: 6px 10px;
-  border: 1px solid #2a2a42;
-  border-radius: 10px;
-}
-
-.er-snip.picked {
-  padding: 5px 9px;
-  border: 2px solid #f472b6;
-  background: #1a0f1f;
-}
-
-.er-snip-pick {
-  flex: 1 1 200px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-  min-height: 48px;
-  padding: 2px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.er-snip-badge {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: 1.5px dashed #f472b6;
-  border-radius: 50%;
-  color: #f9a8d4;
-  font: 700 15px var(--font-family);
-}
-
-.er-snip-badge.set {
-  border: 0;
-  background: #f472b6;
-  color: #1a0010;
-}
-
-.er-snip-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.er-snip-name {
-  font: 700 14px var(--font-family);
-  color: #fff;
-}
-
-.er-len {
-  margin-left: 18px;
-}
-
-.er-len-text {
-  min-width: 56px;
-  text-align: center;
-  font: 700 18px var(--font-family);
-  color: #fff;
-}
-
-.er-snip-play {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 50%;
-  background: #f472b6;
-  color: #1a0010;
-  cursor: pointer;
-}
-
-.er-snip-play:disabled {
-  opacity: 0.3;
-  cursor: default;
 }
 
 .er-next {

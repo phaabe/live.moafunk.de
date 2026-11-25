@@ -42,6 +42,7 @@ function state(edit: RecordingEdit | null = null): RecordingEditState {
   return {
     source: { url: 'https://r2.example/set.mp3', duration: DURATION },
     edit,
+    snippets: [{ slot: 1, start: 2712, length: 30 }],
     status: edit ? 'draft' : 'none',
     error: null,
     edited_url: null,
@@ -56,10 +57,6 @@ const saved: RecordingEdit = {
   sections: [
     { id: 'a', start: 1800, end: 2100, gainDb: 6 },
     { id: 'b', start: 4180, end: 4520, gainDb: -3 },
-  ],
-  snippets: [
-    { slot: 1, start: 2712, length: 30 },
-    { slot: 2, start: 4296, length: 15 },
   ],
 };
 
@@ -134,15 +131,17 @@ afterEach(() => {
 });
 
 describe('Edit recording', () => {
-  it('opens on Snippets with the saved edit', async () => {
+  it('opens on Start & end with the saved edit, without snippets', async () => {
     await mount();
     expect(text()).toContain('Brunchtime · ');
     expect(text()).toContain('original 2:00:00');
-    expect(text()).toContain('2 of 3 placed');
     expect(text()).toContain('1:47:41 · +2.5 dB');
     expect(text()).toContain('2 sections');
     const inputs = [...root.querySelectorAll<HTMLInputElement>('.er-time-input')];
-    expect(inputs.map((i) => i.value)).toEqual(['0:45:12.0', '1:11:36.0', '']);
+    expect(inputs.map((i) => i.value)).toEqual(['0:06:09.6', '1:53:50.4']);
+    // Snippets moved to the Recording tab's Instagram row (flow rev 39).
+    expect(button('Snippets')).toBeUndefined();
+    expect(text()).not.toContain('Snippet');
   });
 
   it('waits while the server reads the recording', async () => {
@@ -153,7 +152,7 @@ describe('Edit recording', () => {
       await vi.waitFor(() => expect(text()).toContain('Reading the recording for the waveform…'));
       await vi.advanceTimersByTimeAsync(2000);
       await pending;
-      await vi.waitFor(() => expect(text()).toContain('2 of 3 placed'));
+      await vi.waitFor(() => expect(text()).toContain('2 sections'));
     } finally {
       vi.useRealTimers();
     }
@@ -164,28 +163,6 @@ describe('Edit recording', () => {
     await mount(false);
     await vi.waitFor(() => expect(text()).toContain('This episode has no recording yet.'));
     expect(button('Apply edit')).toBeUndefined();
-  });
-
-  it('places the picked snippet where the waveform is clicked', async () => {
-    await mount();
-    // Snippet 3 is empty, so it is picked. 30 min view from the start of the set.
-    await clickAt(root.querySelector('.er-main')!, 0.5);
-    const third = root.querySelectorAll<HTMLInputElement>('.er-time-input')[2];
-    expect(third.value).toBe('0:21:09.6');
-    expect(text()).toContain('3 of 3 placed');
-  });
-
-  it('sets a typed snippet time and its length', async () => {
-    await mount();
-    const first = root.querySelectorAll<HTMLInputElement>('.er-time-input')[0];
-    await type(first, '0:50:00');
-    expect(first.value).toBe('0:50:00.0');
-    await type(first, 'nonsense');
-    expect(first.value).toBe('0:50:00.0');
-    await click('Snippet 2 1 second longer');
-    expect(text()).toContain('16 s');
-    await click('Snippet 1 1 second longer');
-    expect(button('Snippet 1 1 second longer').disabled).toBe(true);
   });
 
   it('cuts the set and sets its volume', async () => {
@@ -223,6 +200,7 @@ describe('Edit recording', () => {
     await click('Apply edit');
     await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/shows/42'));
     expect(api.save).toHaveBeenCalledWith(42, expect.objectContaining({ gainDb: 2 }));
+    expect(api.save.mock.calls[0][1]).not.toHaveProperty('snippets');
     expect(api.apply).toHaveBeenCalledWith(42);
   });
 
@@ -246,26 +224,17 @@ describe('Edit recording', () => {
 
   it('blocks Apply while the edit has a problem', async () => {
     await mount();
-    const first = root.querySelectorAll<HTMLInputElement>('.er-time-input')[0];
-    await click('Start & end');
     const end = root.querySelector<HTMLInputElement>('#er-end')!;
-    await type(end, '0:30:00');
-    expect(first.isConnected).toBe(false);
-    expect(text()).toContain('Snippet 1 must be inside the set.');
+    await type(end, '0:32:00');
+    expect(text()).toContain('A volume section must be inside the set.');
     expect(button('Apply edit').disabled).toBe(true);
   });
 });
 
 describe('flow', () => {
-  it('Edit recording · Snippets matches the flow', async () => {
-    await mount();
-    await expectFlow('edit-recording', root);
-  });
-
   it('Edit recording · Start & end matches the flow', async () => {
     await mount();
-    await click('Start & end');
-    await expectFlow('edit-recording-start-end', root);
+    await expectFlow('edit-recording', root);
   });
 
   it('Edit recording · Volume matches the flow', async () => {

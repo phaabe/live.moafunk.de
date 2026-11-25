@@ -58,12 +58,6 @@ describe('problems', () => {
     expect(problems(edit({ start: 300, end: 200 }), 600)).toHaveLength(1);
   });
 
-  it('rejects snippets outside the set', () => {
-    expect(problems(edit({ snippets: [{ slot: 2, start: 520, length: 30 }] }), 600)).toEqual([
-      'Snippet 2 must be inside the set.',
-    ]);
-  });
-
   it('rejects overlapping sections', () => {
     const sections = [
       { id: 'a', start: 100, end: 200, gainDb: 3 },

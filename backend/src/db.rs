@@ -904,6 +904,26 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             .await?;
         tx.commit().await?;
     }
+    // Snippets for the post-announcement, per file. They used to sit in the
+    // edit; the copy keeps those (once: a row that exists is kept).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recording_snippets (
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            snippets_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (show_id, source)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO recording_snippets (show_id, source, snippets_json) \
+         SELECT show_id, source, json_extract(edit_json, '$.snippets') FROM recording_edits \
+         WHERE json_valid(edit_json) AND json_array_length(edit_json, '$.snippets') > 0",
+    )
+    .execute(pool)
+    .await?;
     // A render does not survive a restart; free its lock so Apply works again.
     sqlx::query(
         "UPDATE recording_edits SET status = 'failed', \
