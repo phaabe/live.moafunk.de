@@ -241,6 +241,8 @@ async fn an_api_restart_mid_show_keeps_one_recording() {
         .await
         .unwrap();
     assert!(status.success());
+    // The kill can leave the segment it was writing empty.
+    std::fs::write(seg_dir.join("seg_00003.ts"), b"").unwrap();
     std::fs::write(&artifact, b"").unwrap();
 
     let counts = recording::recover_once(&state, temp.path(), FINALIZE_GRACE).await;
