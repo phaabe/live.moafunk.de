@@ -1,10 +1,13 @@
-//! The recording editor: after a show the host cuts start and end, sets the
-//! volume of the whole set and of sections, and places snippets. "Apply edit"
+//! The recording editor: after a show the host cuts start and end and sets the
+//! volume of the whole set and of sections. "Apply edit"
 //! renders a new mp3 with ffmpeg from the original recording; the original is
 //! never changed. The rendered file is then what the SoundCloud upload sends.
 //!
 //! The waveform comes from peaks the server computes once per recording and
 //! caches in R2, so the browser never decodes a 2 h set.
+//!
+//! Snippets (short clips for the post-announcement) are stored apart from the
+//! edit: saving them changes neither the file nor the edit's status.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
@@ -71,8 +74,6 @@ pub struct RecordingEdit {
     pub gain_db: f64,
     #[serde(default)]
     pub sections: Vec<Section>,
-    #[serde(default)]
-    pub snippets: Vec<Snippet>,
 }
 
 /// A louder or quieter part of the set.
@@ -85,7 +86,7 @@ pub struct Section {
     pub gain_db: f64,
 }
 
-/// A part for a later Instagram post. Only stored here.
+/// A clip for the post-announcement, in seconds of the original file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snippet {
@@ -152,12 +153,18 @@ pub fn validate(edit: &RecordingEdit, duration: Option<f64>) -> Vec<String> {
             ));
         }
     }
+    problems
+}
 
-    if edit.snippets.len() > MAX_SNIPPETS {
+/// Every rule the snippets break, empty when they are valid. A snippet may
+/// lie where the edit cuts: its clip is made from the original file.
+pub fn validate_snippets(snippets: &[Snippet], duration: Option<f64>) -> Vec<String> {
+    let mut problems = Vec::new();
+    if snippets.len() > MAX_SNIPPETS {
         problems.push(format!("At most {MAX_SNIPPETS} snippets"));
     }
     let mut slots = HashSet::new();
-    for s in &edit.snippets {
+    for s in snippets {
         if !(1..=MAX_SNIPPETS as i64).contains(&s.slot) {
             problems.push(format!("Snippet slot {} must be 1, 2 or 3", s.slot));
         } else if !slots.insert(s.slot) {
@@ -167,8 +174,9 @@ pub fn validate(edit: &RecordingEdit, duration: Option<f64>) -> Vec<String> {
         if s.length < min - EPS || s.length > max + EPS {
             problems.push(format!("Snippet {} must be {min} to {max} s long", s.slot));
         }
-        if s.start < edit.start - EPS || s.start + s.length > edit.end + EPS {
-            problems.push(format!("Snippet {} must lie inside the edit", s.slot));
+        let past_end = duration.is_some_and(|d| s.start + s.length > d + DURATION_SLACK);
+        if s.start < -EPS || past_end {
+            problems.push(format!("Snippet {} must lie inside the recording", s.slot));
         }
     }
     problems
@@ -399,6 +407,24 @@ impl EditRow {
     }
 }
 
+/// The snippets of one file, in slot order.
+async fn load_snippets(db: &SqlitePool, show_id: i64, source: Source) -> Result<Vec<Snippet>> {
+    let json: Option<String> = sqlx::query_scalar(
+        "SELECT snippets_json FROM recording_snippets WHERE show_id = ? AND source = ?",
+    )
+    .bind(show_id)
+    .bind(source.as_str())
+    .fetch_optional(db)
+    .await?;
+    let mut snippets: Vec<Snippet> = match json {
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|e| AppError::Internal(format!("Stored snippets are broken: {e}")))?,
+        None => Vec::new(),
+    };
+    snippets.sort_by_key(|s| s.slot);
+    Ok(snippets)
+}
+
 async fn load_row(db: &SqlitePool, show_id: i64, source: Source) -> Result<Option<EditRow>> {
     Ok(
         sqlx::query_as("SELECT * FROM recording_edits WHERE show_id = ? AND source = ?")
@@ -418,6 +444,8 @@ pub struct EditView {
     filename: Option<String>,
     source: Option<SourceView>,
     edit: Option<RecordingEdit>,
+    /// The snippets for the post-announcement, in slot order.
+    snippets: Vec<Snippet>,
     /// `none` | `draft` | `rendering` | `done` | `failed`
     pub(crate) status: String,
     error: Option<String>,
@@ -437,6 +465,7 @@ pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView
     let (file, source) = picked_file(state, show).await?;
     let filename = source.as_ref().map(|s| s.filename.clone());
     let row = load_row(&state.db, show.id, file).await?;
+    let snippets = load_snippets(&state.db, show.id, file).await?;
     let edit = row
         .as_ref()
         .and_then(|r| serde_json::from_str(&r.edit_json).ok());
@@ -450,6 +479,7 @@ pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView
             filename,
             source,
             edit,
+            snippets,
             status: "none".to_string(),
             error: None,
             edited_url: None,
@@ -473,6 +503,7 @@ pub async fn view(state: &Arc<AppState>, show: &models::Show) -> Result<EditView
         filename,
         source: Some(source_view(state, source).await?),
         edit,
+        snippets,
         status,
         error: row.error_message.clone(),
         edited_url,
@@ -581,6 +612,45 @@ pub async fn api_put_recording_edit(
             "The edit is rendering; wait until it is done".to_string(),
         ));
     }
+    Ok(Json(view(&state, &show).await?).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SnippetsBody {
+    snippets: Vec<Snippet>,
+}
+
+/// `PUT /api/shows/:id/recording/snippets` — save the snippets of the picked
+/// file. Leaves the edit and its rendered file as they are.
+pub async fn api_put_recording_snippets(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response> {
+    let (_user, show) = require_show_editor(&state, &headers, id).await?;
+    let (picked, source) = picked_file(&state, &show).await?;
+    let source = source.ok_or_else(no_recording)?;
+    let body: SnippetsBody = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(e) => return Ok(invalid(vec![format!("Invalid snippets JSON: {e}")])),
+    };
+    let problems = validate_snippets(&body.snippets, source.duration());
+    if !problems.is_empty() {
+        return Ok(invalid(problems));
+    }
+    let json = serde_json::to_string(&body.snippets)
+        .map_err(|e| AppError::Internal(format!("Failed to encode the snippets: {e}")))?;
+    sqlx::query(
+        "INSERT INTO recording_snippets (show_id, source, snippets_json) VALUES (?, ?, ?) \
+         ON CONFLICT(show_id, source) DO UPDATE SET snippets_json = excluded.snippets_json, \
+             updated_at = datetime('now')",
+    )
+    .bind(id)
+    .bind(picked.as_str())
+    .bind(&json)
+    .execute(&state.db)
+    .await?;
     Ok(Json(view(&state, &show).await?).into_response())
 }
 
@@ -812,60 +882,76 @@ async fn render(
 // Snippet clips for the post-announcement
 // ============================================================================
 
-/// The audio filter of one snippet clip: the edit's volume and sections, cut
-/// to the snippet, with the fades and limiter of the render.
-pub fn snippet_filter(edit: &RecordingEdit, snippet: &Snippet) -> String {
+/// The audio filter of one snippet clip: the edit's volume and sections (when
+/// there is an edit), cut to the snippet, with the fades and limiter of the render.
+pub fn snippet_filter(edit: Option<&RecordingEdit>, snippet: &Snippet) -> String {
     render_filter(&RecordingEdit {
         start: snippet.start,
         end: snippet.start + snippet.length,
-        gain_db: edit.gain_db,
-        sections: edit.sections.clone(),
-        snippets: vec![],
+        gain_db: edit.map_or(0.0, |e| e.gain_db),
+        sections: edit.map(|e| e.sections.clone()).unwrap_or_default(),
     })
 }
 
-/// The picked file and its edit, with the snippets in slot order. `None` when
-/// the file is missing or has no snippets.
+/// What the post-announcement's video slides are made from.
+#[derive(Debug)]
+pub struct PostSnippets {
+    pub source: RecordingSource,
+    /// The picked file's edit, for its volume.
+    pub edit: Option<RecordingEdit>,
+    /// In slot order, never empty.
+    pub snippets: Vec<Snippet>,
+}
+
+/// The picked file's snippets. `None` when the file is missing or has none.
 pub async fn post_snippets(
     state: &Arc<AppState>,
     show: &models::Show,
-) -> Result<Option<(RecordingSource, RecordingEdit)>> {
+) -> Result<Option<PostSnippets>> {
     let (file, Some(source)) = picked_file(state, show).await? else {
         return Ok(None);
     };
-    let Some(row) = load_row(&state.db, show.id, file).await? else {
+    let snippets = load_snippets(&state.db, show.id, file).await?;
+    if snippets.is_empty() {
         return Ok(None);
+    }
+    let edit = match load_row(&state.db, show.id, file).await? {
+        Some(row) => Some(
+            serde_json::from_str(&row.edit_json)
+                .map_err(|e| AppError::Internal(format!("Stored recording edit is broken: {e}")))?,
+        ),
+        None => None,
     };
-    let mut edit: RecordingEdit = serde_json::from_str(&row.edit_json)
-        .map_err(|e| AppError::Internal(format!("Stored recording edit is broken: {e}")))?;
-    edit.snippets.sort_by_key(|s| s.slot);
-    Ok((!edit.snippets.is_empty()).then_some((source, edit)))
+    Ok(Some(PostSnippets {
+        source,
+        edit,
+        snippets,
+    }))
 }
 
-/// Render one MP4 per snippet of `edit` (see [`crate::video::snippet_video`])
-/// on `post_jpeg`, upload them next to the post image and return their
-/// presigned URLs in slot order.
+/// Render one MP4 per snippet (see [`crate::video::snippet_video`]) on
+/// `post_jpeg`, upload them next to the post image and return their presigned
+/// URLs in slot order.
 pub async fn snippet_clips(
     state: &Arc<AppState>,
     show_id: i64,
-    source: &RecordingSource,
-    edit: &RecordingEdit,
+    post: &PostSnippets,
     post_jpeg: &[u8],
 ) -> Result<Vec<String>> {
     let dir = job_dir("snippet_clips").await?;
     let result = async {
-        let audio = download_source(state, source, &dir).await?;
+        let audio = download_source(state, &post.source, &dir).await?;
         let image = dir.join("post.jpg");
         tokio::fs::write(&image, post_jpeg)
             .await
             .map_err(|e| AppError::Internal(format!("Failed to write the post image: {e}")))?;
         let mut urls = Vec::new();
-        for s in &edit.snippets {
+        for s in &post.snippets {
             let output = dir.join(format!("snippet-{}.mp4", s.slot));
             crate::video::snippet_video(
                 &image,
                 &audio,
-                &snippet_filter(edit, s),
+                &snippet_filter(post.edit.as_ref(), s),
                 s.length,
                 &output,
             )

@@ -14,7 +14,6 @@ fn edit(start: f64, end: f64, gain_db: f64) -> RecordingEdit {
         end,
         gain_db,
         sections: vec![],
-        snippets: vec![],
     }
 }
 
@@ -68,7 +67,6 @@ fn a_full_edit_is_valid() {
         section("a", 1800.0, 2100.0, 6.0),
         section("b", 2100.0, 2100.6, -12.0),
     ];
-    e.snippets = vec![snippet(1, 2712.0, 30.0), snippet(3, 6800.4, 30.0)];
     assert_eq!(validate(&e, Some(6830.4)), Vec::<String>::new());
     // The stored duration may be a little short of the decoded file.
     assert_eq!(validate(&e, Some(6830.0)), Vec::<String>::new());
@@ -124,30 +122,40 @@ fn validation_names_every_broken_rule() {
         .map(|i| section(&i.to_string(), 10.0 + i as f64, 10.8 + i as f64, 0.0))
         .collect();
     assert_eq!(problems(&e, None), ["At most 20 volume sections"]);
+}
 
-    e.sections = vec![];
-    e.snippets = vec![
-        snippet(1, 20.0, 10.0),
-        snippet(1, 30.0, 10.0),
-        snippet(4, 40.0, 4.0),
-        snippet(2, 80.0, 30.0),
-    ];
+#[test]
+fn snippet_validation_names_every_broken_rule() {
+    let ok = [snippet(1, 0.0, 30.0), snippet(3, 6800.4, 30.0)];
+    assert_eq!(validate_snippets(&ok, Some(6830.4)), Vec::<String>::new());
+    // The stored duration may be a little short of the decoded file.
+    assert_eq!(validate_snippets(&ok, Some(6830.0)), Vec::<String>::new());
+    assert_eq!(validate_snippets(&ok, None), Vec::<String>::new());
+    assert_eq!(validate_snippets(&[], Some(10.0)), Vec::<String>::new());
+
     assert_eq!(
-        problems(&e, None),
+        validate_snippets(
+            &[
+                snippet(1, 20.0, 10.0),
+                snippet(1, 30.0, 10.0),
+                snippet(4, 40.0, 4.0),
+                snippet(2, 80.0, 30.0),
+            ],
+            Some(100.0)
+        ),
         [
             "At most 3 snippets",
             "Snippet slot 1 is used twice",
             "Snippet slot 4 must be 1, 2 or 3",
             "Snippet 4 must be 5 to 30 s long",
-            "Snippet 2 must lie inside the edit",
+            "Snippet 2 must lie inside the recording",
         ]
     );
-    e.snippets = vec![snippet(1, 5.0, 31.0)];
     assert_eq!(
-        problems(&e, None),
+        validate_snippets(&[snippet(1, -1.0, 31.0)], None),
         [
             "Snippet 1 must be 5 to 30 s long",
-            "Snippet 1 must lie inside the edit"
+            "Snippet 1 must lie inside the recording"
         ]
     );
 }
@@ -155,8 +163,7 @@ fn validation_names_every_broken_rule() {
 #[test]
 fn the_edit_json_is_camel_case() {
     let json = r#"{"start":369.6,"end":6830.4,"gainDb":2.5,
-        "sections":[{"id":"a","start":1800.0,"end":2100.0,"gainDb":6.0}],
-        "snippets":[{"slot":1,"start":2712.0,"length":30.0}]}"#;
+        "sections":[{"id":"a","start":1800.0,"end":2100.0,"gainDb":6.0}]}"#;
     let parsed: RecordingEdit = serde_json::from_str(json).unwrap();
     assert_eq!(parsed.sections[0].gain_db, 6.0);
     let back: Value = serde_json::to_value(&parsed).unwrap();
@@ -282,6 +289,19 @@ async fn put_edit(s: &Setup, body: &str) -> (StatusCode, Value) {
     .await
 }
 
+async fn put_snippets(s: &Setup, body: &str) -> (StatusCode, Value) {
+    reply(
+        api_put_recording_snippets(
+            State(s.state.clone()),
+            Path(s.id),
+            s.headers.clone(),
+            Bytes::from(body.to_string()),
+        )
+        .await,
+    )
+    .await
+}
+
 async fn apply(s: &Setup) -> (StatusCode, Value) {
     reply(api_apply_recording_edit(State(s.state.clone()), Path(s.id), s.headers.clone()).await)
         .await
@@ -330,8 +350,7 @@ async fn show(s: &Setup) -> models::Show {
 }
 
 const EDIT: &str = r#"{"start":2.0,"end":14.0,"gainDb":2.5,
-    "sections":[{"id":"a","start":5.0,"end":8.0,"gainDb":6.0}],
-    "snippets":[{"slot":1,"start":3.0,"length":5.0}]}"#;
+    "sections":[{"id":"a","start":5.0,"end":8.0,"gainDb":6.0}]}"#;
 
 #[tokio::test]
 async fn edit_round_trip_and_bad_input() {
@@ -341,7 +360,7 @@ async fn edit_round_trip_and_bad_input() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         view,
-        json!({"file": "show", "filename": null, "source": null, "edit": null,
+        json!({"file": "show", "filename": null, "source": null, "edit": null, "snippets": [],
                "status": "none", "error": null, "edited_url": null, "rendered_at": null})
     );
     assert_eq!(put_edit(&s, EDIT).await.0, StatusCode::NOT_FOUND);
@@ -380,8 +399,6 @@ async fn edit_round_trip_and_bad_input() {
             "start must be before end",
             "The edit must be at least 2.5 s long",
             "gainDb must be between -12 and 12",
-            "Snippet slot 4 must be 1, 2 or 3",
-            "Snippet 4 must lie inside the edit",
         ])
     );
     assert!(bad["error"]
@@ -404,6 +421,83 @@ async fn edit_round_trip_and_bad_input() {
     let other = add_user(&s.state, "other", "host").await;
     let other_headers = headers(&s.state, other).await;
     let result = api_get_recording_edit(State(s.state.clone()), Path(s.id), other_headers).await;
+    assert_eq!(reply(result).await.0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn snippets_save_without_touching_the_edit() {
+    let s = setup().await;
+    let body = r#"{"snippets":[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":6.0}]}"#;
+    assert_eq!(put_snippets(&s, body).await.0, StatusCode::NOT_FOUND);
+
+    add_finalized(&s, "v1", "recordings/1/final.mp3", 20).await;
+    let (status, view) = put_snippets(&s, body).await;
+    assert_eq!(status, StatusCode::OK);
+    // In slot order; no edit and no edit status from snippets alone.
+    assert_eq!(
+        view["snippets"],
+        json!([{"slot": 1, "start": 2.0, "length": 6.0}, {"slot": 2, "start": 12.0, "length": 5.0}])
+    );
+    assert_eq!(
+        (&view["edit"], &view["status"]),
+        (&Value::Null, &json!("none"))
+    );
+    assert_eq!(get_edit(&s).await.1, view);
+
+    // An applied edit stays applied: snippets do not change the file.
+    assert_eq!(put_edit(&s, EDIT).await.0, StatusCode::OK);
+    set_status(&s, "done").await;
+    let (status, view) = put_snippets(&s, r#"{"snippets":[]}"#).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["snippets"], json!([]));
+    assert_eq!(view["edit"], serde_json::from_str::<Value>(EDIT).unwrap());
+    let status: String = sqlx::query_scalar("SELECT status FROM recording_edits WHERE show_id = ?")
+        .bind(s.id)
+        .fetch_one(&s.state.db)
+        .await
+        .unwrap();
+    assert_eq!(status, "done");
+    // Saving the edit keeps the snippets; snippets in its body are ignored.
+    put_snippets(&s, body).await;
+    let with_snippets =
+        r#"{"start":2,"end":14,"gainDb":0,"snippets":[{"slot":3,"start":1,"length":5}]}"#;
+    let (status, view) = put_edit(&s, with_snippets).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["snippets"].as_array().unwrap().len(), 2);
+
+    // Bad input names every problem and changes nothing.
+    let (status, bad) =
+        put_snippets(&s, r#"{"snippets":[{"slot":4,"start":18,"length":4}]}"#).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        bad["problems"],
+        json!([
+            "Snippet slot 4 must be 1, 2 or 3",
+            "Snippet 4 must be 5 to 30 s long",
+            "Snippet 4 must lie inside the recording",
+        ])
+    );
+    let (status, bad) = put_snippets(&s, "[]").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(bad["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Invalid snippets JSON"));
+    assert_eq!(
+        get_edit(&s).await.1["snippets"].as_array().unwrap().len(),
+        2
+    );
+
+    // Another host may not change them.
+    let other = add_user(&s.state, "other", "host").await;
+    let other_headers = headers(&s.state, other).await;
+    let result = api_put_recording_snippets(
+        State(s.state.clone()),
+        Path(s.id),
+        other_headers,
+        Bytes::from(body.to_string()),
+    )
+    .await;
     assert_eq!(reply(result).await.0, StatusCode::FORBIDDEN);
 }
 
@@ -719,7 +813,7 @@ async fn the_host_picks_one_of_two_files_and_each_keeps_its_edit() {
         )
     );
     // Its length is not known, so 30 s is fine.
-    let own_edit = r#"{"start":1.0,"end":30.0,"gainDb":-2.0,"sections":[],"snippets":[]}"#;
+    let own_edit = r#"{"start":1.0,"end":30.0,"gainDb":-2.0,"sections":[]}"#;
     assert_eq!(put_edit(&s, own_edit).await.0, StatusCode::OK);
     assert_eq!(
         upload(&s).await,
@@ -981,6 +1075,48 @@ async fn an_old_edits_table_gets_the_file_of_each_edit() {
         .unwrap();
 }
 
+/// Snippets saved inside an edit (before they had their own table) are copied
+/// once; snippets saved since are kept.
+#[tokio::test]
+async fn snippets_from_old_edits_are_copied_once() {
+    let s = setup().await;
+    sqlx::query(
+        "INSERT INTO recording_edits (show_id, source, edit_json) VALUES \
+         (?, 'show', '{\"start\":0,\"end\":9,\"gainDb\":0,\"snippets\":[{\"slot\":1,\"start\":2.0,\"length\":5.0}]}'), \
+         (?, 'own', '{\"start\":0,\"end\":9,\"gainDb\":0,\"snippets\":[]}')",
+    )
+    .bind(s.id)
+    .bind(s.id)
+    .execute(&s.state.db)
+    .await
+    .unwrap();
+    crate::db::run_migrations(&s.state.db).await.unwrap();
+    assert_eq!(
+        load_snippets(&s.state.db, s.id, Source::Show)
+            .await
+            .unwrap(),
+        [snippet(1, 2.0, 5.0)]
+    );
+    assert_eq!(
+        load_snippets(&s.state.db, s.id, Source::Own).await.unwrap(),
+        []
+    );
+
+    // The host removes the snippet: a later start does not bring it back.
+    sqlx::query("UPDATE recording_snippets SET snippets_json = '[]' WHERE show_id = ?")
+        .bind(s.id)
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+    crate::db::run_migrations(&s.state.db).await.unwrap();
+    assert_eq!(
+        load_snippets(&s.state.db, s.id, Source::Show)
+            .await
+            .unwrap(),
+        []
+    );
+}
+
 #[test]
 fn source_names() {
     for source in [Source::Show, Source::Own] {
@@ -999,14 +1135,18 @@ fn source_names() {
 fn a_snippet_clip_has_the_volume_of_the_edit() {
     let mut e = edit(10.0, 100.0, -2.0);
     e.sections = vec![section("a", 40.0, 60.0, 6.0)];
-    e.snippets = vec![snippet(1, 45.0, 10.0)];
-    let f = snippet_filter(&e, &e.snippets[0]);
+    let f = snippet_filter(Some(&e), &snippet(1, 45.0, 10.0));
     assert!(f.starts_with("atrim=start=45.000:end=55.000,asetpts=PTS-STARTPTS,volume=-2dB,"));
     // The section counts from the snippet start: it began 5 s before it.
     assert!(f.contains("clip(min(t--5.000\\,15.000-t)"), "{f}");
     assert!(
         f.ends_with("afade=t=out:st=8.000:d=2,alimiter=limit=0.97:level=0"),
         "{f}"
+    );
+    // Without an edit: the original volume, also where an edit would cut.
+    assert_eq!(
+        snippet_filter(None, &snippet(1, 5.0, 10.0)),
+        render_filter(&edit(5.0, 15.0, 0.0))
     );
 }
 
@@ -1045,19 +1185,27 @@ async fn the_snippets_of_the_picked_file_become_clips_in_slot_order() {
             .await
             .unwrap()
             .is_none(),
-        "no edit"
+        "no snippets"
     );
-    let body = r#"{"start":1.0,"end":19.0,"gainDb":0.0,"sections":[],
-        "snippets":[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":6.0}]}"#;
-    assert_eq!(put_edit(&s, body).await.0, StatusCode::OK);
+    let body = r#"{"snippets":[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":6.0}]}"#;
+    assert_eq!(put_snippets(&s, body).await.0, StatusCode::OK);
 
-    let (source, e) = post_snippets(&s.state, &show(&s).await)
+    // Snippets need no edit: the clips then have the original volume.
+    let post = post_snippets(&s.state, &show(&s).await)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(source.key, "recordings/1/final.mp3");
-    let slots: Vec<i64> = e.snippets.iter().map(|x| x.slot).collect();
+    assert_eq!(post.source.key, "recordings/1/final.mp3");
+    assert_eq!(post.edit, None);
+    let slots: Vec<i64> = post.snippets.iter().map(|x| x.slot).collect();
     assert_eq!(slots, [1, 2]);
+
+    assert_eq!(put_edit(&s, EDIT).await.0, StatusCode::OK);
+    let post = post_snippets(&s.state, &show(&s).await)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(post.edit.as_ref().map(|e| e.gain_db), Some(2.5));
 
     let mut jpeg = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
@@ -1067,7 +1215,7 @@ async fn the_snippets_of_the_picked_file_become_clips_in_slot_order() {
     ))
     .write_to(&mut jpeg, image::ImageFormat::Jpeg)
     .unwrap();
-    let urls = snippet_clips(&s.state, s.id, &source, &e, jpeg.get_ref())
+    let urls = snippet_clips(&s.state, s.id, &post, jpeg.get_ref())
         .await
         .unwrap();
     assert_eq!(urls.len(), 2);

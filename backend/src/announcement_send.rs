@@ -266,15 +266,14 @@ async fn publish(
     let collaborators = announcements::collaborators_of(row, handle.as_deref());
     let tags = announcements::handles(&row.user_tags);
     if kind == AnnouncementKind::Post {
-        // The snippets placed in Edit recording go out as video slides.
+        // The snippets placed for the post go out as video slides.
         let carousel = async {
-            let Some((source, edit)) = recording_edit::post_snippets(state, &show).await? else {
+            let Some(snippets) = recording_edit::post_snippets(state, &show).await? else {
                 return Ok(None);
             };
             // Before the render, so a used-up quota costs no clips.
             client.ensure_quota_available().await?;
-            let clips =
-                recording_edit::snippet_clips(state, show.id, &source, &edit, &jpeg).await?;
+            let clips = recording_edit::snippet_clips(state, show.id, &snippets, &jpeg).await?;
             client
                 .prepare_feed_carousel(
                     &url,

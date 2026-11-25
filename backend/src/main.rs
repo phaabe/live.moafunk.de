@@ -809,10 +809,14 @@ async fn main() -> anyhow::Result<()> {
             "/api/shows/:id/recording",
             axum::routing::delete(handlers::api::api_delete_show_recording),
         )
-        // Recording editor: cut, volume and snippets; renders a new mp3
+        // Recording editor: cut and volume; renders a new mp3
         .route(
             "/api/shows/:id/recording/edit",
             get(recording_edit::api_get_recording_edit).put(recording_edit::api_put_recording_edit),
+        )
+        .route(
+            "/api/shows/:id/recording/snippets",
+            axum::routing::put(recording_edit::api_put_recording_snippets),
         )
         .route(
             "/api/shows/:id/recording/edit/apply",
