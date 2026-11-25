@@ -437,6 +437,31 @@ staging unhold >/dev/null
 : >"$CALLS"
 expect_ok "e2e-restart-liquidsoap" ci e2e-restart-liquidsoap
 if grep -q "restart liquidsoap" "$CALLS"; then pass "it restarts only Liquidsoap"; else fail "it restarts only Liquidsoap: $(cat "$CALLS")"; fi
+# Stub: the API answers /health and Icecast lists both mounts.
+mkdir -p "$TMP/bin-up"
+cat >"$TMP/bin-up/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl ${*: -1}" >>"$CALLS"
+[[ "${*: -1}" != */status-json.xsl ]] || echo '{"source":[{"listenurl":"http://x/live.mp3"},{"listenurl":"http://x/test.mp3"}]}'
+EOF
+chmod +x "$TMP/bin-up/curl"
+ci_up() { # a CI request while the containers come back
+  PATH="$TMP/bin-up:$PATH" ci "$1"
+}
+: >"$CALLS"
+expect_ok "e2e-restart-api" ci_up e2e-restart-api
+if [[ "$(cat "$CALLS")" == *"restart api"$'\n'"curl http://127.0.0.1:8000/health" ]]; then
+  pass "it restarts only the API, then waits for /health"
+else
+  fail "it restarts only the API, then waits for /health: $(cat "$CALLS")"
+fi
+: >"$CALLS"
+expect_ok "e2e-restart-icecast" ci_up e2e-restart-icecast
+if [[ "$(cat "$CALLS")" == *"restart icecast"$'\n'"curl http://127.0.0.1:8010/status-json.xsl" ]]; then
+  pass "it restarts only Icecast, then waits for both mounts"
+else
+  fail "it restarts only Icecast, then waits for both mounts: $(cat "$CALLS")"
+fi
 cut() { # e2e-cut, called from 203.0.113.7
   SSH_CLIENT="203.0.113.7 51000 22" SSH_ORIGINAL_COMMAND="e2e-cut $1" staging ci-deploy
 }

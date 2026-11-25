@@ -102,6 +102,8 @@ For the test, the CI key may also run, on the box:
 | `e2e-hold <run>` | holds staging, unless it is on hold already |
 | `e2e-unhold <run>` | removes the hold, only if this run set it |
 | `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
+| `e2e-restart-api` | restarts the API container, returns once `/health` answers |
+| `e2e-restart-icecast` | restarts the Icecast container, returns once both mounts are back |
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
 | `e2e-cleanup` | deletes the `e2e-…` Shows of `e2e-host` (and of `staging-host`, from older runs) that have no episodes left (no API route deletes a Show) |
