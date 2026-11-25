@@ -20,6 +20,10 @@
 // - MOCK_EPISODE=after (with MOCK_RECORDING, best a 30 min file): episode 1
 //   ended yesterday, its recording edited and private on SoundCloud, for the
 //   Recording tab (/admin/#/shows/1). Picking the file and Private / Public work.
+// - MOCK_EPISODE=soon: episode 1 is in 5 days at 19:00, for the Social media
+//   tiles and Book a time (#1091). Announcements live in memory: set up, book
+//   a time (pre: 7 days before, post: 14 days after; every third day is full)
+//   and cancel work.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -86,7 +90,48 @@ function show() {
     studio_log: studioLog,
     listener_samples: [],
     ...(AFTER ? after(berlin(new Date(Date.now() - 86_400_000))[0]) : {}),
+    ...(SOON
+      ? { date: berlin(new Date(Date.now() + 5 * 86_400_000))[0], start_time: '19:00', end_time: '21:00' }
+      : {}),
   };
+}
+
+// ---- Social media (#1091): announcements in memory ----
+const SOON = process.env.MOCK_EPISODE === 'soon';
+let announcements = [];
+
+/** 12:00 and 18:00 Berlin (UTC+1 in winter, rough) in the slot's window; every third day full. */
+function feedTimes(slot) {
+  const { date, start_time } = show();
+  const start = new Date(`${date}T${start_time}:00+01:00`);
+  const out = [];
+  for (let d = -8; d <= 15; d++) {
+    const day = new Date(start.getTime() + d * 86_400_000).toISOString().slice(0, 10);
+    for (const hh of ['11', '17']) {
+      const at = new Date(`${day}T${hh}:00:00Z`);
+      const before = at < start && at > new Date(start.getTime() - 7 * 86_400_000);
+      const after = at > start && at <= new Date(start.getTime() + 14 * 86_400_000);
+      if (at <= new Date() || !(slot === 'pre' ? before : after)) continue;
+      const full = Math.abs(d) % 3 === 1;
+      out.push({ scheduled_at: at.toISOString().replace('.000', ''), free: !full, reason: full ? 'Full' : null });
+    }
+  }
+  const pick = out.filter((t) => t.free)[slot === 'pre' ? 2 : 3] ?? out.find((t) => t.free);
+  if (pick) pick.default = true;
+  return out;
+}
+
+function announcement(slot, fields) {
+  const old = announcements.find((a) => a.slot === slot) ?? {};
+  const row = {
+    id: { pre: 1, onair: 2, post: 3 }[slot], show_id: 1, slot, channel: 'instagram',
+    state: 'draft', scheduled_at: null, requested_at: null, headline: '', caption: '',
+    image_source: 'cover', image_key: null, layout: 'band', collaborator: true,
+    extra_collaborators: [], user_tags: [], sent_at: null, permalink: null, error: null,
+    send_now: false, updated_at: new Date().toISOString(), ...old, ...fields,
+  };
+  announcements = [...announcements.filter((a) => a.slot !== slot), row];
+  return row;
 }
 
 /** The same episode the day after: recording edited, private on SoundCloud (#1082). */
@@ -117,14 +162,16 @@ const routes = {
   'GET /api/auth/me': () => user,
   'GET /api/my-show': () =>
     user.id === HOST_ID ? { assigned: true, shows: [show()] } : { assigned: false, shows: [] },
-  'GET /api/shows/1/announcements/status': () => [],
+  'GET /api/shows/1/announcements/status': () => announcements.filter((a) => a.state !== 'draft'),
   'GET /api/shows/1': () => show(),
-  'GET /api/shows/1/announcements': () => [],
+  'GET /api/shows/1/announcements': () => announcements,
   'GET /api/shows/1/announcements/meta': () => ({
     paused: false,
     needs_approval: false,
+    post_now: true,
     services: { soundcloud: true, instagram: true },
   }),
+  'GET /api/series/brunchtime': () => ({ slug: 'brunchtime', name: 'Brunchtime', instagram_handle: 'brunchtime', episodes: [] }),
   'GET /api/stream/status': () => ({ active: false }),
   'GET /api/stream/metrics': () => ({ online: true, total_listeners: 0, mounts: [] }),
   'GET /api/recording/status': () => ({ is_recording: false }),
@@ -310,6 +357,38 @@ const server = createServer((req, res) => {
         .writeHead(200, { 'content-type': 'application/json' })
         .end(JSON.stringify({ success: true, track_url: soundcloud.soundcloud_url }));
     });
+    return;
+  }
+  if (path === '/api/shows/1/announcements/slots') {
+    const slot = new URL(req.url, 'http://x').searchParams.get('slot');
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(feedTimes(slot)));
+    return;
+  }
+  const booked = path.match(/^\/api\/shows\/1\/announcements\/(pre|post)\/time$/);
+  if (booked && req.method === 'PUT') {
+    readJson(req, (body) => {
+      const old = announcements.find((a) => a.slot === booked[1]);
+      const state = !old || ['draft', 'cancelled'].includes(old.state) ? 'draft'
+        : old.state === 'waiting_soundcloud' ? 'scheduled' : old.state;
+      const row = announcement(booked[1], { state, scheduled_at: body.scheduled_at, requested_at: null });
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
+    });
+    return;
+  }
+  const slotOf = path.match(/^\/api\/shows\/1\/announcements\/(pre|onair|post)$/);
+  if (slotOf && req.method === 'PUT') {
+    readJson(req, (body) => {
+      const { date, start_time } = show();
+      const at = slotOf[1] === 'onair' ? new Date(`${date}T${start_time}:00+01:00`).toISOString() : body.scheduled_at ?? null;
+      const state = slotOf[1] === 'onair' ? 'armed' : at ? 'scheduled' : 'waiting_soundcloud';
+      const row = announcement(slotOf[1], { ...body, state, scheduled_at: at, requested_at: null });
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
+    });
+    return;
+  }
+  if (slotOf && req.method === 'DELETE') {
+    const row = announcement(slotOf[1], { state: 'cancelled' });
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
     return;
   }
   if (path === '/mock/live') {
