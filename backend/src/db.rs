@@ -1230,6 +1230,8 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
 /// Admin switches for the outside services (ticket 1012).
 pub const SOUNDCLOUD_ENABLED: &str = "soundcloud_enabled";
 pub const INSTAGRAM_ENABLED: &str = "instagram_enabled";
+/// Admin switch for the Telegram live chat in On Air (ticket 1056).
+pub const TELEGRAM_LIVE_CHAT_ENABLED: &str = "telegram_live_chat_enabled";
 
 /// Whether the service switch `key` is on. Missing or unreadable means on.
 pub async fn is_service_enabled(pool: &SqlitePool, key: &str) -> bool {

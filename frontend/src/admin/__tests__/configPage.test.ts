@@ -5,18 +5,28 @@ import ConfigPage from '../pages/ConfigPage.vue';
 let app: App | undefined;
 let root: HTMLDivElement;
 let puts: unknown[];
+let botPuts: unknown[];
 let failPut: boolean;
 
 beforeEach(() => {
   puts = [];
+  botPuts = [];
   failPut = false;
   root = document.createElement('div');
   document.body.appendChild(root);
+  let bot = { enabled: true, live_chat: true };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
       const method = options?.method ?? 'GET';
-      if (url === '/api/settings/notifications') return Response.json({ enabled: true });
+      if (url === '/api/settings/notifications' && method === 'GET') return Response.json(bot);
+      if (url === '/api/settings/notifications' && method === 'PUT') {
+        const body = JSON.parse(options!.body as string);
+        botPuts.push(body);
+        if (failPut) return Response.json({ error: 'nope' }, { status: 500 });
+        bot = { ...bot, ...body };
+        return Response.json(bot);
+      }
       if (url === '/api/settings/services' && method === 'GET')
         return Response.json({ soundcloud: true, instagram: true });
       if (url === '/api/settings/services' && method === 'PUT') {
@@ -71,5 +81,27 @@ describe('Config · Connections', () => {
     await settle();
     expect(puts).toEqual([{ soundcloud: true, instagram: false }]);
     expect(box('Instagram').checked).toBe(true);
+  });
+});
+
+describe('Config · Moafunkbot', () => {
+  it('turns the live chat off and keeps technical alerts on', async () => {
+    await mount();
+    expect(box('Live chat').checked).toBe(true);
+    box('Live chat').click();
+    await settle();
+    expect(botPuts).toEqual([{ live_chat: false }]);
+    expect(box('Live chat').checked).toBe(false);
+    expect(box('Technical alerts').checked).toBe(true);
+  });
+
+  it('flips back when saving fails', async () => {
+    failPut = true;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await mount();
+    box('Technical alerts').click();
+    await settle();
+    expect(botPuts).toEqual([{ enabled: false }]);
+    expect(box('Technical alerts').checked).toBe(true);
   });
 });

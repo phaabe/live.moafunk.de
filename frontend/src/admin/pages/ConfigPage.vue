@@ -1,30 +1,32 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { settingsApi, type ServiceSettings } from '../api';
+import { settingsApi, type NotificationSettings, type ServiceSettings } from '../api';
 
-// --- Notifications ---
-const notificationsEnabled = ref(true);
-const notificationsLoading = ref(true);
+// --- Moafunkbot: one switch per Telegram integration ---
+const bot = ref<NotificationSettings>({ enabled: true, live_chat: true });
+const botLoading = ref(true);
+const BOT_SWITCHES: { key: keyof NotificationSettings; label: string }[] = [
+  { key: 'enabled', label: 'Technical alerts' },
+  { key: 'live_chat', label: 'Live chat' },
+];
 
-async function loadNotificationSettings() {
+async function loadBotSettings() {
   try {
-    const response = await settingsApi.getNotifications();
-    notificationsEnabled.value = response.enabled;
+    bot.value = await settingsApi.getNotifications();
   } catch (e) {
     console.error('Failed to load notification settings:', e);
   } finally {
-    notificationsLoading.value = false;
+    botLoading.value = false;
   }
 }
 
-async function toggleNotifications() {
-  const newValue = !notificationsEnabled.value;
-  notificationsEnabled.value = newValue;
+async function toggleBot(key: keyof NotificationSettings) {
+  const before = bot.value;
+  bot.value = { ...before, [key]: !before[key] };
   try {
-    await settingsApi.setNotifications(newValue);
+    bot.value = await settingsApi.setNotifications({ [key]: bot.value[key] });
   } catch (e) {
-    // Revert on failure
-    notificationsEnabled.value = !newValue;
+    bot.value = before;
     console.error('Failed to update notification settings:', e);
   }
 }
@@ -59,7 +61,7 @@ async function toggleService(key: keyof ServiceSettings) {
 }
 
 onMounted(() => {
-  loadNotificationSettings();
+  loadBotSettings();
   loadServices();
 });
 </script>
@@ -77,26 +79,28 @@ onMounted(() => {
           <h2 class="card-title">🤖 Moafunkbot</h2>
         </div>
         <div class="card-body">
-          <div class="notification-row">
+          <div v-for="item in BOT_SWITCHES" :key="item.key" class="notification-row service-row">
             <div class="notification-info">
-              <span class="notification-label">Telegram Notifications</span>
-              <span :class="['badge', notificationsEnabled ? 'badge-success' : 'badge-error']">
-                {{ notificationsEnabled ? 'Enabled' : 'Disabled' }}
+              <span class="notification-label">{{ item.label }}</span>
+              <span :class="['badge', bot[item.key] ? 'badge-success' : 'badge-error']">
+                {{ bot[item.key] ? 'Enabled' : 'Disabled' }}
               </span>
             </div>
-            <label class="toggle-switch" :class="{ loading: notificationsLoading }">
+            <label class="toggle-switch" :class="{ loading: botLoading }">
               <input
                 type="checkbox"
-                :checked="notificationsEnabled"
-                :disabled="notificationsLoading"
-                @change="toggleNotifications"
+                :aria-label="item.label"
+                :checked="bot[item.key]"
+                :disabled="botLoading"
+                @change="toggleBot(item.key)"
               />
               <span class="toggle-slider"></span>
             </label>
           </div>
           <p class="text-muted notification-hint">
-            Controls all bot notifications: stream alerts, artist submissions, show updates,
-            Instagram previews.
+            Technical alerts: all bot messages to the admin group (stream alerts, artist
+            submissions, show updates, Instagram previews). Live chat: listener messages in On Air
+            and host replies to the live chat group.
           </p>
         </div>
       </div>

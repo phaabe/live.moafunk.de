@@ -38,6 +38,8 @@ let mode = 'ok';
 
 const HOST_ID = 1;
 const user = { id: HOST_ID, username: 'local-host', role: 'host', has_show: true };
+/** Moafunkbot switches on the admin Config page. */
+const botSwitches = { enabled: true, live_chat: true };
 /** What the host's browser saved for the episode. */
 let studioLog = {};
 
@@ -160,6 +162,8 @@ function after(date) {
 const routes = {
   'POST /api/auth/login': () => ({ user }),
   'GET /api/auth/me': () => user,
+  'GET /api/settings/notifications': () => botSwitches,
+  'GET /api/settings/services': () => ({ soundcloud: true, instagram: true }),
   'GET /api/my-show': () =>
     user.id === HOST_ID ? { assigned: true, shows: [show()] } : { assigned: false, shows: [] },
   'GET /api/shows/1/announcements/status': () => announcements.filter((a) => a.state !== 'draft'),
@@ -404,6 +408,13 @@ const server = createServer((req, res) => {
     res.writeHead(200, headers);
     listeners.add(res);
     req.on('close', () => listeners.delete(res));
+    return;
+  }
+  if (req.method === 'PUT' && path === '/api/settings/notifications') {
+    readJson(req, (body) => {
+      Object.assign(botSwitches, body);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(botSwitches));
+    });
     return;
   }
   const route = routes[`${req.method} ${path}`];
