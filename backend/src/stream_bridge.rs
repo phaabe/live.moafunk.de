@@ -603,7 +603,12 @@ impl StreamState {
             StreamError::RecordingError(format!("Failed to create segment directory: {}", e))
         })?;
 
-        let (tx, writer, child) = spawn_recorder(&seg_dir, 0)?;
+        // A session that goes on after a restart numbers on after the
+        // segments its recording already has, so the join keeps them all.
+        let next = segment_count(&seg_dir).await.map_err(|e| {
+            StreamError::RecordingError(format!("Failed to list recording segments: {}", e))
+        })?;
+        let (tx, writer, child) = spawn_recorder(&seg_dir, next)?;
 
         tracing::info!(
             "Started crash-safe segment recording to {:?} (final artifact {:?})",

@@ -6,7 +6,8 @@
 //! tracks at their exact playback times.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::fs::File;
@@ -64,6 +65,32 @@ impl RecordingSession {
     pub async fn new(show_id: i64, temp_dir: &PathBuf) -> Result<Self, RecordingError> {
         let now = chrono::Utc::now();
         let version_timestamp = now.format("%Y-%m-%dT%H-%M-%S").to_string();
+        Self::open(show_id, version_timestamp, Instant::now(), temp_dir).await
+    }
+
+    /// Go on in `version`, which a restart cut off. Marker offsets count from
+    /// its start, as the version's timestamp says.
+    async fn resume(
+        show_id: i64,
+        version: String,
+        temp_dir: &Path,
+    ) -> Result<Self, RecordingError> {
+        let since_start = chrono::NaiveDateTime::parse_from_str(&version, "%Y-%m-%dT%H-%M-%S")
+            .ok()
+            .and_then(|start| (chrono::Utc::now() - start.and_utc()).to_std().ok())
+            .unwrap_or_default();
+        let started_at = Instant::now()
+            .checked_sub(since_start)
+            .unwrap_or_else(Instant::now);
+        Self::open(show_id, version, started_at, temp_dir).await
+    }
+
+    async fn open(
+        show_id: i64,
+        version_timestamp: String,
+        started_at: Instant,
+        temp_dir: &Path,
+    ) -> Result<Self, RecordingError> {
         let temp_file_path =
             temp_dir.join(format!("recording_{}_{}.webm", show_id, version_timestamp));
 
@@ -88,7 +115,7 @@ impl RecordingSession {
 
         Ok(Self {
             show_id,
-            started_at: Instant::now(),
+            started_at,
             version_timestamp,
             markers: Vec::new(),
             temp_file_path,
@@ -186,6 +213,12 @@ pub struct RecordingManager {
     session: Option<RecordingSession>,
     /// Directory for temporary recording files
     temp_dir: PathBuf,
+    /// Per show, the version a restart cut off a moment ago. The show's next
+    /// session goes on in it.
+    resumable: HashMap<i64, String>,
+    /// Versions a session went on in. Their own finalize saves them, never
+    /// the boot recovery.
+    resumed: HashSet<(i64, String)>,
 }
 
 impl RecordingManager {
@@ -197,7 +230,28 @@ impl RecordingManager {
         Self {
             session: None,
             temp_dir,
+            resumable: HashMap::new(),
+            resumed: HashSet::new(),
         }
+    }
+
+    /// Boot recovery found `version` of `show_id` cut off a moment ago: the
+    /// show's next session goes on in it.
+    pub fn offer_resume(&mut self, show_id: i64, version: &str) {
+        self.resumable.insert(show_id, version.to_string());
+    }
+
+    /// Boot recovery takes `version` back: the show's next session starts a
+    /// new one.
+    pub fn withdraw_resume(&mut self, show_id: i64, version: &str) {
+        if self.resumable.get(&show_id).map(String::as_str) == Some(version) {
+            self.resumable.remove(&show_id);
+        }
+    }
+
+    /// True when a session went on in `version` of `show_id`.
+    pub fn was_resumed(&self, show_id: i64, version: &str) -> bool {
+        self.resumed.contains(&(show_id, version.to_string()))
     }
 
     /// Check if a recording is currently active.
@@ -241,7 +295,8 @@ impl RecordingManager {
         }
     }
 
-    /// Start a new recording session for the given show.
+    /// Start a new recording session for the given show, or go on in the
+    /// version a restart cut off (see [`Self::offer_resume`]).
     ///
     /// If a session is already active, it will be stopped first.
     pub async fn start(&mut self, show_id: i64) -> Result<RecordingStatus, RecordingError> {
@@ -251,7 +306,18 @@ impl RecordingManager {
             self.stop().await?;
         }
 
-        let session = RecordingSession::new(show_id, &self.temp_dir).await?;
+        let session = match self.resumable.remove(&show_id) {
+            Some(version) => {
+                tracing::info!(
+                    "Show {} goes on in version {}, which a restart cut off",
+                    show_id,
+                    version
+                );
+                self.resumed.insert((show_id, version.clone()));
+                RecordingSession::resume(show_id, version, &self.temp_dir).await?
+            }
+            None => RecordingSession::new(show_id, &self.temp_dir).await?,
+        };
         let status = RecordingStatus {
             active: true,
             show_id: Some(session.show_id),
