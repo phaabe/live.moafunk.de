@@ -825,6 +825,11 @@ fn spawn_recorder(seg_dir: &Path, start_number: usize) -> Result<Recorder, Strea
             &start_number.to_string(),
             "-segment_format",
             "mpegts",
+            // Write each packet at once: a killed recorder (API restart)
+            // then leaves its current segment with the audio it got, not
+            // empty.
+            "-segment_format_options",
+            "flush_packets=1",
             "-reset_timestamps",
             "1",
         ])
@@ -1057,7 +1062,14 @@ pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(),
         .await
         .map_err(|e| StreamError::RecordingError(format!("read segment entry: {}", e)))?
     {
-        if is_segment_file(&entry.path()) {
+        // A killed recorder can leave an empty segment. The concat demuxer
+        // stops at it without an error and drops every segment after it.
+        let empty = entry
+            .metadata()
+            .await
+            .map(|m| m.len() == 0)
+            .unwrap_or(false);
+        if is_segment_file(&entry.path()) && !empty {
             segments.push(entry.path());
         }
     }
@@ -1410,6 +1422,78 @@ mod tests {
 
         let ms = crate::audio::get_duration(&out).await.unwrap();
         assert!(ms.abs_diff(20_000) < 150, "joined length is {ms} ms");
+    }
+
+    /// `secs` seconds of tone in 5 s segments, numbered from `start`, as the
+    /// recorder writes them. Needs ffmpeg.
+    async fn tone_segments(dir: &Path, secs: u32, start: usize) {
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .arg("-i")
+            .arg(format!(
+                "sine=frequency=440:sample_rate=48000:duration={secs}"
+            ))
+            .args(["-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+            .args(["-f", "segment", "-segment_time", "5"])
+            .arg("-segment_start_number")
+            .arg(start.to_string())
+            .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
+            .arg(dir.join("seg_%05d.ts"))
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+        assert!(status.success());
+    }
+
+    /// Ticket 1098: an API restart killed the recorder and left its current
+    /// segment empty. The join used to stop there without an error and drop
+    /// the audio after the restart. Needs ffmpeg.
+    #[tokio::test]
+    async fn an_empty_segment_does_not_end_the_join() {
+        let dir = tempfile::TempDir::new().unwrap();
+        tone_segments(dir.path(), 10, 0).await;
+        let next = segment_count(dir.path()).await.unwrap();
+        std::fs::write(dir.path().join(format!("seg_{next:05}.ts")), b"").unwrap();
+        tone_segments(dir.path(), 10, next + 1).await;
+        let out = dir.path().join("raw.webm");
+
+        concat_segments(dir.path(), &out).await.unwrap();
+
+        let ms = crate::audio::get_duration(&out).await.unwrap();
+        assert!(ms.abs_diff(20_000) < 300, "joined length is {ms} ms");
+    }
+
+    /// A killed recorder (an API restart) keeps the audio of its current
+    /// segment on disk. Needs ffmpeg.
+    #[tokio::test]
+    async fn a_killed_recorder_leaves_its_audio_in_the_segment() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let webm = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "sine=frequency=440:sample_rate=48000:duration=4"])
+            .args(["-ac", "2", "-c:a", "libopus", "-f", "webm", "pipe:1"])
+            .output()
+            .await
+            .expect("run ffmpeg")
+            .stdout;
+        let (tx, _writer, mut child) = spawn_recorder(dir.path(), 0).unwrap();
+        tx.send(webm).await.unwrap();
+        let segment = dir.path().join("seg_00000.ts");
+        // Less than one segment of audio: without flushing, nothing reaches
+        // the file before the segment ends.
+        let mut ms = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            ms = crate::audio::get_duration(&segment).await.unwrap_or(0);
+            if ms > 3_500 {
+                break;
+            }
+        }
+
+        child.kill().await.unwrap();
+
+        assert!(ms > 3_500, "the killed recorder left {ms} ms");
+        drop(tx);
     }
 
     #[test]
