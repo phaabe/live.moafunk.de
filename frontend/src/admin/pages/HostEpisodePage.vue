@@ -439,6 +439,7 @@ function replaceFile() {
         :recording="recording"
         :soundcloud-off="!services.soundcloud"
         :read-only="!isMine"
+        :announcements="announcements"
         @uploaded="load(false)"
         @changed="load(false)"
         @social="picked = 0"

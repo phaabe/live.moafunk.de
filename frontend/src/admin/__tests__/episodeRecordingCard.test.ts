@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import type { ShowDetail } from '../api';
+import type { SlotReading } from '../promotion';
 import { expectFlow } from '../flow/expectFlow';
 
 // The Recording tab (#1082, design option C): the player of the picked file,
@@ -99,6 +100,7 @@ async function mount(
   opts: {
     phase?: 'pre' | 'post';
     recording?: { state: 'ok' | 'processing' | 'failed'; text: string };
+    announcements?: SlotReading[];
     onChanged?: () => void;
     onSocial?: () => void;
   } = {}
@@ -117,6 +119,7 @@ async function mount(
         phase: opts.phase ?? 'post',
         state: 'now',
         recording: opts.recording ?? READY,
+        announcements: opts.announcements,
         onChanged: opts.onChanged ?? (() => {}),
         onSocial: opts.onSocial ?? (() => {}),
       }),
@@ -342,10 +345,31 @@ describe('Recording tab · Instagram', () => {
     const social = vi.fn();
     await mount({ soundcloud_public: true }, { onSocial: social });
     expect(openRows()).toEqual(['Instagram']);
-    expect(summary('Instagram')).toBe('Post-announcement can go out now');
+    expect(summary('Instagram')).toBe('Post-announcement not set up');
     await vi.waitFor(() => expect(text()).toContain('2 of 3 placed'));
     button('Go to Social media')!.click();
     expect(social).toHaveBeenCalled();
+  });
+
+  it('names the post time once the track is public: going public schedules it', async () => {
+    const post: SlotReading = {
+      slot: 'post',
+      state: 'waiting_soundcloud',
+      scheduled_at: null,
+      sent_at: null,
+    };
+    await mount({}, { announcements: [post] });
+    expect(summary('Instagram')).toBe('Post-announcement waits for a public track');
+    app!.unmount();
+    root.remove();
+    // 3 days after So 25.10., 17:00 UTC is 18:00 in Berlin.
+    const scheduled = {
+      ...post,
+      state: 'scheduled',
+      scheduled_at: '2026-10-28T17:00:00Z',
+    } as const;
+    await mount({ soundcloud_public: true }, { announcements: [scheduled] });
+    expect(summary('Instagram')).toBe('Post-announcement: Scheduled · Mi 28.10. · 18:00');
   });
 
   it('says the post goes out after the show, before it', async () => {

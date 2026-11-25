@@ -10,7 +10,7 @@ import {
   type RecordingFile,
   type ShowDetail,
 } from '../api';
-import { postTime } from '../promotion';
+import { inSlot, postTime, slotState, type SlotReading } from '../promotion';
 import { span } from './recording-editor/edit';
 import RecordingPlayer from './recording-editor/RecordingPlayer.vue';
 import EpisodeCard from './episode/EpisodeCard.vue';
@@ -38,6 +38,8 @@ const props = defineProps<{
   soundcloudOff?: boolean;
   /** Another host's episode: status and public links only. */
   readOnly?: boolean;
+  /** The episode's announcements, for the post-announcement's time. */
+  announcements?: SlotReading[];
 }>();
 const emit = defineEmits<{ uploaded: []; changed: []; social: [] }>();
 const router = useRouter();
@@ -292,9 +294,12 @@ async function setPublic(makePublic: boolean) {
 
 const igSummary = computed(() => {
   if (!post.value) return 'Goes out after the show, once the track is public';
-  return isPublic.value && link.value
-    ? 'Post-announcement can go out now'
-    : 'Post-announcement waits for a public track';
+  if (!isPublic.value || !link.value) return 'Post-announcement waits for a public track';
+  // Its time, like the Social media card: going public schedules it, it does not send it.
+  const list = props.announcements ?? [];
+  return inSlot(list, 'post')
+    ? `Post-announcement: ${slotState(list, 'post')}`
+    : 'Post-announcement not set up';
 });
 const snippetLine = computed(() => {
   if (!hasFile.value) return 'Its short clips are the snippets you place in Edit recording.';
@@ -606,7 +611,7 @@ async function publish() {
             <p class="rec-help">
               {{
                 isPublic
-                  ? 'Everyone can listen. The Instagram post can go out.'
+                  ? 'Everyone can listen. The post-announcement goes out at its time.'
                   : 'Only people with the secret link can listen.'
               }}
             </p>
