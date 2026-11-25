@@ -280,8 +280,9 @@ pub async fn api_upload_announcement_image(
 #[derive(Debug, Default, Deserialize)]
 pub struct AnnouncementInput {
     /// RFC 3339. `pre`: defaults to `pre_days_before` days before;
-    /// `onair`: ignored (episode start); `post`: optional, without it the
-    /// post waits for the SoundCloud track (`waiting_soundcloud`).
+    /// `onair`: ignored (episode start); `post`: optional, without it or
+    /// while the track is private the post waits for the SoundCloud track
+    /// (`waiting_soundcloud`).
     /// Headline: required for pre and post.
     pub scheduled_at: Option<String>,
     pub headline: Option<String>,
@@ -427,16 +428,28 @@ pub async fn api_put_announcement(
             )));
         }
     }
-    let anchor = scheduled_at
-        .zip(start)
-        .map(|(at, start)| (at - start).num_minutes());
-
     // Check and write in one write transaction, so two saves can't both take
     // the last free slot.
     let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(row) = load(&mut tx, id, slot).await? {
         refuse_if_sent(&row)?;
     }
+    // A post for a private track gets no time: it waits, and going public
+    // sets its time. Read here, so a privacy switch can't slip in before the write.
+    let scheduled_at = match (slot, scheduled_at) {
+        (AnnouncementSlot::Post, Some(at)) => {
+            let public: bool =
+                sqlx::query_scalar("SELECT COALESCE(soundcloud_public, 0) FROM shows WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            public.then_some(at)
+        }
+        (_, at) => at,
+    };
+    let anchor = scheduled_at
+        .zip(start)
+        .map(|(at, start)| (at - start).num_minutes());
     // Per episode, also counting posts without a send time yet.
     let (in_episode,): (i64,) = sqlx::query_as(&format!(
         "SELECT COUNT(*) FROM announcements WHERE show_id = ? AND channel = ? AND slot <> ? \

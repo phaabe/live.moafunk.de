@@ -876,6 +876,7 @@ export type AnnouncementState =
   | 'pending_approval'
   | 'scheduled'
   | 'armed'
+  | 'waiting_soundcloud'
   | 'sent'
   | 'failed'
   | 'cancelled';
