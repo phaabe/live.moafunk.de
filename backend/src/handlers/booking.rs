@@ -72,23 +72,18 @@ async fn rhythm_slots(
     )
 }
 
-/// True when any show on the slot's date overlaps it (the same rule as
-/// `ensure_no_show_conflict`).
+/// True when another show overlaps the slot (the same rule as
+/// `ensure_no_show_conflict`, also across midnight).
 async fn is_taken(state: &AppState, slot: &Slot) -> Result<bool> {
-    let others: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT start_time, end_time FROM shows WHERE date = ? AND start_time IS NOT NULL",
-    )
-    .bind(&slot.date)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(others.iter().any(|(start, end)| {
-        api::time_windows_overlap(
-            &slot.start_time,
-            Some(&slot.end_time),
-            start,
-            end.as_deref(),
-        )
-    }))
+    let (Ok(day), Some(window)) = (
+        NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d"),
+        api::show_window(&slot.date, &slot.start_time, Some(&slot.end_time)),
+    ) else {
+        return Ok(false);
+    };
+    Ok(api::clashing_show(state, day, window, None)
+        .await?
+        .is_some())
 }
 
 /// GET /api/series/:slug/slots — free slots of the rhythm for the next
@@ -168,39 +163,33 @@ async fn finished_upload(
     })
 }
 
-/// A date and time for a series without a rhythm: "YYYY-MM-DD", "HH:MM",
-/// the end after the start, and the start still ahead.
+/// "Start show now" sends the current minute: a start up to this far back
+/// still counts as now.
+const NOW_GRACE_MINUTES: i64 = 5;
+
+/// A date and time to book: "YYYY-MM-DD", "HH:MM" start and end (an end at
+/// or before the start is on the next day, 15 minutes to 12 hours), and a
+/// start that is still ahead or at most `NOW_GRACE_MINUTES` back.
 fn check_free_choice(slot: &Slot, now: DateTime<Utc>) -> Result<()> {
     if NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d").is_err() {
         return Err(AppError::BadRequest("Pick a date".to_string()));
     }
-    match (
-        model::parse_hhmm(&slot.start_time),
-        model::parse_hhmm(&slot.end_time),
-    ) {
-        (Some(start), Some(end)) if start < end => {}
-        (Some(_), Some(_)) => {
-            return Err(AppError::BadRequest(
-                "The end time must be after the start time".to_string(),
-            ))
-        }
-        _ => {
-            return Err(AppError::BadRequest(
-                "Start and end time must be HH:MM".to_string(),
-            ))
-        }
+    api::check_show_times(&slot.start_time, &slot.end_time)?;
+    match scheduler::show_start_utc(&slot.date, &slot.start_time) {
+        None => Err(AppError::BadRequest(
+            "This time does not exist that day: the clocks change. Pick another time.".to_string(),
+        )),
+        Some(start) if start <= now - chrono::Duration::minutes(NOW_GRACE_MINUTES) => Err(
+            AppError::BadRequest("Pick a date and time that is still ahead".to_string()),
+        ),
+        Some(_) => Ok(()),
     }
-    if scheduler::show_start_utc(&slot.date, &slot.start_time).is_none_or(|start| start <= now) {
-        return Err(AppError::BadRequest(
-            "Pick a date and time that is still ahead".to_string(),
-        ));
-    }
-    Ok(())
 }
 
-/// POST /api/series/:slug/episodes — book a free slot as a live or a
-/// pre-recorded episode. Returns the new episode. A series with a rhythm
-/// takes one of its slots; one without takes any free date and time ahead.
+/// POST /api/series/:slug/episodes — book a free date and time as a live or
+/// a pre-recorded episode. Returns the new episode. Any free time ahead
+/// works, also for a series with a rhythm (its slots are only the preset),
+/// and also one that starts now or passes midnight.
 pub async fn api_book_episode(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -215,17 +204,8 @@ pub async fn api_book_episode(
         start_time: req.start_time,
         end_time: req.end_time,
     };
-    if series.rhythm().is_none() {
-        check_free_choice(&slot, Utc::now())?;
-    } else if !rhythm_slots(&state, &series, Utc::now())
-        .await?
-        .contains(&slot)
-    {
-        return Err(AppError::BadRequest(
-            "Pick a date and time from this show's slots".to_string(),
-        ));
-    }
-    // Someone may have taken the slot since the list was loaded: 409.
+    check_free_choice(&slot, Utc::now())?;
+    // Someone may have taken the time since the page loaded: 409.
     api::ensure_no_show_conflict(
         &state,
         &slot.date,

@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 40,
+  "rev": 41,
   "screens": [
     {
       "id": "dashboard",
@@ -797,8 +797,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
-      "hash": "a3675931",
-      "notesHash": "9f0648fb",
+      "hash": "34d7cfff",
+      "notesHash": "f8f66f9d",
       "elements": [
         {
           "k": "back",
@@ -806,17 +806,22 @@
           "to": "show"
         },
         {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
+        },
+        {
           "k": "h1",
-          "text": "Book Slot"
+          "text": "Brunchtime"
         },
         {
-          "k": "field",
-          "text": "Show",
-          "value": "Brunchtime ▾"
-        },
-        {
-          "k": "h2",
-          "text": "Mode"
+          "k": "text",
+          "text": "Every week · Sundays · 12:00–14:00"
         },
         {
           "k": "choice",
@@ -831,22 +836,532 @@
           "on": false
         },
         {
-          "k": "field",
-          "text": "Date",
-          "value": "So 25.10.2026 ▾"
+          "k": "h2",
+          "text": "Day"
         },
         {
-          "k": "field",
-          "text": "Time",
-          "value": "12:00–14:00 ▾"
+          "k": "choice",
+          "text": "Now · 22:13",
+          "to": "book-now",
+          "on": false
         },
         {
-          "k": "notice",
-          "text": "Pre-recorded shows need the file before you pick a time."
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
         },
         {
           "k": "button",
-          "text": "Book slot",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Start · So 01.11."
+        },
+        {
+          "k": "choice",
+          "text": "00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "01",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "02",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "03",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "04",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "05",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "06",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "07",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "08",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "09",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "10",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "11",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "12",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "13",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "14",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "16",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "17",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "18",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "19",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "20",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "21",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "22",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "23",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": ":15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":30",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":45",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Live · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "So 01.11. · 12:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "So 01.11. · 14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Book episode",
+          "to": "episode",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "book-now",
+      "title": "Book Slot · Now",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
+      "hash": "fe9ad71c",
+      "notesHash": "8d1938b3",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
+        },
+        {
+          "k": "h1",
+          "text": "Brunchtime"
+        },
+        {
+          "k": "text",
+          "text": "Every week · Sundays · 12:00–14:00"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": "upload",
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Day"
+        },
+        {
+          "k": "choice",
+          "text": "Now · 22:13",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": "book-slot",
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "notice",
+          "text": "Starts right away at 22:13."
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Live · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "Now · Di 27.10. · 22:13",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "Mi 28.10. · 00:13 · +1 day",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start show now",
           "to": "episode",
           "primary": true
         }
@@ -854,25 +1369,47 @@
     },
     {
       "id": "upload",
-      "title": "Upload Your Set",
+      "title": "Book Slot · Pre-recorded",
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book?mode=prerecorded",
-      "hash": "a5da7c09",
-      "notesHash": "51e1820b",
+      "hash": "ff776a95",
+      "notesHash": "4087e5ca",
       "elements": [
         {
           "k": "back",
-          "text": "Book Slot",
-          "to": "book-slot"
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
         },
         {
           "k": "h1",
-          "text": "Upload Your Set"
+          "text": "Brunchtime"
         },
         {
           "k": "text",
-          "text": "Pre-recorded episodes start with the file."
+          "text": "Every week · Sundays · 12:00–14:00"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": "book-slot",
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
         },
         {
           "k": "media",
@@ -882,21 +1419,325 @@
         {
           "k": "pill",
           "tone": "ok",
-          "text": "brunchtime-0811.mp3 · 1:58:40 · uploaded"
+          "text": "brunchtime-0111.mp3 · 1:58:40 · uploaded"
         },
         {
-          "k": "field",
-          "text": "Date",
-          "value": "So 08.11.2026 ▾"
+          "k": "h2",
+          "text": "Day"
         },
         {
-          "k": "field",
-          "text": "Time",
-          "value": "12:00–14:00 ▾"
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
         },
         {
           "k": "button",
-          "text": "Book slot",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Start · So 01.11."
+        },
+        {
+          "k": "choice",
+          "text": "00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "01",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "02",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "03",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "04",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "05",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "06",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "07",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "08",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "09",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "10",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "11",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "12",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "13",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "14",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "16",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "17",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "18",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "19",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "20",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "21",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "22",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "23",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": ":15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":30",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":45",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Pre-recorded · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "So 01.11. · 12:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "So 01.11. · 14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Book episode",
           "to": "episode-pre",
           "primary": true
         }

@@ -61,6 +61,13 @@ function endShow() {
 }
 
 /** One live episode that started a minute ago, Berlin time. */
+/** The next `n` Berlin dates from today, "YYYY-MM-DD". */
+function berlinDays(n) {
+  const day = (ms) =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Berlin' }).format(new Date(ms));
+  return Array.from({ length: n }, (_, i) => day(Date.now() + i * 86_400_000));
+}
+
 function show() {
   const berlin = (date) =>
     new Intl.DateTimeFormat('sv-SE', {
@@ -177,7 +184,41 @@ const routes = {
     post_now: true,
     services: { soundcloud: true, instagram: true },
   }),
-  'GET /api/series/brunchtime': () => ({ slug: 'brunchtime', name: 'Brunchtime', instagram_handle: 'brunchtime', episodes: [] }),
+  // Book Slot (#1118): /shows/brunchtime/book (Sundays 12:00–14:00) and
+  // /shows/night/book (no fixed rhythm). Tomorrow 21:00–23:00 is taken.
+  'GET /api/series/brunchtime': () => ({
+    id: 1,
+    slug: 'brunchtime',
+    name: 'Brunchtime',
+    description: null,
+    cover_url: null,
+    rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
+    rhythm_line: 'Sundays · 12:00–14:00',
+    instagram_handle: 'brunchtime',
+    can_edit: true,
+    episodes: [],
+  }),
+  'GET /api/series/brunchtime/slots': () => ({
+    slots: berlinDays(14)
+      .filter((d) => new Date(`${d}T12:00:00Z`).getUTCDay() === 0)
+      .map((date) => ({ date, start_time: '12:00', end_time: '14:00' })),
+  }),
+  'GET /api/series/night': () => ({
+    id: 2,
+    slug: 'night',
+    name: 'Night Shift',
+    description: null,
+    cover_url: null,
+    rhythm: null,
+    rhythm_line: null,
+    can_edit: true,
+    episodes: [],
+  }),
+  'GET /api/booked-times': () => ({
+    times: [{ date: berlinDays(2)[1], start_time: '21:00', end_time: '23:00' }],
+  }),
+  'POST /api/series/brunchtime/episodes': () => ({ id: 1 }),
+  'POST /api/series/night/episodes': () => ({ id: 1 }),
   'GET /api/stream/status': () => ({ active: false }),
   'GET /api/stream/metrics': () => ({ online: true, total_listeners: 0, mounts: [] }),
   'GET /api/recording/status': () => ({ is_recording: false }),

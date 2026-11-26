@@ -274,8 +274,10 @@ async fn create_rejects_a_missing_name_or_a_bad_rhythm() {
         with("weekday", "0"),
         with("weekday", "8"),
         with("start_time", "9:00"),
+        // Same start and end is 24 h; 11:00 is the next day, 23 h; both over 12 h.
         with("end_time", "12:00"),
         with("end_time", "11:00"),
+        with("end_time", "12:10"),
     ];
     for fields in cases {
         let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), *v)).collect();
@@ -292,6 +294,31 @@ async fn create_rejects_a_missing_name_or_a_bad_rhythm() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+/// A rhythm may pass midnight: the end is on the next day.
+#[tokio::test]
+async fn a_rhythm_may_pass_midnight() {
+    let (state, _temp) = state().await;
+    let host = add_user(&state, "host", "host").await;
+    let night = create(
+        &state,
+        host,
+        &[
+            ("name", "Night"),
+            ("repeat_rule", "weekly"),
+            ("weekday", "6"),
+            ("start_time", "23:00"),
+            ("end_time", "01:00"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(night["rhythm"]["end_time"], "01:00");
+    assert!(night["rhythm_line"]
+        .as_str()
+        .unwrap()
+        .ends_with("23:00–01:00"));
 }
 
 /// The admin ShowWizard keeps creating and listing templates as before; the

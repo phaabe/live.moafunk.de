@@ -669,6 +669,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/series/:slug/slots",
             get(handlers::booking::api_series_slots),
         )
+        .route("/api/booked-times", get(handlers::api::api_booked_times))
         .route(
             "/api/series/:slug/episodes",
             post(handlers::booking::api_book_episode),

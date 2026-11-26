@@ -7,7 +7,7 @@ use crate::series::{RepeatRule, Rhythm};
 use axum::{
     body::{to_bytes, Body},
     extract::{FromRequest, Multipart, Path, Query},
-    http::{Request, StatusCode},
+    http::{HeaderMap, Request, StatusCode},
 };
 use chrono::Datelike;
 use handlers::booking;
@@ -339,17 +339,22 @@ async fn booking_a_live_slot_creates_one_linked_episode() {
     ));
     assert_eq!(count().await, before);
 
-    // Only the rhythm's times, in the future, can be booked.
-    let mut off_rhythm = free[1].clone();
-    off_rhythm["start_time"] = json!("13:00");
+    // The past cannot be booked.
     let past = json!({"date": "2020-01-05", "start_time": "12:00", "end_time": "14:00"});
-    for slot in [off_rhythm, past] {
-        assert!(matches!(
-            book(&state, host, &slug, &slot, "live", None).await,
-            Err(AppError::BadRequest(_))
-        ));
-    }
+    assert!(matches!(
+        book(&state, host, &slug, &past, "live", None).await,
+        Err(AppError::BadRequest(_))
+    ));
     assert_eq!(count().await, before);
+
+    // The rhythm is only the preset: any free time ahead works too.
+    let mut off_rhythm = free[1].clone();
+    off_rhythm["start_time"] = json!("15:00");
+    off_rhythm["end_time"] = json!("16:30");
+    book(&state, host, &slug, &off_rhythm, "live", None)
+        .await
+        .unwrap();
+    assert_eq!(count().await, before + 1);
 }
 
 /// "No fixed rhythm": the host picks any free date and time ahead, live or
@@ -390,12 +395,14 @@ async fn a_series_without_a_rhythm_books_a_free_date_and_time() {
         book(&state, host, &slug, &free, "live", None).await,
         Err(AppError::Conflict(_))
     ));
-    // In the past, end before start, or not HH:MM: 400.
+    // In the past, shorter than 15 min, longer than 12 h (22:00 to 20:00 the
+    // next day is 22 h), or not HH:MM: 400.
     let past = json!({"date": "2020-01-05", "start_time": "20:00", "end_time": "22:00"});
-    let backwards = json!({"date": day(4), "start_time": "22:00", "end_time": "20:00"});
+    let short = json!({"date": day(4), "start_time": "20:00", "end_time": "20:10"});
+    let long = json!({"date": day(4), "start_time": "22:00", "end_time": "20:00"});
     let sloppy = json!({"date": day(4), "start_time": "8:00", "end_time": "10:00"});
     let no_date = json!({"date": "soon", "start_time": "20:00", "end_time": "22:00"});
-    for slot in [past, backwards, sloppy, no_date] {
+    for slot in [past, short, long, sloppy, no_date] {
         assert!(
             matches!(
                 book(&state, host, &slug, &slot, "live", None).await,
@@ -404,6 +411,148 @@ async fn a_series_without_a_rhythm_books_a_free_date_and_time() {
             "{slot}"
         );
     }
+}
+
+/// Today's date in Berlin plus `days`, as "YYYY-MM-DD".
+fn berlin_day(days: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::days(days))
+        .with_timezone(&chrono_tz::Europe::Berlin)
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// 23:00–01:00 ends on the next day, and clashes are found across midnight.
+#[tokio::test]
+async fn a_show_passes_midnight_and_clashes_across_it() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (_, slug) = crate::series::insert_series(&state.db, host, "Bare", None, None)
+        .await
+        .unwrap();
+    let (sat, sun) = (berlin_day(3), berlin_day(4));
+    let night = json!({"date": sat, "start_time": "23:00", "end_time": "01:00"});
+    let booked = book(&state, host, &slug, &night, "live", None)
+        .await
+        .unwrap();
+    let row: (String, String, String) =
+        sqlx::query_as("SELECT date, start_time, end_time FROM shows WHERE id = ?")
+            .bind(booked["id"].as_i64().unwrap())
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(row, (sat.clone(), "23:00".to_string(), "01:00".to_string()));
+
+    // The next day 00:30 starts inside it; 22:00–23:30 the same day ends inside it.
+    let early = json!({"date": sun, "start_time": "00:30", "end_time": "02:00"});
+    let before = json!({"date": sat, "start_time": "22:00", "end_time": "23:30"});
+    for slot in [early, before] {
+        assert!(
+            matches!(
+                book(&state, host, &slug, &slot, "live", None).await,
+                Err(AppError::Conflict(_))
+            ),
+            "{slot}"
+        );
+    }
+    // 01:00 the next day starts when it ends: free.
+    let after = json!({"date": sun, "start_time": "01:00", "end_time": "02:00"});
+    book(&state, host, &slug, &after, "live", None)
+        .await
+        .unwrap();
+}
+
+/// "Start show now" sends the current minute; ten minutes back is the past.
+#[tokio::test]
+async fn start_show_now_books_the_current_minute() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (_, slug) = crate::series::insert_series(&state.db, host, "Bare", None, None)
+        .await
+        .unwrap();
+    let at = |minutes: i64| {
+        let t = (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+            .with_timezone(&chrono_tz::Europe::Berlin);
+        (
+            t.format("%Y-%m-%d").to_string(),
+            t.format("%H:%M").to_string(),
+        )
+    };
+    let ((date, start), (_, end)) = (at(0), at(120));
+    let now = json!({"date": date, "start_time": start, "end_time": end});
+    let booked = book(&state, host, &slug, &now, "live", None).await.unwrap();
+    assert_eq!(booked["start_time"], start);
+
+    let ((date, start), (_, end)) = (at(-10), at(-5));
+    let gone = json!({"date": date, "start_time": start, "end_time": end});
+    assert!(matches!(
+        book(&state, host, &slug, &gone, "live", None).await,
+        Err(AppError::BadRequest(_))
+    ));
+}
+
+async fn booked_times(
+    state: &Arc<AppState>,
+    headers: HeaderMap,
+    from: &str,
+    to: &str,
+) -> Result<Value> {
+    let query = serde_json::from_value(json!({"from": from, "to": to})).unwrap();
+    let response =
+        handlers::api::api_booked_times(State(state.clone()), headers, Query(query)).await?;
+    Ok(json_of(response).await.1)
+}
+
+/// Book Slot marks taken times: dates and times only, from the day before `from`.
+#[tokio::test]
+async fn booked_times_list_dates_and_times_only() {
+    let (state, _temp, _r2) = booking_state().await;
+    let host = add_user(&state, "host", "host").await;
+    let (_, slug) = crate::series::insert_series(&state.db, host, "Bare", None, None)
+        .await
+        .unwrap();
+    let night = json!({"date": berlin_day(3), "start_time": "23:00", "end_time": "01:00"});
+    book(&state, host, &slug, &night, "live", None)
+        .await
+        .unwrap();
+
+    // From the next day: the overnight show still reaches in.
+    let times = booked_times(
+        &state,
+        headers(&state, host).await,
+        &berlin_day(4),
+        &berlin_day(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(times["times"], json!([night]));
+    let none = booked_times(
+        &state,
+        headers(&state, host).await,
+        &berlin_day(5),
+        &berlin_day(10),
+    )
+    .await
+    .unwrap();
+    assert_eq!(none["times"], json!([]));
+
+    // A bad or too long range: 400. Not signed in: 401.
+    for (from, to) in [
+        ("soon", "later"),
+        ("2026-12-10", "2026-12-01"),
+        ("2026-01-01", "2026-12-31"),
+    ] {
+        assert!(
+            matches!(
+                booked_times(&state, headers(&state, host).await, from, to).await,
+                Err(AppError::BadRequest(_))
+            ),
+            "{from}–{to}"
+        );
+    }
+    assert!(matches!(
+        booked_times(&state, HeaderMap::new(), &berlin_day(1), &berlin_day(2)).await,
+        Err(AppError::Unauthorized(_))
+    ));
 }
 
 #[tokio::test]

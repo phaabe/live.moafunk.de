@@ -1243,6 +1243,13 @@ export interface SeriesSlot {
   end_time: string;
 }
 
+/** A booked show's date and times, without its name (Book Slot marks them as taken). */
+export interface BookedTime {
+  date: string;
+  start_time: string;
+  end_time: string | null;
+}
+
 export interface BookedEpisode extends SeriesSlot {
   id: number;
   title: string;
@@ -1284,6 +1291,10 @@ export const seriesApi = {
 
   /** Free slots of the rhythm for the next weeks (none without a rhythm). */
   slots: (slug: string) => api.get<{ slots: SeriesSlot[] }>(`${seriesPath(slug)}/slots`),
+
+  /** Every booked show from the day before `from` to `to` ("YYYY-MM-DD"), times only. */
+  bookedTimes: (from: string, to: string) =>
+    api.get<{ times: BookedTime[] }>(`/api/booked-times?from=${from}&to=${to}`),
 
   /** Book a slot. A slot someone else took in the meantime is rejected. */
   book: (slug: string, body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string }) =>
