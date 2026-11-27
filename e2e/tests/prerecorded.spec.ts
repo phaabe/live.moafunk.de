@@ -1,6 +1,7 @@
 // An uploaded short set, booked a minute ahead, starts by itself and is
 // published.
 import { test, expect, type Page } from '@playwright/test';
+import { MIN_LENGTH } from '../../frontend/src/admin/bookSlot.ts';
 import {
   RUN,
   SET_MP3,
@@ -32,9 +33,11 @@ test.afterAll(async () => {
 });
 
 test('an uploaded set starts by itself and is published', async () => {
-  test.setTimeout(10 * 60_000);
+  test.setTimeout((MIN_LENGTH + 8) * 60_000);
   const start = nextMinute(90);
-  const end = new Date(start.getTime() + 2 * 60_000);
+  // The shortest slot Book Slot takes. The 70 s set ends long before it, but
+  // the wrap-up opens only at the slot end.
+  const end = new Date(start.getTime() + MIN_LENGTH * 60_000);
 
   await test.step('create a Show, upload a set, book it a minute ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-set`);
