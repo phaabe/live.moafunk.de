@@ -101,6 +101,14 @@ export function nextFullHour(now: { date: string; minute: number }): {
     : { date: now.date, minute };
 }
 
+/** The question before booking over an idle show (booked, but not on air for
+ * 10 min: the server marks it `take_over`); null when the pick misses them all. */
+export function takeOverOf(w: Window, idle: readonly Window[]): string | null {
+  const hit = clash(idle, w);
+  if (!hit) return null;
+  return `The show booked ${hhmm(hit[0])}–${hhmm(hit[1])} has not been on air for 10 min. Book over it? It will end at ${hhmm(w[0])}.`;
+}
+
 /** Problem with a picked window, as the overview names it; null when it can be booked. */
 export function problemOf(
   w: Window,

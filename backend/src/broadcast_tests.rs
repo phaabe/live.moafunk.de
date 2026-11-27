@@ -343,6 +343,29 @@ async fn unticked_record_streams_the_show_without_recording_it() {
     assert_eq!(recorded, Some(false));
 }
 
+/// A show on air with no listeners can't be booked over: the scheduler notes
+/// it on air from the stream itself, and it stays blocked for 10 min after
+/// End Episode.
+#[tokio::test]
+async fn a_show_on_air_without_listeners_is_never_booked_over() {
+    let (state, _temp, addr) = serve_stream_socket().await;
+    let host = add_user(&state, "host", "host").await;
+    hosted_show(&state, host).await;
+    let take_over = |now| handlers::api::can_take_over(&state, 1, "2026-09-26", "20:00", now);
+
+    let mut live = connect_producer(&state, addr, host, "show_id=1&record=false").await;
+    let seen = chrono::Utc::now();
+    handlers::api::note_on_air(&state, seen).await;
+    assert!(!take_over(seen).await.unwrap());
+
+    live.send(WsMessage::Text("stop".into())).await.unwrap();
+    close(live).await;
+    assert_eq!(handlers::series::on_air_show_id(&state).await, None);
+    let after = |minutes| seen + chrono::Duration::minutes(minutes);
+    assert!(!take_over(after(9)).await.unwrap());
+    assert!(take_over(after(11)).await.unwrap());
+}
+
 /// The record flag defaults to on: a live show is recorded as before.
 #[tokio::test]
 async fn a_live_show_is_recorded_by_default() {

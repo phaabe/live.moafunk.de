@@ -68,6 +68,19 @@ function berlinDays(n) {
   return Array.from({ length: n }, (_, i) => day(Date.now() + i * 86_400_000));
 }
 
+/** A show that started 30 min ago and runs 2 h, open to take over. */
+function idleShow() {
+  const at = (minutes) =>
+    new Date(Date.now() + minutes * 60_000).toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' });
+  const [start, end] = [at(-30), at(90)];
+  return {
+    date: start.slice(0, 10),
+    start_time: start.slice(11, 16),
+    end_time: end.slice(11, 16),
+    take_over: true,
+  };
+}
+
 function show() {
   const berlin = (date) =>
     new Intl.DateTimeFormat('sv-SE', {
@@ -215,7 +228,11 @@ const routes = {
     episodes: [],
   }),
   'GET /api/booked-times': () => ({
-    times: [{ date: berlinDays(2)[1], start_time: '21:00', end_time: '23:00' }],
+    times: [
+      { date: berlinDays(2)[1], start_time: '21:00', end_time: '23:00' },
+      // MOCK_IDLE_SHOW=1: booked 30 min ago, never on air, so Book Slot may book over it.
+      ...(process.env.MOCK_IDLE_SHOW ? [idleShow()] : []),
+    ],
   }),
   'POST /api/series/brunchtime/episodes': () => ({ id: 1 }),
   'POST /api/series/night/episodes': () => ({ id: 1 }),

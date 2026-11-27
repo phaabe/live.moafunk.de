@@ -14,6 +14,12 @@
       "port": 8000
     },
     {
+      "name": "studio-mock-idle",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["MOCK_IDLE_SHOW=1", "node", "frontend/scripts/studio-mock.mjs"],
+      "port": 8000
+    },
+    {
       "name": "frontend-studio",
       "runtimeExecutable": "env",
       "runtimeArgs": [

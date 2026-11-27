@@ -267,6 +267,34 @@ describe('Book Slot', () => {
     expect(button('Book episode').disabled).toBe(false);
   });
 
+  it('books over an idle show only after Book over it', async () => {
+    booked = [{ date: '2026-10-27', start_time: '21:30', end_time: '23:30', take_over: true }];
+    await mount('/shows/stepper/book');
+    // An idle show does not block its time.
+    expect(button('22').disabled).toBe(false);
+    await click('Now · 22:13');
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+
+    await click('Start show now');
+    expect(bookBody()).toBeUndefined();
+    expect(root.textContent).toContain(
+      'The show booked 21:30–23:30 has not been on air for 10 min. Book over it? It will end at 22:13.'
+    );
+    await click('Cancel');
+    expect(root.textContent).not.toContain('Book over it?');
+    expect(bookBody()).toBeUndefined();
+
+    await click('Start show now');
+    await click('Book over it');
+    expect(bookBody()).toEqual({
+      date: '2026-10-27',
+      start_time: '22:13',
+      end_time: '00:13',
+      mode: 'live',
+      take_over: true,
+    });
+  });
+
   it('takes typed times in Edit manually; an end before the start is the next day', async () => {
     await mount('/shows/stepper/book');
     await click('Edit manually');

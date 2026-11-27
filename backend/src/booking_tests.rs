@@ -490,6 +490,134 @@ async fn start_show_now_books_the_current_minute() {
     ));
 }
 
+/// A show booked 30 min ago that nobody brought on air: after a confirm
+/// (`take_over`) another host books over it and it ends where they start.
+/// A show on air in the last 10 min, or one that started less than 10 min
+/// ago, still blocks its time.
+#[tokio::test]
+async fn an_idle_show_is_booked_over_after_a_confirm() {
+    let (state, _temp, _r2) = booking_state().await;
+    let idle_host = add_user(&state, "idle", "host").await;
+    let host = add_user(&state, "host", "host").await;
+    let (_, slug) = crate::series::insert_series(&state.db, host, "Bare", None, None)
+        .await
+        .unwrap();
+    let at = |minutes: i64| {
+        let t = (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+            .with_timezone(&chrono_tz::Europe::Berlin);
+        (
+            t.format("%Y-%m-%d").to_string(),
+            t.format("%H:%M").to_string(),
+        )
+    };
+    let ((idle_date, idle_start), (_, idle_end)) = (at(-30), at(90));
+    let idle = sqlx::query(
+        "INSERT INTO shows (title, date, status, start_time, end_time, host_user_id) \
+         VALUES ('Idle', ?, 'scheduled', ?, ?, ?)",
+    )
+    .bind(&idle_date)
+    .bind(&idle_start)
+    .bind(&idle_end)
+    .bind(idle_host)
+    .execute(&state.db)
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    let ((date, start), (_, end)) = (at(0), at(60));
+    let now = json!({"date": date, "start_time": start, "end_time": end});
+    let take_over = |value: bool| {
+        let mut slot = now.clone();
+        slot["take_over"] = json!(value);
+        slot
+    };
+    let listed = |times: Value| times["times"][0]["take_over"].clone();
+    let (today, tomorrow) = (berlin_day(0), berlin_day(1));
+
+    // Started 10 min ago or more: idle. Less: not yet.
+    let started = crate::scheduler::show_start_utc(&idle_date, &idle_start).unwrap();
+    for (minutes, idle_now) in [(9, false), (10, true)] {
+        let then = started + chrono::Duration::minutes(minutes);
+        assert_eq!(
+            handlers::api::can_take_over(&state, idle, &idle_date, &idle_start, then)
+                .await
+                .unwrap(),
+            idle_now,
+            "{minutes} min after the start"
+        );
+    }
+
+    // Seen on air 5 min ago: it still blocks, also with the confirm.
+    let seen_on_air = |minutes_ago: i64| {
+        let at = chrono::Utc::now() - chrono::Duration::minutes(minutes_ago);
+        sqlx::query("UPDATE shows SET on_air_at = ? WHERE id = ?")
+            .bind(at.to_rfc3339())
+            .bind(idle)
+            .execute(&state.db)
+    };
+    seen_on_air(5).await.unwrap();
+    let times = booked_times(&state, headers(&state, host).await, &today, &tomorrow)
+        .await
+        .unwrap();
+    assert_eq!(listed(times), json!(false));
+    assert!(matches!(
+        book_with(&state, host, &slug, &take_over(true)).await,
+        Err(AppError::Conflict(_))
+    ));
+    // Off air for 11 min: idle again.
+    seen_on_air(11).await.unwrap();
+
+    // Idle: Book Slot sees it, but booking still needs the confirm.
+    let times = booked_times(&state, headers(&state, host).await, &today, &tomorrow)
+        .await
+        .unwrap();
+    assert_eq!(listed(times), json!(true));
+    assert!(matches!(
+        book_with(&state, host, &slug, &now).await,
+        Err(AppError::Conflict(_))
+    ));
+    let ended: Option<String> = sqlx::query_scalar("SELECT end_time FROM shows WHERE id = ?")
+        .bind(idle)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(ended.as_deref(), Some(idle_end.as_str()));
+
+    // Confirmed: booked, and the idle show now ends where the new one starts.
+    let booked = book_with(&state, host, &slug, &take_over(true))
+        .await
+        .unwrap();
+    assert_eq!(booked["start_time"], start);
+    let ended: Option<String> = sqlx::query_scalar("SELECT end_time FROM shows WHERE id = ?")
+        .bind(idle)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(ended.as_deref(), Some(start.as_str()));
+    let window = handlers::api::show_window(&idle_date, &idle_start, ended.as_deref()).unwrap();
+    let new = handlers::api::show_window(&date, &start, Some(&end)).unwrap();
+    assert!(!handlers::api::windows_overlap(window, new));
+}
+
+/// Book with the slot JSON as the request body (it may carry `take_over`).
+async fn book_with(state: &Arc<AppState>, user: i64, slug: &str, body: &Value) -> Result<Value> {
+    let request = serde_json::from_value(json!({
+        "mode": "live",
+        "date": body["date"], "start_time": body["start_time"], "end_time": body["end_time"],
+        "take_over": body.get("take_over").cloned().unwrap_or(json!(false)),
+    }))
+    .unwrap();
+    let response = booking::api_book_episode(
+        State(state.clone()),
+        Path(slug.to_string()),
+        headers(state, user).await,
+        axum::Json(request),
+    )
+    .await?;
+    let (status, body) = json_of(response).await;
+    assert_eq!(status, StatusCode::CREATED);
+    Ok(body)
+}
+
 async fn booked_times(
     state: &Arc<AppState>,
     headers: HeaderMap,
@@ -524,7 +652,9 @@ async fn booked_times_list_dates_and_times_only() {
     )
     .await
     .unwrap();
-    assert_eq!(times["times"], json!([night]));
+    let mut listed = night.clone();
+    listed["take_over"] = json!(false);
+    assert_eq!(times["times"], json!([listed]));
     let none = booked_times(
         &state,
         headers(&state, host).await,

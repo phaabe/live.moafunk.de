@@ -23,6 +23,7 @@ import {
   nextFullHour,
   parseHhmm,
   problemOf,
+  takeOverOf,
   taken,
   windowOf,
 } from '../bookSlot';
@@ -82,12 +83,25 @@ const endDate = computed(() =>
   addDays(startDate.value, Math.floor((startMinute.value + length.value) / DAY_MINUTES))
 );
 const crosses = computed(() => endDate.value !== startDate.value);
-const takenWindows = computed(() => bookedWindows(booked.value));
+const takenWindows = computed(() => bookedWindows(booked.value.filter((b) => !b.take_over)));
+/** Idle shows (booked, not on air for 10 min) don't block: Book asks first. */
+const idleWindows = computed(() => bookedWindows(booked.value.filter((b) => b.take_over)));
 
 const problem = computed(() =>
   replacing.value
     ? null
     : problemOf(span.value, nowAt.value, isNow.value, takenWindows.value, episodeDay)
+);
+const takeOver = computed(() =>
+  replacing.value || problem.value ? null : takeOverOf(span.value, idleWindows.value)
+);
+/** Book asked "Book over it?"; a pick off the idle show drops the question. */
+const confirming = ref(false);
+watch(
+  () => !!takeOver.value,
+  (on) => {
+    if (!on) confirming.value = false;
+  }
 );
 const canBook = computed(
   () => !booking.value && !uploading.value && !waitingForFile.value && !problem.value
@@ -309,6 +323,10 @@ function onDrop(event: DragEvent) {
 
 async function book() {
   if (!canBook.value) return;
+  if (takeOver.value && !confirming.value) {
+    confirming.value = true;
+    return;
+  }
   booking.value = true;
   error.value = null;
   try {
@@ -325,6 +343,7 @@ async function book() {
       end_time: hhmm(at.minute + length.value),
       mode: isUpload.value ? 'prerecorded' : 'live',
       upload_id: uploaded.value?.upload_id,
+      ...(takeOver.value ? { take_over: true } : {}),
     });
     await router.push(
       isNow.value
@@ -337,6 +356,7 @@ async function book() {
     await loadBooked().catch(() => undefined);
   } finally {
     booking.value = false;
+    confirming.value = false;
   }
 }
 </script>
@@ -614,9 +634,25 @@ async function book() {
 
         <p v-if="problem" class="field-error" role="alert">{{ problem }}</p>
         <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-        <BaseButton class="book-button" :disabled="!canBook" :loading="booking" @click="book">{{
-          isNow ? 'Start show now' : 'Book episode'
-        }}</BaseButton>
+        <div v-if="confirming && takeOver" class="take-over">
+          <p class="take-over-question" role="alert">{{ takeOver }}</p>
+          <div class="take-over-actions">
+            <BaseButton variant="secondary" :disabled="booking" @click="confirming = false"
+              >Cancel</BaseButton
+            >
+            <BaseButton :disabled="!canBook" :loading="booking" @click="book"
+              >Book over it</BaseButton
+            >
+          </div>
+        </div>
+        <BaseButton
+          v-else
+          class="book-button"
+          :disabled="!canBook"
+          :loading="booking"
+          @click="book"
+          >{{ isNow ? 'Start show now' : 'Book episode' }}</BaseButton
+        >
       </aside>
     </div>
   </div>
@@ -1194,6 +1230,25 @@ button:disabled {
 
 .book-button {
   width: 100%;
+}
+
+.take-over {
+  display: grid;
+  gap: var(--spacing-sm);
+}
+
+.take-over-question {
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+.take-over-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.take-over-actions > * {
+  flex: 1;
 }
 
 .mono {
