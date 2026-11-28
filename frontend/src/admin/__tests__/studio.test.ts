@@ -774,6 +774,15 @@ describe('On Air', () => {
     expect(mocks.capture.setInputVolume).toHaveBeenCalledWith(0.8);
   });
 
+  it('names each fader by its label, not by its value', async () => {
+    await mountOnAir();
+    const faders = [...card('Audio').querySelectorAll<HTMLLabelElement>('label.fad')];
+    expect(faders.length).toBeGreaterThan(0);
+    for (const label of faders) {
+      expect(label.control).toBe(label.querySelector('input[type="range"]'));
+    }
+  });
+
   describe('when the audio input is gone', () => {
     /** What useAudioCapture calls when the device's track ends on air. */
     const captureError = (message: string) => mocks.captureOnError!(message);

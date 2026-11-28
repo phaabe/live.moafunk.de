@@ -194,7 +194,7 @@ function onGain(event: Event) {
     <div class="faders">
       <label class="fad">
         <span class="fad-head"
-          ><span class="label">Input gain</span><output>{{ gainPct }} %</output></span
+          ><span class="label">Input gain</span><span class="fad-value">{{ gainPct }} %</span></span
         >
         <input
           v-if="!readOnly"
@@ -209,7 +209,7 @@ function onGain(event: Event) {
       <label v-if="monitor" class="fad">
         <span class="fad-head"
           ><span class="label">Monitor volume</span
-          ><output>{{ monitor.monitorVolume.value }} %</output></span
+          ><span class="fad-value">{{ monitor.monitorVolume.value }} %</span></span
         >
         <input
           v-model.number="monitor.monitorVolume.value"
@@ -459,7 +459,8 @@ function onGain(event: Event) {
   color: #a8a8bc;
 }
 
-.fad output {
+/* Not <output>: inside the <label> it would take the name instead of the slider. */
+.fad-value {
   font: 700 13px var(--font-family);
   color: #fff;
 }
