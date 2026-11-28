@@ -8,6 +8,15 @@ import { currentReplaceTarget } from '../replaceFile';
 import type { SeriesHost, ShowDetail, User } from '../api';
 import type { RecordingEdit, Snippet } from '../components/recording-editor/edit';
 import { expectFlow } from '../flow/expectFlow';
+import {
+  cropButton,
+  cropClosed,
+  cropDialog,
+  cropper,
+  loadCropImage,
+  resetCropper,
+  stubImages,
+} from './cropFakes';
 
 // jsdom does not implement font loading used by the composables barrel.
 vi.hoisted(() => {
@@ -104,6 +113,8 @@ vi.mock('../pages/flow/StudioOnAir.vue', async () => {
 vi.mock('../../pages/waveformExtractor', () => ({
   extractWaveformPeaksJson: async () => undefined,
 }));
+
+vi.mock('cropperjs', () => import('./cropFakes'));
 
 import HostEpisodePage from '../pages/HostEpisodePage.vue';
 import HostAnnouncePage from '../pages/HostAnnouncePage.vue';
@@ -2169,8 +2180,17 @@ describe('Pre-announcement composer', () => {
       photo().dispatchEvent(new Event('change'));
       await settle();
     };
-    const jpeg = (size = 1000, type = 'image/jpeg') =>
-      new File([new Uint8Array(size)], 'brunch.jpg', { type });
+    const jpeg = (size = 1000, type = 'image/jpeg', name = 'brunch.jpg') =>
+      new File([new Uint8Array(size)], name, { type });
+
+    beforeEach(() => {
+      resetCropper();
+      // jsdom has no object URLs: name them after the file.
+      URL.createObjectURL = (blob: Blob) => `blob:${(blob as File).name}`;
+      URL.revokeObjectURL = () => {};
+      // brunch.jpg already has the 4:5 shape of the post; wide.jpg needs a crop.
+      stubImages({ 'blob:brunch.jpg': [800, 1000], 'blob:wide.jpg': [1600, 900] });
+    });
 
     async function choose() {
       await open();
@@ -2204,6 +2224,33 @@ describe('Pre-announcement composer', () => {
         image_source: 'upload',
         image_key: 'shows/42/announcements/uploads/a.jpg',
       });
+    });
+
+    it('crops a photo of another shape to the 4:5 post first', async () => {
+      await choose();
+      await pick(jpeg(1000, 'image/jpeg', 'wide.jpg'));
+      expect(cropDialog()?.querySelector('.modal-title')?.textContent).toBe('Crop photo');
+      expect(cropDialog()?.textContent).toContain('Drag and zoom to pick the part to show.');
+      expect(requests.some((r) => r.url.endsWith('/uploads'))).toBe(false);
+
+      loadCropImage();
+      expect(cropper.options[0]).toMatchObject({ aspectRatio: 4 / 5 });
+      cropButton('Use crop').click();
+      await vi.waitFor(() => expect(text()).toContain('Photo uploaded.'));
+      const sent = uploaded?.get('file') as File;
+      expect(sent.name).toBe('wide.jpg');
+      expect(sent.size).toBe('cropped'.length);
+    });
+
+    it('uploads nothing when the crop is cancelled', async () => {
+      await choose();
+      await pick(jpeg(1000, 'image/jpeg', 'wide.jpg'));
+      loadCropImage();
+      cropButton('Cancel').click();
+      await cropClosed();
+      await settle();
+      expect(requests.some((r) => r.url.endsWith('/uploads'))).toBe(false);
+      expect(photo().value).toBe('');
     });
 
     it('refuses a file that is not a JPEG or PNG', async () => {

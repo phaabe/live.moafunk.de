@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
+import ImageCropDialog from './ImageCropDialog.vue';
 
 // "Show cover · drop an image": click or drop an image. Shows the new image,
-// else the current cover.
+// else the current cover. An image that is not square opens "Crop cover"
+// first, so the cover is always square.
 
 const file = defineModel<File | null>({ required: true });
 const props = withDefaults(defineProps<{ currentUrl?: string | null; size?: number }>(), {
@@ -11,6 +13,7 @@ const props = withDefaults(defineProps<{ currentUrl?: string | null; size?: numb
 });
 
 const input = ref<HTMLInputElement | null>(null);
+const cropDialog = ref<InstanceType<typeof ImageCropDialog> | null>(null);
 const dragging = ref(false);
 const preview = ref<string | null>(null);
 
@@ -24,13 +27,26 @@ onUnmounted(() => {
 
 const shown = computed(() => preview.value ?? props.currentUrl ?? null);
 
-function take(next: File | null | undefined) {
-  file.value = next && next.type.startsWith('image/') ? next : null;
+async function take(next: File | null | undefined) {
+  if (!next || !next.type.startsWith('image/')) {
+    file.value = null;
+    return;
+  }
+  // Cancel keeps the cover as it was.
+  const picked = await cropDialog.value?.crop(next);
+  if (picked) file.value = picked;
+}
+
+function onPick(event: Event) {
+  const target = event.target as HTMLInputElement;
+  void take(target.files?.[0]);
+  // Lets the same file be picked again after Cancel.
+  target.value = '';
 }
 
 function onDrop(event: DragEvent) {
   dragging.value = false;
-  take(event.dataTransfer?.files?.[0]);
+  void take(event.dataTransfer?.files?.[0]);
 }
 </script>
 
@@ -51,13 +67,8 @@ function onDrop(event: DragEvent) {
     <span v-else>Show cover · drop an image</span>
   </div>
   <!-- Outside the drop zone, so its click does not bubble back into it. -->
-  <input
-    ref="input"
-    type="file"
-    accept="image/*"
-    class="file-input"
-    @change="take(($event.target as HTMLInputElement).files?.[0])"
-  />
+  <input ref="input" type="file" accept="image/*" class="file-input" @change="onPick" />
+  <ImageCropDialog ref="cropDialog" />
 </template>
 
 <style scoped>

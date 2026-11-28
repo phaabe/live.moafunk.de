@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import type { ShowDetail } from '../../api';
 import { BaseButton, FormInput } from '@shared/components';
 import type { ShowPhase } from '../../composables/useShowPhase';
+import ImageCropDialog from '../ImageCropDialog.vue';
 
 /**
  * Identity header of the redesigned show dashboard: cover thumbnail (with
@@ -41,6 +42,7 @@ const emit = defineEmits<{
 }>();
 
 const coverInput = ref<HTMLInputElement | null>(null);
+const cropDialog = ref<InstanceType<typeof ImageCropDialog> | null>(null);
 
 const showTypeLabel = computed(() => (props.show.show_type || 'unheard').toUpperCase());
 
@@ -75,13 +77,15 @@ const airLabel = computed(() => {
   return `${verb ? verb + ' ' : ''}${day}${time}`;
 });
 
-function onCoverChange(event: Event) {
+async function onCoverChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
-  if (file) {
-    emit('cover-selected', file);
-  }
   input.value = '';
+  // A cover that is not square opens "Crop cover" first; Cancel sends nothing.
+  const picked = file && (await cropDialog.value?.crop(file));
+  if (picked) {
+    emit('cover-selected', picked);
+  }
 }
 </script>
 
@@ -113,6 +117,7 @@ function onCoverChange(event: Event) {
         class="sh-cover-input"
         @change="onCoverChange"
       />
+      <ImageCropDialog ref="cropDialog" />
     </div>
 
     <div class="sh-body">

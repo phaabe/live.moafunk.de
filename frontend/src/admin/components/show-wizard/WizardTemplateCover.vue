@@ -2,14 +2,20 @@
 import { ref } from 'vue';
 import { useShowWizard } from '../../composables';
 import { BaseButton } from '@shared/components';
+import ImageCropDialog from '../ImageCropDialog.vue';
 
 const wizard = useShowWizard();
 const fileInput = ref<HTMLInputElement | null>(null);
+const cropDialog = ref<InstanceType<typeof ImageCropDialog> | null>(null);
 
-function onPick(e: Event) {
+async function onPick(e: Event) {
   const target = e.target as HTMLInputElement;
-  const file = target.files?.[0] ?? null;
-  wizard.setCover(file);
+  const file = target.files?.[0];
+  // Lets the same file be picked again after Cancel.
+  target.value = '';
+  // A cover that is not square opens "Crop cover" first; Cancel keeps the old one.
+  const picked = file && (await cropDialog.value?.crop(file));
+  if (picked) wizard.setCover(picked);
 }
 
 function clearCover() {
@@ -32,6 +38,7 @@ function clearCover() {
       </div>
 
       <input ref="fileInput" type="file" accept="image/*" class="file-input" @change="onPick" />
+      <ImageCropDialog ref="cropDialog" />
 
       <div class="cover-actions">
         <BaseButton variant="secondary" size="sm" @click="fileInput?.click()">
