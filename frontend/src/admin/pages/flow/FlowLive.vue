@@ -1,29 +1,40 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { BaseButton } from '@shared/components';
-import { showsApi } from '@admin/api';
+import { showsApi, streamApi } from '@admin/api';
+import { useAuthStore } from '@admin/stores/auth';
 import {
   useHostFlow,
   useAudioCapture,
   useStreamSocket,
   BROWSER_UNSUPPORTED_MESSAGE,
   streamRecordingMimeType,
+  type SoundcheckStep,
 } from '@admin/composables';
 import LiveSetupTest from '@admin/components/LiveSetupTest.vue';
 import BoardIcon from '@admin/components/BoardIcon.vue';
+import { startLiveSession } from '@admin/liveSession';
+import { inputName, saveSoundcheck } from '@admin/studioLog';
+import { episodeDay } from '@admin/episodeRow';
 
 /**
  * The Studio (/stream/live, flow screen `studio`): soundcheck, then a manual
- * Go Live. Nothing goes live by itself. The router gate opens it 30 min
- * before the start. Go Live works from the start time once the soundcheck
- * is confirmed.
+ * Go Live. Nothing goes live by itself. The Studio is open for soundchecks
+ * at any time before the end. At the start time the countdown turns into Go
+ * Live, which blinks until clicked once the soundcheck is confirmed. Every
+ * show is recorded.
  *
  * Studio · Back on air (`studio-backonair`): the episode is still on air but
  * no tab sends audio, e.g. after a reload. The server keeps it on air for
  * 5 minutes after a drop. Going back on air needs only an input: the show
  * passed its soundcheck before.
+ *
+ * `embedded`: the Studio as a tab of the host's episode page (#1052). It has
+ * no back link and title, and going live tells the page instead of opening
+ * On Air.
  */
+const props = defineProps<{ embedded?: boolean }>();
+const emit = defineEmits<{ live: [] }>();
 const router = useRouter();
 const flow = useHostFlow();
 const audioCapture = useAudioCapture();
@@ -40,22 +51,25 @@ const secondsToStart = computed(() => {
   return Math.ceil((flow.berlinToUtcDate(s.date, s.start_time).getTime() - now.value) / 1000);
 });
 
-/** The pill: "Soundcheck · show starts in 18:42", the clock drawn big. */
+/**
+ * The pill: "Soundcheck · show starts in 18:42" (or 2:18:42), the clock drawn
+ * big. A day or more before, it reads "show starts So 25.10. · 12:00". Null at the start.
+ */
 const countdown = computed(() => {
   const left = secondsToStart.value;
-  if (left <= 0) return { label: 'Soundcheck · it is air time', clock: '' };
-  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  if (left <= 0) return null;
+  const s = show.value;
+  if (s?.start_time && left >= 24 * 3600) {
+    return { label: 'Soundcheck · show starts ', clock: `${episodeDay(s.date)} · ${s.start_time}` };
+  }
+  const h = Math.floor(left / 3600);
+  const mm = String(Math.floor((left % 3600) / 60)).padStart(2, '0');
   const ss = String(left % 60).padStart(2, '0');
-  return { label: 'Soundcheck · show starts in ', clock: `${mm}:${ss}` };
-});
-
-const record = computed({
-  get: () => flow.recordStream.value,
-  set: (value: boolean) => flow.setRecordStream(value),
+  return { label: 'Soundcheck · show starts in ', clock: h ? `${h}:${mm}:${ss}` : `${mm}:${ss}` };
 });
 
 // The soundcheck card. Its test broadcast uses the socket that Go Live needs.
-const soundcheck = ref<{ stopTest?: () => void } | null>(null);
+const soundcheck = ref<{ stopTest?: () => void; steps?: SoundcheckStep[] } | null>(null);
 
 const goingLive = ref(false);
 const wentLive = ref(false);
@@ -75,8 +89,22 @@ async function onAirNow(showId: number): Promise<boolean | null> {
   }
 }
 
+/** Another host who is on air now, e.g. a co-host of this episode (#1047); null when none or unknown. */
+async function otherOnAir(): Promise<string | null> {
+  try {
+    const status = await streamApi.status();
+    const user = status.active ? status.user : undefined;
+    return user && user !== useAuthStore().user?.username ? user : null;
+  } catch {
+    return null;
+  }
+}
+
 onMounted(async () => {
-  if (show.value) backOnAir.value = (await onAirNow(show.value.id)) === true;
+  if (!show.value) return;
+  const [onAir, other] = await Promise.all([onAirNow(show.value.id), otherOnAir()]);
+  // A co-host's broadcast is not this host's to go back to.
+  backOnAir.value = onAir === true && !other;
 });
 
 const canGoLive = computed(
@@ -87,6 +115,19 @@ const canGoLive = computed(
     secondsToStart.value <= 0
 );
 
+const goLiveName = computed(() =>
+  goingLive.value ? 'Going live…' : backOnAir.value ? 'Go back on air' : 'Go Live'
+);
+
+/** The line above Go Live once the countdown is over. */
+const goLiveLabel = computed(() => {
+  if (backOnAir.value)
+    return canGoLive.value ? 'Go back on air now' : 'Pick your input, then go back on air';
+  return canGoLive.value
+    ? 'It is air time · start your show'
+    : 'It is air time · confirm the soundcheck first';
+});
+
 function failGoLive(message: string) {
   goLiveError.value = message;
   goingLive.value = false;
@@ -96,8 +137,16 @@ function failGoLive(message: string) {
 async function goLive() {
   if (!show.value || !canGoLive.value || goingLive.value) return;
   const showId = show.value.id;
+  // Back on air keeps the soundcheck saved at the first Go Live.
+  const firstGoLive = !backOnAir.value;
   goingLive.value = true;
   goLiveError.value = null;
+  // The server refuses a second broadcast; say who is on air instead.
+  const other = await otherOnAir();
+  if (other) {
+    failGoLive(`${other} is on air from another device.`);
+    return;
+  }
   if (backOnAir.value) {
     // This click is a user gesture: resume audio before the request.
     audioCapture.resumeAudioContext();
@@ -111,11 +160,20 @@ async function goLive() {
   // A test broadcast the host still listens to: connect() would reuse its socket.
   soundcheck.value?.stopTest?.();
   // Take over the socket's callbacks from the soundcheck: this connection is
-  // the broadcast. On Air registers its own once it opens.
+  // the broadcast. Once live, the live session takes them.
   const socket = useStreamSocket({
     onLive: () => {
       wentLive.value = true;
-      void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
+      // The input and the checks this show went live with, for the episode page.
+      if (firstGoLive) {
+        void saveSoundcheck(showId, inputName(audioCapture), soundcheck.value?.steps ?? []);
+      }
+      startLiveSession(
+        showId,
+        props.embedded ? `/shows/${showId}` : `/stream/on-air?show=${showId}`
+      );
+      if (props.embedded) emit('live');
+      else void router.push({ path: '/stream/on-air', query: { show: String(showId) } });
     },
     onError: (message) => {
       socket.stopStream();
@@ -134,7 +192,8 @@ async function goLive() {
       goLiveError.value = message;
     });
     flow.setShowStarted();
-    await socket.connect(false, showId, false, flow.recordStream.value);
+    // Every show is recorded.
+    await socket.connect(false, showId, false, true);
     audioCapture.setOnData((data, first) => socket.send(data, first));
     if (!audioCapture.startRecording()) {
       socket.stopStream();
@@ -144,6 +203,15 @@ async function goLive() {
     failGoLive(err instanceof Error ? err.message : 'Failed to go live');
   }
 }
+
+// The episode page's Show time tab starts the show with these too.
+defineExpose({
+  checks: computed(() => soundcheck.value?.steps ?? null),
+  canGoLive,
+  goingLive,
+  goLiveError,
+  goLive,
+});
 
 onUnmounted(() => {
   clearInterval(clock);
@@ -157,11 +225,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="studio host-page">
-    <router-link :to="episodePath" class="back-link"
-      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
-    >
-    <h1 class="page-title">Studio</h1>
+  <div :class="['studio', 'host-page', { embedded }]">
+    <template v-if="!embedded">
+      <router-link :to="episodePath" class="back-link"
+        ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode</router-link
+      >
+      <h1 class="page-title">Studio</h1>
+    </template>
     <template v-if="backOnAir">
       <p class="pill status-banner live">
         <span class="dot" aria-hidden="true"></span>Still on air · no audio
@@ -170,29 +240,29 @@ onUnmounted(() => {
         Your show is still on air, but no audio arrives. Listeners hear silence.
       </p>
     </template>
-    <p v-else class="pill status-banner warn countdown">
+    <p v-else-if="countdown" class="pill status-banner warn countdown">
       <span class="countdown-label"
         ><span class="dot" aria-hidden="true"></span>{{ countdown.label }}</span
-      ><span v-if="countdown.clock" class="countdown-clock">{{ countdown.clock }}</span>
+      ><span class="countdown-clock">{{ countdown.clock }}</span>
     </p>
-    <div class="cols">
-      <div class="main">
-        <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
-      </div>
-      <!-- Phones keep Record and Go Live in a bar at the bottom, in thumb reach. -->
-      <aside class="side go-live">
-        <label v-if="!backOnAir" class="check">
-          <input v-model="record" type="checkbox" />
-          Record this show
-        </label>
-        <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
-        <BaseButton class="block xl" :disabled="!canGoLive" :loading="goingLive" @click="goLive"
-          ><BoardIcon name="broadcast" :size="20" />{{
-            backOnAir ? 'Go back on air' : 'Go Live'
-          }}</BaseButton
-        >
-      </aside>
-    </div>
+    <!-- At the start the countdown turns into Go Live; it blinks until clicked. -->
+    <button
+      v-if="backOnAir || !countdown"
+      type="button"
+      :class="['status-banner', 'warn', 'countdown', 'go-live', { ready: canGoLive && !goingLive }]"
+      :disabled="!canGoLive || goingLive"
+      :aria-label="goLiveName"
+      aria-describedby="go-live-label"
+      @click="goLive"
+    >
+      <span id="go-live-label" class="countdown-label"
+        ><span class="dot" aria-hidden="true"></span>{{ goLiveLabel }}</span
+      ><span class="countdown-clock"
+        ><BoardIcon name="broadcast" :size="36" />{{ goLiveName }}</span
+      >
+    </button>
+    <p v-if="goLiveError" class="field-error" role="alert">{{ goLiveError }}</p>
+    <LiveSetupTest ref="soundcheck" studio :input-only="backOnAir" />
   </div>
 </template>
 
@@ -235,25 +305,62 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+/* The countdown as Go Live: a button the width of the page. */
 .go-live {
-  position: sticky;
-  top: var(--spacing-md);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  background: var(--color-surface);
-  border: 1px solid #2a2a42;
-  border-radius: var(--radius-xl);
+  width: 100%;
+  color: #fff;
+  font: inherit;
+  font-weight: var(--font-weight-bold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.go-live .countdown-label,
+.go-live .countdown-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+}
+
+.go-live:disabled {
+  cursor: not-allowed;
+}
+
+.go-live:disabled .countdown-clock {
+  color: #8e8ea4;
+}
+
+.go-live:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+/* Ready: it blinks until the host clicks it. */
+.go-live.ready {
+  border-color: var(--color-primary);
+  border-left-color: var(--color-primary);
+  animation: go-live-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes go-live-blink {
+  50% {
+    background-color: var(--color-primary);
+    color: #0f0f23;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .go-live.ready {
+    animation: none;
+    background-color: var(--color-primary);
+    color: #0f0f23;
+  }
 }
 
 @media (max-width: 640px) {
-  .go-live {
-    top: auto;
-    bottom: 0;
-    gap: var(--spacing-sm);
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    background: #05050f;
+  .go-live .countdown-clock {
+    font-size: 2.25rem;
   }
 }
 </style>

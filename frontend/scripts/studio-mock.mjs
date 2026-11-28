@@ -8,8 +8,25 @@
 //   each pong, like the backend.
 // - /test.mp3: the test broadcast as MP3 (through ffmpeg), like the relay.
 // - /mock/mode/<mode>: ok | no-chunks | no-return | no-cors. It also ends the
-//   show, so each test starts off air.
-// - /mock/live: how many LIVE broadcasts are open.
+//   show and signs in the host again, so each test starts off air.
+// - /mock/role/<role>: sign in as host or admin.
+// - /mock/viewer/<id>: sign in as user 1 (the episode's host) or another host.
+// - PUT /api/shows/1/studio-log: what the Studio and the live panel saved;
+//   GET /api/shows/1 returns it, like the backend.
+// - /mock/live: how many LIVE broadcasts are open, and the audio chunks each got.
+// - MOCK_RECORDING=<mp3>: episode 1 has that file as its recording, for the
+//   Edit recording page (/admin/#/shows/1/edit-recording): edit, snippets, peaks
+//   (ffmpeg) and /mock/recording.mp3 with CORS and Range, like R2. Apply only pretends.
+// - MOCK_EPISODE=after (with MOCK_RECORDING, best a 30 min file): episode 1
+//   ended yesterday, its recording edited and private on SoundCloud, for the
+//   Recording tab (/admin/#/shows/1). Picking the file and Private / Public work.
+// - Profiles (#1117): /admin/#/profile (the host's own, kept in memory; a
+//   photo upload is served at /mock/photo) and /admin/#/profile/jonas.
+// - MOCK_EPISODE=soon: episode 1 is in 5 days at 19:00, for the Social media
+//   tiles and Book a time (#1091). Announcements live in memory: set up, book
+//   a time (pre: 7 days before, post: 14 days after; every third day is full)
+//   and cancel work.
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -21,7 +38,12 @@ const MODES = ['ok', 'no-chunks', 'no-return', 'no-cors'];
 const TAIL_CUT = /File ended prematurely|Error parsing Opus packet header/;
 let mode = 'ok';
 
-const user = { id: 1, username: 'local-host', role: 'host', has_show: true };
+const HOST_ID = 1;
+const user = { id: HOST_ID, username: 'local-host', role: 'host', has_show: true };
+/** Moafunkbot switches on the admin Config page. */
+const botSwitches = { enabled: true, live_chat: true, onair_message: true };
+/** What the host's browser saved for the episode. */
+let studioLog = {};
 
 // Like the backend: the show is on air while a LIVE broadcast is open, and
 // for 5 minutes after one dropped without "stop".
@@ -32,12 +54,33 @@ const onAir = () => live.size > 0 || Date.now() - droppedAt < GRACE_MS;
 
 function endShow() {
   const open = [...live];
+  studioLog = {};
   live.clear();
   droppedAt = -Infinity;
   for (const ws of open) ws.terminate();
 }
 
 /** One live episode that started a minute ago, Berlin time. */
+/** The next `n` Berlin dates from today, "YYYY-MM-DD". */
+function berlinDays(n) {
+  const day = (ms) =>
+    new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Berlin' }).format(new Date(ms));
+  return Array.from({ length: n }, (_, i) => day(Date.now() + i * 86_400_000));
+}
+
+/** A show that started 30 min ago and runs 2 h, open to take over. */
+function idleShow() {
+  const at = (minutes) =>
+    new Date(Date.now() + minutes * 60_000).toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' });
+  const [start, end] = [at(-30), at(90)];
+  return {
+    date: start.slice(0, 10),
+    start_time: start.slice(11, 16),
+    end_time: end.slice(11, 16),
+    take_over: true,
+  };
+}
+
 function show() {
   const berlin = (date) =>
     new Intl.DateTimeFormat('sv-SE', {
@@ -60,14 +103,139 @@ function show() {
     status: 'scheduled',
     artists: [],
     on_air: onAir(),
+    // The host's own episode, so /shows/1 opens its episode page with the Studio tab.
+    host_user_id: HOST_ID,
+    created_by: HOST_ID,
+    host_username: 'local-host',
+    // Like the backend: an admin or the episode's host runs it (#1047).
+    can_edit: user.role === 'admin' || user.id === HOST_ID,
+    can_manage: user.role === 'admin' || user.id === HOST_ID,
+    episode_status: 'upcoming',
+    studio_log: studioLog,
+    listener_samples: [],
+    ...(AFTER ? after(berlin(new Date(Date.now() - 86_400_000))[0]) : {}),
+    ...(SOON
+      ? { date: berlin(new Date(Date.now() + 5 * 86_400_000))[0], start_time: '19:00', end_time: '21:00' }
+      : {}),
+  };
+}
+
+// ---- Social media (#1091): announcements in memory ----
+const SOON = process.env.MOCK_EPISODE === 'soon';
+let announcements = [];
+
+/** 12:00 and 18:00 Berlin (UTC+1 in winter, rough) in the slot's window; every third day full. */
+function feedTimes(slot) {
+  const { date, start_time } = show();
+  const start = new Date(`${date}T${start_time}:00+01:00`);
+  const out = [];
+  for (let d = -8; d <= 15; d++) {
+    const day = new Date(start.getTime() + d * 86_400_000).toISOString().slice(0, 10);
+    for (const hh of ['11', '17']) {
+      const at = new Date(`${day}T${hh}:00:00Z`);
+      const before = at < start && at > new Date(start.getTime() - 7 * 86_400_000);
+      const after = at > start && at <= new Date(start.getTime() + 14 * 86_400_000);
+      if (at <= new Date() || !(slot === 'pre' ? before : after)) continue;
+      const full = Math.abs(d) % 3 === 1;
+      out.push({ scheduled_at: at.toISOString().replace('.000', ''), free: !full, reason: full ? 'Full' : null });
+    }
+  }
+  const pick = out.filter((t) => t.free)[slot === 'pre' ? 2 : 3] ?? out.find((t) => t.free);
+  if (pick) pick.default = true;
+  return out;
+}
+
+function announcement(slot, fields) {
+  const old = announcements.find((a) => a.slot === slot) ?? {};
+  const row = {
+    id: { pre: 1, onair: 2, post: 3 }[slot], show_id: 1, slot, channel: 'instagram',
+    state: 'draft', scheduled_at: null, requested_at: null, headline: '', caption: '',
+    image_source: 'cover', image_key: null, layout: 'band', collaborator: true,
+    extra_collaborators: [], user_tags: [], sent_at: null, permalink: null, error: null,
+    send_now: false, updated_at: new Date().toISOString(), ...old, ...fields,
+  };
+  announcements = [...announcements.filter((a) => a.slot !== slot), row];
+  return row;
+}
+
+/** The same episode the day after: recording edited, private on SoundCloud (#1082). */
+function after(date) {
+  const url = `http://localhost:${PORT}/mock/recording.mp3`;
+  const edit = recording.edit;
+  const done = recording.status === 'done' && edit;
+  return {
+    date,
+    start_time: '12:00',
+    end_time: '14:00',
+    on_air: false,
+    episode_status: 'wrapup_open',
+    latest_recording: { id: 1, version: 'v1', status: 'raw', duration_ms: 1_800_000, download_url: url },
+    recording_source: recordingSource,
+    recording_edit_status: recording.status,
+    recording_edited_at: `${date} 13:00:00`,
+    recording_edited_seconds: done ? edit.end - edit.start : null,
+    edited_recording_url: done ? url : null,
+    recording_download_url: url,
+    recording_original_download_url: done ? url : null,
+    ...soundcloud,
   };
 }
 
 const routes = {
   'POST /api/auth/login': () => ({ user }),
   'GET /api/auth/me': () => user,
-  'GET /api/my-show': () => ({ assigned: true, shows: [show()] }),
+  'GET /api/settings/notifications': () => botSwitches,
+  'GET /api/settings/services': () => ({ soundcloud: true, instagram: true }),
+  'GET /api/my-show': () =>
+    user.id === HOST_ID ? { assigned: true, shows: [show()] } : { assigned: false, shows: [] },
+  'GET /api/shows/1/announcements/status': () => announcements.filter((a) => a.state !== 'draft'),
   'GET /api/shows/1': () => show(),
+  'GET /api/shows/1/announcements': () => announcements,
+  'GET /api/shows/1/announcements/meta': () => ({
+    paused: false,
+    needs_approval: false,
+    post_now: true,
+    services: { soundcloud: true, instagram: true },
+  }),
+  // Book Slot (#1118): /shows/brunchtime/book (Sundays 12:00–14:00) and
+  // /shows/night/book (no fixed rhythm). Tomorrow 21:00–23:00 is taken.
+  'GET /api/series/brunchtime': () => ({
+    id: 1,
+    slug: 'brunchtime',
+    name: 'Brunchtime',
+    description: null,
+    cover_url: null,
+    rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
+    rhythm_line: 'Sundays · 12:00–14:00',
+    instagram_handle: 'brunchtime',
+    can_edit: true,
+    episodes: [],
+  }),
+  'GET /api/series/brunchtime/slots': () => ({
+    slots: berlinDays(14)
+      .filter((d) => new Date(`${d}T12:00:00Z`).getUTCDay() === 0)
+      .map((date) => ({ date, start_time: '12:00', end_time: '14:00' })),
+  }),
+  'GET /api/series/night': () => ({
+    id: 2,
+    slug: 'night',
+    name: 'Night Shift',
+    description: null,
+    cover_url: null,
+    rhythm: null,
+    rhythm_line: null,
+    can_edit: true,
+    episodes: [],
+  }),
+  'GET /api/booked-times': () => ({
+    times: [
+      { date: berlinDays(2)[1], start_time: '21:00', end_time: '23:00' },
+      // MOCK_IDLE_SHOW=1: booked 30 min ago, never on air, so Book Slot may book over it.
+      ...(process.env.MOCK_IDLE_SHOW ? [idleShow()] : []),
+    ],
+  }),
+  'POST /api/series/brunchtime/episodes': () => ({ id: 1 }),
+  'POST /api/series/night/episodes': () => ({ id: 1 }),
   'GET /api/stream/status': () => ({ active: false }),
   'GET /api/stream/metrics': () => ({ online: true, total_listeners: 0, mounts: [] }),
   'GET /api/recording/status': () => ({ is_recording: false }),
@@ -76,18 +244,339 @@ const routes = {
 /** Browsers listening to /test.mp3. */
 const listeners = new Set();
 
+// ---- Edit recording (#883) ----
+const RECORDING = process.env.MOCK_RECORDING ?? null;
+const recording = { edit: null, snippets: [], status: 'none', peaks: null, reading: false };
+const AFTER = !!RECORDING && process.env.MOCK_EPISODE === 'after';
+let recordingSource = 'show';
+const soundcloud = {
+  soundcloud_url: 'https://soundcloud.com/radio-moafunk/brunchtime-1',
+  soundcloud_public: false,
+  soundcloud_uploaded_at: null,
+  soundcloud_source: 'show',
+  soundcloud_edited: true,
+  soundcloud_current: true,
+};
+if (AFTER) {
+  // An applied edit of a 30 min file: cut, one louder part; two snippets.
+  recording.edit = {
+    start: 60,
+    end: 1740,
+    gainDb: 2,
+    sections: [{ id: 'a', start: 450, end: 540, gainDb: 4 }],
+  };
+  recording.snippets = [
+    { slot: 1, start: 720, length: 30 },
+    { slot: 2, start: 1080, length: 20 },
+  ];
+  recording.status = 'done';
+  soundcloud.soundcloud_uploaded_at = new Date(Date.now() - 82_800_000)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
+}
+
+/** Peaks like the backend: 8 kHz mono, loudest sample per 1/20 s, 0..1. */
+function readPeaks() {
+  recording.reading = true;
+  const ffmpeg = spawn('ffmpeg', ['-v', 'error', '-i', RECORDING, '-ac', '1', '-ar', '8000', '-f', 's16le', '-']);
+  const peaks = [];
+  let rest = Buffer.alloc(0);
+  let samples = 0;
+  ffmpeg.stdout.on('data', (chunk) => {
+    const data = Buffer.concat([rest, chunk]);
+    const whole = data.length - (data.length % 800);
+    for (let i = 0; i < whole; i += 800) {
+      let max = 0;
+      for (let k = i; k < i + 800; k += 2) max = Math.max(max, Math.abs(data.readInt16LE(k)));
+      peaks.push(Math.round((max / 32768) * 100) / 100);
+    }
+    samples += whole / 2;
+    rest = data.subarray(whole);
+  });
+  ffmpeg.on('close', () => {
+    recording.peaks = { duration: samples / 8000, per_second: 20, peaks };
+    recording.reading = false;
+    console.log(`recording peaks: ${peaks.length}`);
+  });
+}
+
+function readJson(req, done) {
+  let body = '';
+  req.on('data', (chunk) => (body += chunk));
+  req.on('end', () => done(JSON.parse(body || '{}')));
+}
+
+function editState() {
+  if (!RECORDING)
+    return { source: null, edit: null, snippets: [], status: 'none', error: null, edited_url: null, rendered_at: null };
+  return {
+    source: { url: `http://localhost:${PORT}/mock/recording.mp3`, duration: recording.peaks?.duration ?? null },
+    edit: recording.edit,
+    snippets: recording.snippets,
+    status: recording.status,
+    error: null,
+    edited_url: null,
+    rendered_at: null,
+  };
+}
+
+/** The recording with CORS and Range, so the editor can seek and use Web Audio. */
+function serveRecording(req, res) {
+  const size = statSync(RECORDING).size;
+  const headers = {
+    'content-type': 'audio/mpeg',
+    'accept-ranges': 'bytes',
+    'access-control-allow-origin': '*',
+  };
+  const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '');
+  if (!m) {
+    res.writeHead(200, { ...headers, 'content-length': size });
+    createReadStream(RECORDING).pipe(res);
+    return;
+  }
+  const start = m[1] ? Number(m[1]) : 0;
+  const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  res.writeHead(206, {
+    ...headers,
+    'content-range': `bytes ${start}-${end}/${size}`,
+    'content-length': end - start + 1,
+  });
+  createReadStream(RECORDING, { start, end }).pipe(res);
+}
+
+// ---- Profiles (#1117) ----
+const ADDRESS = 'https://';
+const platform = (key, name, group, prefix, suffix = '', at = false, hint = 'yourhandle') => ({
+  key, name, group, prefix, suffix, at, hint,
+});
+const PLATFORMS = [
+  platform('instagram', 'Instagram', 'common', 'instagram.com/', '', true),
+  platform('soundcloud', 'SoundCloud', 'common', 'soundcloud.com/'),
+  platform('mixcloud', 'Mixcloud', 'common', 'mixcloud.com/'),
+  platform('bandcamp', 'Bandcamp', 'common', '', '.bandcamp.com'),
+  platform('ra', 'Resident Advisor', 'music', 'ra.co/dj/'),
+  platform('spotify', 'Spotify', 'music', 'open.spotify.com/artist/', '', false, 'artist ID'),
+  platform('applemusic', 'Apple Music', 'music', ADDRESS, '', false, 'music.apple.com/…'),
+  platform('beatport', 'Beatport', 'music', ADDRESS, '', false, 'beatport.com/artist/…'),
+  platform('discogs', 'Discogs', 'music', ADDRESS, '', false, 'discogs.com/artist/…'),
+  platform('youtube', 'YouTube', 'social', 'youtube.com/@', '', true),
+  platform('tiktok', 'TikTok', 'social', 'tiktok.com/@', '', true),
+  platform('facebook', 'Facebook', 'social', 'facebook.com/'),
+  platform('x', 'X (Twitter)', 'social', 'x.com/', '', true),
+  platform('threads', 'Threads', 'social', 'threads.net/@', '', true),
+  platform('bluesky', 'Bluesky', 'social', 'bsky.app/profile/', '', false, 'you.bsky.social'),
+  platform('mastodon', 'Mastodon', 'social', ADDRESS, '', false, 'mastodon.social/@you'),
+  platform('twitch', 'Twitch', 'social', 'twitch.tv/'),
+  platform('linktree', 'Linktree', 'other', 'linktr.ee/'),
+  platform('website', 'Website', 'other', ADDRESS, '', false, 'yourwebsite.com'),
+  platform('custom', 'Custom', 'other', ADDRESS, '', false, 'yourlink.com'),
+];
+/** Like the backend, without its checks: the link and the text the profile shows. */
+function profileLink({ platform: key, value, label }) {
+  const p = PLATFORMS.find((x) => x.key === key);
+  const address = p.prefix === ADDRESS;
+  const v = address && !value.includes('://') ? `${ADDRESS}${value}` : value.replace(/^@/, '');
+  const url = address ? v : `${ADDRESS}${p.prefix}${v}${p.suffix}`;
+  const text = address ? v.replace(/^https?:\/\//, '').replace(/\/$/, '') : p.at ? `@${v}` : `${p.prefix}${v}${p.suffix}`;
+  return { platform: key, name: key === 'custom' ? label : p.name, label: key === 'custom' ? label : null, value: v, url, text };
+}
+const ownProfile = {
+  username: user.username,
+  display_name: null,
+  about: null,
+  photo_url: null,
+  photo_srcset: null,
+  shows: [{ slug: 'brunchtime', name: 'Brunchtime' }],
+  links: [],
+};
+const profileOut = () => ({ ...ownProfile, name: ownProfile.display_name ?? ownProfile.username, role: user.role });
+const JONAS = {
+  username: 'jonas',
+  display_name: null,
+  name: 'jonas',
+  role: 'host',
+  about: 'Club records after dark, every Tuesday from 20:00.',
+  photo_url: null,
+  photo_srcset: null,
+  shows: [{ slug: 'night-shift', name: 'Night Shift' }],
+  links: [
+    profileLink({ platform: 'instagram', value: 'nightshift.jonas' }),
+    profileLink({ platform: 'mixcloud', value: 'nightshift' }),
+  ],
+};
+let photo = null;
+
+/** The first file part of a multipart body. */
+function multipartFile(body, contentType) {
+  const boundary = Buffer.from(`--${/boundary=(.+)$/.exec(contentType)[1]}`);
+  const start = body.indexOf('\r\n\r\n', body.indexOf(boundary)) + 4;
+  return body.subarray(start, body.indexOf(boundary, start) - 2);
+}
+
+function profileRoute(req, res, path) {
+  const send = (value, status = 200) =>
+    res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+  if (path === '/api/profile' && req.method === 'GET') return send({ profile: profileOut(), platforms: PLATFORMS });
+  if (path === '/api/profile' && req.method === 'PUT') {
+    readJson(req, (body) => {
+      ownProfile.display_name = body.display_name.trim() || null;
+      ownProfile.about = body.about.trim() || null;
+      ownProfile.links = body.links.filter((l) => l.value.trim()).map(profileLink);
+      send(profileOut());
+    });
+    return true;
+  }
+  if (path === '/api/profile/photo' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      photo = multipartFile(Buffer.concat(chunks), req.headers['content-type']);
+      // Vite proxies only /api, so the page loads the photo from the mock itself.
+      ownProfile.photo_url = `http://localhost:${PORT}/mock/photo?${Date.now()}`;
+      ownProfile.photo_srcset = `${ownProfile.photo_url} 640w`;
+      user.photo_srcset = ownProfile.photo_srcset;
+      send(profileOut());
+    });
+    return true;
+  }
+  if (path === '/api/profile/photo' && req.method === 'DELETE') {
+    photo = null;
+    ownProfile.photo_url = null;
+    ownProfile.photo_srcset = null;
+    user.photo_srcset = null;
+    return send(profileOut());
+  }
+  if (path === '/mock/photo' && photo) return res.writeHead(200).end(photo);
+  if (path === '/api/profiles/jonas') return send(JONAS);
+  if (path.startsWith('/api/profiles/')) return send({ error: 'No profile' }, 404);
+  return false;
+}
+
 const server = createServer((req, res) => {
   const path = req.url.split('?')[0];
   if (path.startsWith('/mock/mode/')) {
     const wanted = path.slice('/mock/mode/'.length);
     if (MODES.includes(wanted)) mode = wanted;
     endShow();
+    user.role = 'host';
+    user.id = HOST_ID;
     console.log(`mode: ${mode}`);
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`mode: ${mode}\n`);
     return;
   }
+  if (path.startsWith('/mock/role/')) {
+    const wanted = path.slice('/mock/role/'.length);
+    if (wanted === 'host' || wanted === 'admin') user.role = wanted;
+    res.writeHead(200, { 'content-type': 'text/plain' }).end(`role: ${user.role}\n`);
+    return;
+  }
+  if (path.startsWith('/mock/viewer/')) {
+    user.id = Number(path.slice('/mock/viewer/'.length)) || HOST_ID;
+    res.writeHead(200, { 'content-type': 'text/plain' }).end(`viewer: ${user.id}\n`);
+    return;
+  }
+  if (req.method === 'PUT' && path === '/api/shows/1/studio-log') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      Object.assign(studioLog, JSON.parse(body));
+      res.writeHead(204).end();
+    });
+    return;
+  }
+  if (RECORDING && path === '/mock/recording.mp3') {
+    serveRecording(req, res);
+    return;
+  }
+  if (path === '/api/shows/1/recording/peaks') {
+    if (!RECORDING) return res.writeHead(404).end('{"error":"no recording"}');
+    if (!recording.peaks && !recording.reading) readPeaks();
+    res.writeHead(recording.peaks ? 200 : 202, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(recording.peaks ?? { status: 'processing' }));
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit' && req.method === 'PUT') {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      recording.edit = JSON.parse(body);
+      recording.status = 'draft';
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    });
+    return;
+  }
+  if (path === '/api/shows/1/recording/snippets' && req.method === 'PUT') {
+    readJson(req, (body) => {
+      recording.snippets = [...body.snippets].sort((a, b) => a.slot - b.slot);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    });
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit/apply' && req.method === 'POST') {
+    recording.status = 'rendering';
+    setTimeout(() => (recording.status = 'done'), 5000);
+    res.writeHead(202, { 'content-type': 'application/json' }).end('{"status":"rendering"}');
+    return;
+  }
+  if (path === '/api/shows/1/recording/edit') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(editState()));
+    return;
+  }
+  if (AFTER && req.method === 'PUT' && path === '/api/shows/1/recording/source') {
+    readJson(req, (body) => {
+      recordingSource = body.source;
+      soundcloud.soundcloud_current = body.source === soundcloud.soundcloud_source;
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    });
+    return;
+  }
+  if (AFTER && req.method === 'POST' && path === '/api/shows/1/soundcloud/privacy') {
+    readJson(req, (body) => {
+      soundcloud.soundcloud_public = !!body.public;
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ success: true, track_url: soundcloud.soundcloud_url }));
+    });
+    return;
+  }
+  if (path === '/api/shows/1/announcements/slots') {
+    const slot = new URL(req.url, 'http://x').searchParams.get('slot');
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(feedTimes(slot)));
+    return;
+  }
+  const booked = path.match(/^\/api\/shows\/1\/announcements\/(pre|post)\/time$/);
+  if (booked && req.method === 'PUT') {
+    readJson(req, (body) => {
+      const old = announcements.find((a) => a.slot === booked[1]);
+      const state = !old || ['draft', 'cancelled'].includes(old.state) ? 'draft'
+        : old.state === 'waiting_soundcloud' ? 'scheduled' : old.state;
+      const row = announcement(booked[1], { state, scheduled_at: body.scheduled_at, requested_at: null });
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
+    });
+    return;
+  }
+  const slotOf = path.match(/^\/api\/shows\/1\/announcements\/(pre|onair|post)$/);
+  if (slotOf && req.method === 'PUT') {
+    readJson(req, (body) => {
+      const { date, start_time } = show();
+      const at = slotOf[1] === 'onair' ? new Date(`${date}T${start_time}:00+01:00`).toISOString() : body.scheduled_at ?? null;
+      const state = slotOf[1] === 'onair' ? 'armed' : at ? 'scheduled' : 'waiting_soundcloud';
+      const row = announcement(slotOf[1], { ...body, state, scheduled_at: at, requested_at: null });
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
+    });
+    return;
+  }
+  if (slotOf && req.method === 'DELETE') {
+    const row = announcement(slotOf[1], { state: 'cancelled' });
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(row));
+    return;
+  }
   if (path === '/mock/live') {
-    res.writeHead(200, { 'content-type': 'application/json' }).end(`{"live":${live.size}}`);
+    const chunks = [...live].map((ws) => ws.chunks);
+    res
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ live: live.size, chunks }));
     return;
   }
   if (path === '/test.mp3') {
@@ -98,6 +587,14 @@ const server = createServer((req, res) => {
     req.on('close', () => listeners.delete(res));
     return;
   }
+  if (req.method === 'PUT' && path === '/api/settings/notifications') {
+    readJson(req, (body) => {
+      Object.assign(botSwitches, body);
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(botSwitches));
+    });
+    return;
+  }
+  if (profileRoute(req, res, path) !== false) return;
   const route = routes[`${req.method} ${path}`];
   if (!route) console.log(`not mocked: ${req.method} ${path}`);
   res.writeHead(route ? 200 : 404, { 'content-type': 'application/json' });
@@ -108,6 +605,7 @@ const sockets = new WebSocketServer({ server, path: '/ws/stream' });
 sockets.on('connection', (ws, req) => {
   const test = new URL(req.url, 'http://x').searchParams.get('test') === 'true';
   let chunks = 0;
+  ws.chunks = 0;
   let bytes = 0;
   let stream = null;
   let ended = false;
@@ -146,7 +644,7 @@ sockets.on('connection', (ws, req) => {
     if (isBinary) {
       // no-chunks: the socket is up, but the audio never arrives.
       if (mode === 'no-chunks') return;
-      chunks++;
+      ws.chunks = ++chunks;
       bytes += data.length;
       relay ??= startRelay();
       relay.stdin.write(data);

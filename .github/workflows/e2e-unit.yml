@@ -2,11 +2,18 @@ name: TEST - E2E code and Studio soundcheck
 
 # The chaos test show's own code checks, on PRs that change it, and the Studio
 # soundcheck in a real browser against the local mock, on PRs that change the
-# frontend. No staging, no secrets: the show itself runs nightly and on release
-# PRs (e2e-staging.yml).
+# Studio (studio-scope; PRs into main and pushes to staging always). No
+# staging, no secrets: the show itself runs nightly and on release PRs
+# (e2e-staging.yml).
 on:
   pull_request:
     branches: [staging, main]
+    paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml', '.github/actions/apt-install/**']
+  # A PR run can only restore caches of its base branch, so staging pushes
+  # save the soundcheck's frontend dependencies. They also run the soundcheck
+  # after the merge, so a change the scope skipped shows up before a release.
+  push:
+    branches: [staging]
     paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml', '.github/actions/apt-install/**']
 
 permissions:
@@ -34,33 +41,89 @@ jobs:
       - run: npm run typecheck
       - run: npm run unit
 
-  studio-soundcheck:
+  studio-scope:
+    name: studio-soundcheck scope
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      studio: ${{ steps.touches.outputs.studio }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The PR merge commit and its parents, for scripts/pr-touches.sh.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # What the soundcheck specs run: the Studio pages, the episode page
+      # with its Studio tabs, the on-air bar (App.vue), the Recording page,
+      # the composables, the mock, the test setup and dependencies.
+      - name: Check what the PR changes
+        id: touches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          studio="$(scripts/pr-touches.sh '^frontend/src/admin/(pages/flow/|components/(live-panel|episode)/|composables/|(App\.vue|main\.ts|router\.ts|liveSession\.ts|studioLog\.ts|showTime\.ts|pages/(HostEpisodePage|RecordingPage)\.vue|components/(LiveSetupTest|DbMeter|SpectrumBars|StreamPreviewPlayer)\.vue)$)|^frontend/(scripts/studio-mock\.mjs|vite\.config\.ts|package(-lock)?\.json)$|^e2e/(tests-local/|lib/(studio|staging)\.ts$|playwright\.(local\.)?config\.ts$|(local|global)-setup\.ts$|package(-lock)?\.json$|tsconfig\.json$)|^\.github/workflows/e2e-unit\.yml$|^\.github/actions/apt-install/|^scripts/pr-touches\.sh$')"
+          echo "studio=$studio" >>"$GITHUB_OUTPUT"
+
+  studio-soundcheck:
+    needs: studio-scope
+    # Runs unless the scope says false, so a failed scope job never skips it.
+    if: ${{ !cancelled() && needs.studio-scope.outputs.studio != 'false' }}
+    # The image whose apt cache epic-ci saves (ffmpeg).
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Each shard runs its share of the tests against its own mock and dev
+    # server (playwright.local.config.ts). One worker per shard: the tests
+    # of a shard share its mock.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
+      # No npm cache: frontend/node_modules is cached below. The browsers are
+      # not cached: their download takes about as long as a restore.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            e2e/package-lock.json
-            frontend/package-lock.json
 
       - name: Install ffmpeg and PulseAudio
         uses: ./.github/actions/apt-install
         with:
           packages: ffmpeg pulseaudio
 
+      - name: Restore the frontend dependencies
+        id: frontend-deps
+        uses: actions/cache/restore@v4
+        with:
+          path: frontend/node_modules
+          key: studio-frontend-node-modules-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('frontend/package-lock.json') }}
+
       - name: Install the test, the frontend and the browsers
+        env:
+          FRONTEND_CACHED: ${{ steps.frontend-deps.outputs.cache-hit }}
         run: |
           set -euo pipefail
-          npm ci --prefix frontend
+          if [[ "$FRONTEND_CACHED" != true ]]; then
+            npm ci --prefix frontend
+          fi
           npm ci --prefix e2e
           cd e2e && npx playwright install --with-deps chromium firefox
+
+      # Only staging pushes save, once per run, so PR runs fill no cache space
+      # that other PRs cannot read. Before the tests: the dev server writes
+      # node_modules/.vite.
+      - name: Save the frontend dependencies
+        if: github.event_name == 'push' && matrix.shard == 1 && steps.frontend-deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ steps.frontend-deps.outputs.cache-primary-key }}
 
       - name: Studio soundcheck against the mock
         working-directory: e2e
@@ -69,12 +132,12 @@ jobs:
         run: |
           set -euo pipefail
           pulseaudio --start --exit-idle-time=-1
-          npm run local
+          npm run local -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: studio-soundcheck-report
+          name: studio-soundcheck-report-${{ matrix.shard }}
           path: |
             e2e/playwright-report
             e2e/test-results

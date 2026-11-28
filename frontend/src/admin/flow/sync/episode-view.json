@@ -1,8 +1,24 @@
 {
   "screen": "episode-view",
-  "hash": "e507e038",
-  "status": "ok",
+  "hash": "fc7f14af",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: Di 27.10. · Night Shift",
+    "pill: Upcoming · Live · 20:00–22:00",
+    "h2: Details"
+  ],
+  "extra": [
+    "h1: Night Shift",
+    "h2: Social media",
+    "pill: Upcoming",
+    "button: 1 · Social media",
+    "button: 2 · Soundcheck",
+    "button: 3 · Show time · in 7 days · until 20:00",
+    "button: 4 · Recording",
+    "row: Pre-announcement | Not set up",
+    "row: On-air story | Not set up",
+    "row: Goes out | Di 27.10. · 20:00 · when you go live",
+    "row: Post-announcement | Not set up"
+  ]
 }

@@ -62,6 +62,10 @@ jobs:
         working-directory: backend
     env:
       CARGO_TERM_COLOR: always
+      # Debug info with file and line only: backtraces keep file:line, the
+      # Rust cache is about half the size and links are faster. Coverage
+      # does not use debug info. Local builds keep full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     steps:
       - uses: actions/checkout@v4

@@ -85,10 +85,12 @@ jobs:
           file: backend/Dockerfile
           platforms: linux/amd64
           # Bake the stream URLs into the admin SPA (Vite inlines them at build
-          # time). Same repo Variables the Pages build uses; empty → no-op.
+          # time). The mounts are paths on the host that serves the admin:
+          # staging and production run the same image, and each must play its
+          # own stream (issue https://github.com/phaabe/live.moafunk.de/issues/1114).
           build-args: |
-            VITE_STREAM_ICECAST_LIVE_URL=${{ vars.VITE_STREAM_ICECAST_LIVE_URL }}
-            VITE_STREAM_ICECAST_TEST_URL=${{ vars.VITE_STREAM_ICECAST_TEST_URL }}
+            VITE_STREAM_ICECAST_LIVE_URL=/live.mp3
+            VITE_STREAM_ICECAST_TEST_URL=/test.mp3
             VITE_STREAM_STATUS_URL=${{ vars.VITE_STREAM_STATUS_URL }}
             GIT_SHA=${{ github.sha }}
           # Always push — workflow only runs on main or manual dispatch
@@ -128,7 +130,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
     # The wait for a test's hold (deploy step) plus the deploy.
-    timeout-minutes: 180
+    timeout-minutes: 195
     permissions:
       contents: read
     # Not the test's group staging-box: GitHub keeps one waiting job per group
@@ -160,8 +162,8 @@ jobs:
           DIGEST: ${{ needs.build-and-push.outputs.digest }}
           # Pinned host key of the staging server; a different key stops the deploy.
           HOST_KEY: staging.live.moafunk.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHw+kqXgS8FmHdVOw2gaNMRzTQ+0SjGKYvsuqu8HyFQp
-          # A test holds the box for at most its time limit (e2e-staging.yml: 150 min).
-          WAIT_MINUTES: '160'
+          # A test holds the box for at most its time limit (e2e-staging.yml: 165 min).
+          WAIT_MINUTES: '175'
           RETRY_SECONDS: '60'
         run: |
           set -euo pipefail

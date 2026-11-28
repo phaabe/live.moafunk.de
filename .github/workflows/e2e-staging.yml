@@ -44,7 +44,7 @@ jobs:
           - job: instagram-e2e
             project: instagram
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 165
     # Two test runs never share staging; a waiting run starts after the
     # current one. A deploy (backend.yml) is not in this group: it waits for
     # the run's hold, so it never cancels a waiting test run.

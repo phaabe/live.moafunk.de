@@ -1,6 +1,6 @@
-//! Sends Instagram announcements: due feed posts from the scheduler tick, the
-//! on-air story when its episode goes live, and the post time once the
-//! episode's SoundCloud track is public.
+//! Sends Instagram announcements: due feed posts from the scheduler tick and
+//! the on-air story when its episode goes live. A booked feed post that can't
+//! go out at its time loses the booking; the host books a new time.
 //!
 //! Each send claims its row first (`send_claimed_at`), so a row is posted at
 //! most once, also across a restart. A claim older than [`STALE_CLAIM`] means
@@ -17,16 +17,14 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Europe::Berlin;
 
 use crate::announcement_image::{
-    announcement_for_show, load_announcement_image, render_announcement_jpeg,
-    store_announcement_jpeg, AnnouncementKind, AnnouncementLayout, PreviewQuery,
+    render_jpeg, row_render_input, store_announcement_jpeg, AnnouncementKind,
 };
-use crate::announcements::{
-    self, to_db_time, Announcement, AnnouncementSettings, AnnouncementSlot, KEEP_REQUESTED_AT,
-};
+use crate::announcements::{self, to_db_time, Announcement, AnnouncementSettings};
 use crate::instagram::{is_quota_used_up, InstagramClient, PublishedMedia};
-use crate::{models, storage, telegram_notify, AppError, AppState, Result};
+use crate::{models, recording_edit, storage, telegram_notify, AppError, AppState, Result};
 
-/// A send takes a few minutes at most (quota, container poll, publish).
+/// A send takes a few minutes at most (quota, snippet clips, container poll,
+/// publish).
 const STALE_CLAIM: Duration = Duration::minutes(15);
 
 /// The scheduler tick (every 60 s).
@@ -36,8 +34,8 @@ pub async fn check_due_announcements(state: &Arc<AppState>, now: DateTime<Utc>) 
     if settings.paused || crate::instagram::ensure_enabled(state).await.is_err() {
         return;
     }
-    if let Err(e) = unlock_waiting_posts(state, now).await {
-        tracing::error!("Announcements: post unlock failed: {e}");
+    if let Err(e) = unset_unready_bookings(state, now).await {
+        tracing::error!("Announcements: unset of unready bookings failed: {e}");
     }
     if let Err(e) = fail_interrupted_sends(state, now).await {
         tracing::error!("Announcements: stale claim check failed: {e}");
@@ -93,67 +91,24 @@ pub async fn announce_on_air(state: &Arc<AppState>, show_id: i64, now: DateTime<
     }
 }
 
-/// Every post that waits for SoundCloud and whose track is now public gets
-/// the default post time (`post_days_after` days after the episode, evening
-/// slot first, else the next free slot; from now on if that passed) and then
-/// the approval rule.
-pub async fn unlock_waiting_posts(state: &Arc<AppState>, now: DateTime<Utc>) -> Result<()> {
-    let settings = announcements::get_settings(&state.db).await;
-    let rows: Vec<(i64, i64, Option<i64>)> = sqlx::query_as(
-        "SELECT a.id, a.show_id, a.created_by FROM announcements a \
-         JOIN shows s ON s.id = a.show_id \
-         WHERE a.state = 'waiting_soundcloud' AND a.slot = 'post' AND s.soundcloud_public = 1 ORDER BY a.id",
+/// A booked feed post that can't go out at its time loses the booking: a
+/// time booked before the post was set up (`draft`), and a post-announcement
+/// whose SoundCloud track is still private. The post itself stays (a set-up
+/// one as `waiting_soundcloud`: set up, no time); `requested_at` keeps the
+/// lost time so the card can name it. Nothing is booked again by itself.
+pub async fn unset_unready_bookings(state: &Arc<AppState>, now: DateTime<Utc>) -> Result<()> {
+    sqlx::query(
+        "UPDATE announcements SET requested_at = scheduled_at, scheduled_at = NULL, \
+           anchor_offset_minutes = NULL, \
+           state = CASE WHEN state = 'draft' THEN 'draft' ELSE 'waiting_soundcloud' END, \
+           updated_at = CURRENT_TIMESTAMP \
+         WHERE channel = 'instagram' AND send_claimed_at IS NULL AND scheduled_at <= ? \
+           AND (state = 'draft' OR (slot = 'post' AND state = 'scheduled' AND show_id IN \
+             (SELECT id FROM shows WHERE COALESCE(soundcloud_public, 0) = 0)))",
     )
-    .fetch_all(&state.db)
+    .bind(to_db_time(now))
+    .execute(&state.db)
     .await?;
-    for (id, show_id, created_by) in rows {
-        let show: Option<models::Show> = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
-            .bind(show_id)
-            .fetch_optional(&state.db)
-            .await?;
-        let start = match &show {
-            Some(show) => crate::handlers::announcements::episode_start(state, show).await?,
-            None => None,
-        };
-        let creator: Option<models::User> = sqlx::query_as("SELECT * FROM users WHERE id = ?")
-            .bind(created_by)
-            .fetch_optional(&state.db)
-            .await?;
-
-        let first_day = crate::handlers::announcements::post_day(&settings, start, now);
-        let mut tx = state.db.begin_with("BEGIN IMMEDIATE").await?;
-        let Some(at) = crate::handlers::announcements::next_free_feed_time(
-            &mut tx,
-            &settings,
-            show_id,
-            AnnouncementSlot::Post,
-            first_day,
-            now,
-        )
-        .await?
-        else {
-            tracing::error!("Announcements: no free feed time for the post of show {show_id}");
-            continue;
-        };
-        let pending = announcements::needs_approval(&mut tx, &settings, creator.as_ref()).await?;
-        sqlx::query(&format!(
-            "UPDATE announcements SET state = ?, {KEEP_REQUESTED_AT}, scheduled_at = ?, \
-               anchor_offset_minutes = ?, updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ? AND state = 'waiting_soundcloud'"
-        ))
-        .bind(if pending {
-            "pending_approval"
-        } else {
-            "scheduled"
-        })
-        .bind(to_db_time(at))
-        .bind(to_db_time(at))
-        .bind(start.map(|s| (at - s).num_minutes()))
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-    }
     Ok(())
 }
 
@@ -287,45 +242,19 @@ async fn publish(
     settings: &AnnouncementSettings,
     row: &Announcement,
 ) -> Result<PublishedMedia> {
-    let kind = AnnouncementKind::from_slot(&row.slot)
-        .ok_or_else(|| AppError::Internal(format!("Unknown slot {}", row.slot)))?;
     let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
         .bind(row.show_id)
         .fetch_optional(&state.db)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Show {} not found", row.show_id)))?;
-    let handle: Option<String> = sqlx::query_scalar(
-        "SELECT t.instagram_handle FROM shows s JOIN show_templates t ON t.id = s.template_id \
-         WHERE s.id = ?",
-    )
-    .bind(row.show_id)
-    .fetch_optional(&state.db)
-    .await?
-    .flatten()
-    .filter(|h: &String| !h.is_empty());
+    let handle = announcements::show_handle(&state.db, row.show_id).await?;
 
-    let image_key = row
-        .image_key
-        .as_deref()
-        .filter(|_| row.image_source != "cover");
-    let image = load_announcement_image(state, row.show_id, image_key).await?;
-    let headline = row.headline.clone().unwrap_or_default();
-    let layout = if row.layout == "split" {
-        AnnouncementLayout::Split
-    } else {
-        AnnouncementLayout::Band
-    };
-    let query = PreviewQuery {
-        headline: headline.clone(),
-        layout,
-    };
-    let input = announcement_for_show(state, &show, kind, query, image).await?;
+    let input = row_render_input(state, &show, row).await?;
+    let kind = input.kind;
     let show_name = input.show_name.clone();
-    let jpeg = tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
-        .await
-        .map_err(|e| AppError::Internal(format!("Render task failed: {e}")))?
-        .map_err(|e| AppError::Internal(format!("Render failed: {e:#}")))?;
-    let key = store_announcement_jpeg(state, row.show_id, kind, jpeg).await?;
+    let headline = row.headline.clone().unwrap_or_default();
+    let jpeg = render_jpeg(input).await?;
+    let key = store_announcement_jpeg(state, row.show_id, kind, jpeg.clone()).await?;
     let url = storage::get_presigned_url(state, &key, 3600).await?;
 
     let client = InstagramClient::for_environment(&state.config, &state.db).await?;
@@ -334,10 +263,54 @@ async fn publish(
     }
     let caption = feed_caption(row.caption.as_deref(), &settings.hashtags);
     let alt_text = format!("{headline} – {show_name}");
-    let collaborators: Vec<String> = handle.filter(|_| row.collaborator).into_iter().collect();
+    let collaborators = announcements::collaborators_of(row, handle.as_deref());
+    let tags = announcements::handles(&row.user_tags);
+    if kind == AnnouncementKind::Post {
+        // The snippets placed for the post go out as video slides.
+        let carousel = async {
+            let Some(snippets) = recording_edit::post_snippets(state, &show).await? else {
+                return Ok(None);
+            };
+            // Before the render, so a used-up quota costs no clips.
+            client.ensure_quota_available().await?;
+            let clips = recording_edit::snippet_clips(state, show.id, &snippets, &jpeg).await?;
+            client
+                .prepare_feed_carousel(
+                    &url,
+                    &clips,
+                    &caption,
+                    Some(&alt_text),
+                    &collaborators,
+                    &tags,
+                )
+                .await
+                .map(Some)
+        }
+        .await;
+        match carousel {
+            Ok(Some(container)) => return client.publish_carousel(&container).await,
+            Ok(None) => {}
+            Err(e) if is_quota_used_up(&e) => return Err(e),
+            // Nothing is published yet: the post still goes out on time, as one image.
+            Err(e) => snippet_notice(state, &show, &e).await,
+        }
+    }
     client
-        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators)
+        .publish_feed_image(&url, &caption, Some(&alt_text), &collaborators, &tags)
         .await
+}
+
+/// The snippet clips failed and the post goes out as one image: tell the admin.
+async fn snippet_notice(state: &Arc<AppState>, show: &models::Show, e: &AppError) {
+    tracing::error!(
+        "Announcements: snippet clips of show {} failed: {e}",
+        show.id
+    );
+    let msg = format!(
+        "⚠️ Post-announcement of {}: the snippet clips failed, so it goes out as one image. {e}",
+        show.title
+    );
+    telegram_notify::notify(state, &msg).await;
 }
 
 /// The host's caption plus the station hashtags.

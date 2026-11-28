@@ -9,7 +9,7 @@ Staging runs images from the `staging` branch at https://staging.live.moafunk.de
   - own R2 buckets (`unheard-artists-staging`, `moafunk-staging`) with a token that can only reach them. `check-r2` proves it: the token must list the staging buckets and get 403 from `unheard-artists-prod`, `unheard-artists-dev` and `moafunk-prod`.
   - own Liquidsoap and Icecast on this box (harbor 8005, Icecast 8010, as in production) with own passwords
   - own SoundCloud test account (`SOUNDCLOUD_ACCOUNT`, never the station account `radio-moafunk`) on the station's SoundCloud app. The app has one redirect URI, production's (`SOUNDCLOUD_REDIRECT_URI`). Production sends staging logins (state `staging.…`) on to staging (`SOUNDCLOUD_FORWARD_URL=https://staging.live.moafunk.de/api/soundcloud/callback` in production's `.env`). The backend refuses a login of another account. Recordings upload by themselves (`SOUNDCLOUD_AUTO_UPLOAD=true`). Before each upload old tracks are deleted: with the new one only the newest 10 stay (`SOUNDCLOUD_KEEP_TRACKS=10`), and more go while the account has no upload time left (a Free account has 2 hours, and SoundCloud refuses every upload when they are used up).
-  - `TELEGRAM_ENABLED=false`
+  - Telegram only through the test bot @moafunktestbot (`TELEGRAM_BOT_TOKEN` must start with its id `8880403786:`) and the staging test group (`TELEGRAM_LIVE_CHAT_ID` and `TELEGRAM_ANNOUNCE_CHAT_ID` both `-1005857809589`: the live chat and the on-air message). No `TELEGRAM_ADMIN_CHAT_ID`: staging sends no technical alerts.
   - Instagram announcements post only to the test account: `INSTAGRAM_ACCOUNT=dev` with `INSTAGRAM_ACCESS_TOKEN_DEV` and `INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV` from Secrets Manager. No `*_PROD` value.
   - no `GITHUB_DISPATCH_TOKEN` (it would start the production backup workflow), no `SOUNDCLOUD_ACCESS_TOKEN` or other `SOUNDCLOUD_*` setting, and no other `TELEGRAM_*`, `INSTAGRAM_*`, `FACEBOOK_*`, `OPENAI_*` or `RECOVERY_*` setting
 - Secrets live in Bitwarden (`Moafunk STAGING_*` items, and the station's SoundCloud app in Secrets Manager). `push-secrets.sh` moves them to the box; nobody types or pastes them.
@@ -55,7 +55,7 @@ Add `-i <key>` to the `ssh`/`scp` commands below if your ssh config does not pic
    ```
 
 7. **Finish setup:** `ssh root@<staging-ip> /opt/unheard-staging/staging.sh setup` again. It checks both env files and the R2 token, writes `icecast.xml`, installs the nginx vhost and gets the TLS certificate once DNS points at the box. It is safe to run again at any time.
-8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` (password in `Moafunk STAGING_SUPERADMIN_PASSWORD`) or `staging-host` (password in `Moafunk STAGING_HOST_PASSWORD`).
+8. **Start:** `staging.sh up sha-<commit>` (see below), then log in as `staging-admin` (password in `Moafunk STAGING_SUPERADMIN_PASSWORD`) or `staging-host` (password in `Moafunk STAGING_HOST_PASSWORD`). `staging-host-2` has the same password, as a second host for co-host tests.
 
 ## Daily use
 
@@ -82,7 +82,7 @@ The CI key (`ci-deploy.pub`, private part in Bitwarden Secrets Manager as `STAGI
 
 Staging keeps running (also after a reboot) until `down`.
 
-`up` and `seed-db` create or reset three logins to the Bitwarden passwords: `staging-admin` (superadmin) and `staging-host` (host) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
+`up` and `seed-db` create or reset four logins to the Bitwarden passwords: `staging-admin` (superadmin), `staging-host` and `staging-host-2` (hosts) for people, and `e2e-host` (host) only for the chaos test show. People never use `e2e-host`: one login has only one stream, so a soundcheck as the same user ends the test's live stream. Its password is only in Bitwarden Secrets Manager (`STAGING_E2E_HOST_PASSWORD`), where CI reads it. `staging.sh users` does only that. To change a password, change it in Bitwarden, run `push-secrets.sh`, then `staging.sh users`.
 
 ## Chaos test show
 
@@ -90,7 +90,7 @@ Staging keeps running (also after a reboot) until `down`.
 
 - It runs every night, and on each release PR into `main` as a 90-minute soak (`e2e-release.yml` calls `e2e-staging.yml`). The release run first checks that staging runs exactly the image of the release commit (`staging.sh status` through the CI key), and stops if not. By hand: **Actions → TEST - Chaos show on staging → Run workflow**, with `duration` for a soak. The nightly run comes from `nightly.yml`, which starts this workflow on the `staging` branch. GitHub starts a workflow (schedule or by hand) only when its file is on `main`, then uses the file from the branch it names. So `nightly.yml` works once it is on `main`: with the next release, or a hotfix PR.
 - It does not run on PRs into `staging` or after a staging deploy, so a merge never waits for it. PRs that change `e2e/` run only its typecheck and unit tests (`e2e-unit.yml`).
-- A deploy waits while a test runs. The test holds staging from its start and removes only its own hold, so a release hold stays. The deploy retries every minute while a test holds staging (at most 160 minutes, then it fails). On a release hold it skips the image with a notice.
+- A deploy waits while a test runs. The test holds staging from its start and removes only its own hold, so a release hold stays. The deploy retries every minute while a test holds staging (at most 175 minutes, then it fails). On a release hold it skips the image with a notice.
 - Test runs share the concurrency group `staging-box`, so they never overlap. Deploys use their own group `staging-deploy`: GitHub keeps only one waiting job per group and cancels the older one, so a shared group used to drop deploys and test runs.
 - The test deletes its episodes and Show. Their files stay in the staging buckets (no API removes them).
 - A failed run keeps the Playwright trace and screenshots as a workflow artifact for 14 days.
@@ -102,6 +102,8 @@ For the test, the CI key may also run, on the box:
 | `e2e-hold <run>` | holds staging, unless it is on hold already |
 | `e2e-unhold <run>` | removes the hold, only if this run set it |
 | `e2e-restart-liquidsoap` | restarts the Liquidsoap container |
+| `e2e-restart-api` | restarts the API container, returns once `/health` answers |
+| `e2e-restart-icecast` | restarts the Icecast container, returns once both mounts are back |
 | `e2e-cut <1-60>` | resets the caller's own connections to ports 80 and 443 for that many seconds (`iptables`, removed by a `systemd-run` timer) |
 | `e2e-recordings <show>` | status, length and archive flag of a test episode's recordings (read-only) |
 | `e2e-cleanup` | deletes the `e2e-…` Shows of `e2e-host` (and of `staging-host`, from older runs) that have no episodes left (no API route deletes a Show) |
@@ -125,7 +127,7 @@ ssh root@178.104.160.103 'bash -s -- export-db' < backend/staging/staging.sh \
   | ssh root@<staging-ip> '/opt/unheard-staging/staging.sh seed-db -'
 ```
 
-The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin` and `staging-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
+The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin`, `staging-host`, `staging-host-2` and `e2e-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
 
 ## Tests
 

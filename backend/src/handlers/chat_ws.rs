@@ -10,7 +10,7 @@
 
 use crate::auth::get_current_user;
 use crate::chat_bridge::ChatMessage;
-use crate::{AppState, Result};
+use crate::{db, AppState, Result};
 use axum::extract::ws::{Message, WebSocket};
 use axum::{
     extract::{State, WebSocketUpgrade},
@@ -138,6 +138,10 @@ async fn send_host_reply(state: &Arc<AppState>, username: &str, text: &str) -> O
         Err(e) => return Some(e),
     };
 
+    if !db::is_service_enabled(&state.db, db::TELEGRAM_LIVE_CHAT_ENABLED).await {
+        return Some("Live chat is switched off".to_string());
+    }
+
     let bot = match &state.telegram_bot {
         Some(b) => b.clone(),
         None => return Some("Telegram bot is not configured on this server".to_string()),
@@ -189,6 +193,37 @@ mod tests {
     #[test]
     fn compose_skips_empty_replies() {
         assert_eq!(compose_host_reply("anton", ""), Ok(None));
+    }
+
+    #[tokio::test]
+    async fn host_replies_follow_the_live_chat_switch() {
+        const LIVE_CHAT: i64 = -2002;
+        let (state, _temp, fake) = crate::fake_telegram::telegram_state(
+            serde_json::json!({ "telegram_live_chat_id": LIVE_CHAT }),
+        )
+        .await;
+
+        db::set_setting(&state.db, db::TELEGRAM_LIVE_CHAT_ENABLED, "false")
+            .await
+            .unwrap();
+        assert_eq!(
+            send_host_reply(&state, "anton", "hello").await.as_deref(),
+            Some("Live chat is switched off")
+        );
+        assert!(fake.calls().is_empty());
+        assert!(state.chat_hub.recent().await.is_empty());
+
+        db::set_setting(&state.db, db::TELEGRAM_LIVE_CHAT_ENABLED, "true")
+            .await
+            .unwrap();
+        assert_eq!(send_host_reply(&state, "anton", "hello").await, None);
+        let sent = fake.of("sendmessage");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].int("chat_id"), Some(LIVE_CHAT));
+        assert_eq!(sent[0].text(), "🎙 anton: hello");
+        let recent = state.chat_hub.recent().await;
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].host);
     }
 
     #[test]

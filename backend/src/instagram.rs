@@ -926,7 +926,7 @@ impl InstagramClient {
         }
     }
 
-    async fn ensure_quota_available(&self) -> Result<()> {
+    pub async fn ensure_quota_available(&self) -> Result<()> {
         let (used, total) = self.content_publishing_quota().await?;
         if used >= total {
             return Err(AppError::External(format!(
@@ -964,7 +964,12 @@ impl InstagramClient {
             std::time::Duration::from_secs(2),
         )
         .await?;
-        let media_id = self.publish_with_retry(&container_id).await?;
+        self.publish_ready(&container_id, label).await
+    }
+
+    /// Publish a ready container and read its permalink.
+    async fn publish_ready(&self, container_id: &str, label: &str) -> Result<PublishedMedia> {
+        let media_id = self.publish_with_retry(container_id).await?;
         tracing::info!("Published Instagram {label}: {media_id}");
         let permalink = self.fetch_permalink(&media_id).await;
         Ok(PublishedMedia {
@@ -990,21 +995,17 @@ impl InstagramClient {
         self.publish_media(&params, "Story").await
     }
 
-    /// Publish a feed image with caption, alt text and collaborator accounts.
+    /// Publish a feed image with caption, alt text, collaborator accounts and
+    /// accounts tagged on the image.
     pub async fn publish_feed_image(
         &self,
         image_url: &str,
         caption: &str,
         alt_text: Option<&str>,
         collaborators: &[String],
+        user_tags: &[String],
     ) -> Result<PublishedMedia> {
-        let collaborators: Vec<&str> = collaborators
-            .iter()
-            .map(|c| c.trim_start_matches('@'))
-            .filter(|c| !c.is_empty())
-            .collect();
-        let collaborators =
-            (!collaborators.is_empty()).then(|| serde_json::json!(collaborators).to_string());
+        let collaborators = collaborators_param(collaborators);
         let mut params = vec![("image_url", image_url), ("caption", caption)];
         if let Some(alt) = alt_text {
             params.push(("alt_text", alt));
@@ -1012,8 +1013,108 @@ impl InstagramClient {
         if let Some(c) = &collaborators {
             params.push(("collaborators", c));
         }
+        let tags = feed_user_tags(user_tags);
+        if let Some(t) = &tags {
+            params.push(("user_tags", t));
+        }
         self.publish_media(&params, "Feed image").await
     }
+
+    /// Build a feed carousel without publishing it: the image (alt text and
+    /// tagged accounts go on it), one video slide per URL, then the parent
+    /// with caption and collaborators. Returns the ready parent container.
+    pub async fn prepare_feed_carousel(
+        &self,
+        image_url: &str,
+        video_urls: &[String],
+        caption: &str,
+        alt_text: Option<&str>,
+        collaborators: &[String],
+        user_tags: &[String],
+    ) -> Result<String> {
+        let mut image = vec![("image_url", image_url), ("is_carousel_item", "true")];
+        if let Some(alt) = alt_text {
+            image.push(("alt_text", alt));
+        }
+        let tags = feed_user_tags(user_tags);
+        if let Some(t) = &tags {
+            image.push(("user_tags", t));
+        }
+        let mut children = vec![self.create_media(&image).await?];
+        for url in video_urls {
+            let video = [
+                ("media_type", "VIDEO"),
+                ("video_url", url.as_str()),
+                ("is_carousel_item", "true"),
+            ];
+            children.push(self.create_media(&video).await?);
+        }
+        // Instagram processes the videos in parallel; 5 min covers a 30 s clip.
+        for (i, child) in children.iter().enumerate() {
+            let label = format!("Carousel slide {}", i + 1);
+            self.poll_container_until_ready(child, &label, 60, std::time::Duration::from_secs(5))
+                .await?;
+        }
+        let children = children.join(",");
+        let collaborators = collaborators_param(collaborators);
+        let mut parent = vec![
+            ("media_type", "CAROUSEL"),
+            ("children", children.as_str()),
+            ("caption", caption),
+        ];
+        if let Some(c) = &collaborators {
+            parent.push(("collaborators", c));
+        }
+        let container = self.create_media(&parent).await?;
+        self.poll_container_until_ready(
+            &container,
+            "Carousel",
+            30,
+            std::time::Duration::from_secs(2),
+        )
+        .await?;
+        Ok(container)
+    }
+
+    /// Publish a carousel from [`Self::prepare_feed_carousel`].
+    pub async fn publish_carousel(&self, container_id: &str) -> Result<PublishedMedia> {
+        self.ensure_quota_available().await?;
+        self.publish_ready(container_id, "Carousel").await
+    }
+}
+
+/// The `collaborators` parameter: handles without `@`, `None` when empty.
+fn collaborators_param(handles: &[String]) -> Option<String> {
+    let names: Vec<&str> = handles
+        .iter()
+        .map(|c| c.trim_start_matches('@'))
+        .filter(|c| !c.is_empty())
+        .collect();
+    (!names.is_empty()).then(|| serde_json::json!(names).to_string())
+}
+
+/// The `user_tags` of a feed image: Instagram needs a spot (0–1) for each tag.
+/// shortcut: the tags sit side by side across the middle of the image; let
+/// the host place them once the composer can show the spots.
+fn feed_user_tags(handles: &[String]) -> Option<String> {
+    let names: Vec<&str> = handles
+        .iter()
+        .map(|h| h.trim_start_matches('@'))
+        .filter(|h| !h.is_empty())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let step = 1.0 / (names.len() as f64 + 1.0);
+    let tags: Vec<serde_json::Value> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let x = ((i as f64 + 1.0) * step * 100.0).round() / 100.0;
+            serde_json::json!({ "username": name, "x": x, "y": 0.5 })
+        })
+        .collect();
+    Some(serde_json::Value::Array(tags).to_string())
 }
 
 /// Start of the error when the 24 h publishing quota is used up.

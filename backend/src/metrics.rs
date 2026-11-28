@@ -12,7 +12,7 @@
 //! don't all hold `AppState`); gauges are rendered from the live stream/recording
 //! state and the cached Icecast snapshot at scrape time.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::LazyLock;
 
 use crate::stream_metrics::StreamMetrics;
@@ -76,6 +76,83 @@ pub fn inc_recording_incomplete() {
     COUNTERS
         .recording_incomplete_total
         .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Work that a deploy must not cut. `backend/deploy/deploy-production.sh`
+/// reads `moafunk_busy{work="..."}` from `/metrics` and refuses while one is
+/// above 0. `/metrics` is reachable only on the box (see `metrics_handler`).
+#[derive(Clone, Copy)]
+pub enum Work {
+    /// A recording finalize: the grace wait, segment join, mp3 and R2 upload,
+    /// the finalize socket and boot recovery.
+    Finalize,
+    /// An uploaded show recording being stored.
+    RecordingUpload,
+    /// An uploaded pre-recorded set being stored.
+    SetUpload,
+    /// A recording upload to SoundCloud.
+    SoundcloudUpload,
+}
+
+const WORK_LABELS: [&str; 4] = [
+    "finalize",
+    "recording_upload",
+    "set_upload",
+    "soundcloud_upload",
+];
+
+/// Running work per [`Work`] kind.
+#[derive(Default)]
+pub struct Busy([AtomicUsize; 4]);
+
+impl Busy {
+    pub fn start(&self, work: Work) -> BusyGuard<'_> {
+        let count = &self.0[work as usize];
+        count.fetch_add(1, Ordering::Relaxed);
+        BusyGuard(count)
+    }
+
+    #[cfg(test)]
+    pub fn count(&self, work: Work) -> usize {
+        self.0[work as usize].load(Ordering::Relaxed)
+    }
+
+    fn render(&self, out: &mut String) {
+        out.push_str(
+            "# HELP moafunk_busy Running work a deploy must not cut, by kind.\n\
+             # TYPE moafunk_busy gauge\n",
+        );
+        for (count, label) in self.0.iter().zip(WORK_LABELS) {
+            out.push_str(&format!(
+                "moafunk_busy{{work=\"{label}\"}} {}\n",
+                count.load(Ordering::Relaxed)
+            ));
+        }
+    }
+}
+
+/// Counts one piece of work until dropped, so an early return or a panic
+/// still clears it.
+#[must_use]
+pub struct BusyGuard<'a>(&'a AtomicUsize);
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+static BUSY: LazyLock<Busy> = LazyLock::new(Busy::default);
+
+/// Mark `work` as running until the guard drops.
+pub fn busy(work: Work) -> BusyGuard<'static> {
+    BUSY.start(work)
+}
+
+/// Process-wide running count. Tests run in parallel, so only `>= 1` is safe.
+#[cfg(test)]
+pub fn running(work: Work) -> usize {
+    BUSY.count(work)
 }
 
 /// Live runtime state captured at scrape time for the gauge metrics.
@@ -160,6 +237,7 @@ pub fn render(metrics: &StreamMetrics, gauges: &Gauges, now_ms: i64) -> String {
         "1 when a recording session is currently active.",
         gauges.recording_active,
     );
+    BUSY.render(&mut out);
 
     // ── Icecast snapshot (mirrors the cached /api/stream/metrics poll) ──
     bool_gauge(
@@ -329,6 +407,56 @@ mod tests {
             .expect("counter line present");
         let val: u64 = line.rsplit(' ').next().unwrap().parse().unwrap();
         assert_eq!(val, after);
+    }
+
+    /// The deploy script greps these exact lines; keep the format.
+    #[test]
+    fn busy_counts_work_until_its_guard_drops() {
+        let busy = Busy::default();
+        let lines = |busy: &Busy| {
+            let mut out = String::new();
+            busy.render(&mut out);
+            out
+        };
+        assert!(lines(&busy).contains("moafunk_busy{work=\"finalize\"} 0\n"));
+
+        let first = busy.start(Work::Finalize);
+        let second = busy.start(Work::Finalize);
+        let upload = busy.start(Work::SoundcloudUpload);
+        let out = lines(&busy);
+        assert!(out.contains("\nmoafunk_busy{work=\"finalize\"} 2\n"));
+        assert!(out.contains("\nmoafunk_busy{work=\"recording_upload\"} 0\n"));
+        assert!(out.contains("\nmoafunk_busy{work=\"set_upload\"} 0\n"));
+        assert!(out.contains("\nmoafunk_busy{work=\"soundcloud_upload\"} 1\n"));
+
+        drop((first, second, upload));
+        assert_eq!(busy.count(Work::Finalize), 0);
+        assert_eq!(busy.count(Work::SoundcloudUpload), 0);
+
+        // A panic mid-work clears its count too.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = busy.start(Work::SetUpload);
+            panic!("upload failed");
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(busy.count(Work::SetUpload), 0);
+    }
+
+    #[test]
+    fn render_lists_every_busy_kind() {
+        let out = render(
+            &StreamMetrics::default(),
+            &Gauges {
+                stream_active: false,
+                recording_active: false,
+            },
+            0,
+        );
+        assert!(out.contains("# TYPE moafunk_busy gauge"));
+        for label in WORK_LABELS {
+            let prefix = format!("moafunk_busy{{work=\"{label}\"}} ");
+            assert!(out.lines().any(|l| l.starts_with(&prefix)), "{label}");
+        }
     }
 
     #[test]

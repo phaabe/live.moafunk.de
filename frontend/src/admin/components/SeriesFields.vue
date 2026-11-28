@@ -6,8 +6,14 @@ import { timeError, type SeriesDraft } from '../seriesDraft';
 // Name, Description and rhythm of a Show, for New Show and the Show page.
 
 const draft = defineModel<SeriesDraft>({ required: true });
-/** New Show puts the rhythm under its own "Rhythm" heading. */
-defineProps<{ rhythmTitle?: boolean }>();
+const props = defineProps<{
+  /** New Show puts the rhythm under its own "Rhythm" heading. */
+  rhythmTitle?: boolean;
+  /** Only one part: `about` (Name, Description) or `rhythm` (Repeats, Day, Time). Default: both. */
+  part?: 'about' | 'rhythm';
+}>();
+const showAbout = computed(() => props.part !== 'rhythm');
+const showRhythm = computed(() => props.part !== 'about');
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -16,8 +22,8 @@ const error = computed(() => timeError(draft.value));
 </script>
 
 <template>
-  <FormInput v-model="draft.name" label="Name" placeholder="Brunchtime" />
-  <label class="field">
+  <FormInput v-if="showAbout" v-model="draft.name" label="Name" placeholder="Brunchtime" />
+  <label v-if="showAbout" class="field">
     <span class="label">Description</span>
     <textarea
       v-model="draft.description"
@@ -27,8 +33,8 @@ const error = computed(() => timeError(draft.value));
     ></textarea>
   </label>
 
-  <h2 v-if="rhythmTitle" class="section-title">Rhythm</h2>
-  <div class="rhythm">
+  <h2 v-if="rhythmTitle && showRhythm" class="section-title">Rhythm</h2>
+  <div v-if="showRhythm" class="rhythm">
     <label class="field">
       <span class="label">Repeats</span>
       <select v-model="draft.repeatRule" class="input">
@@ -52,7 +58,7 @@ const error = computed(() => timeError(draft.value));
       </div>
     </div>
   </div>
-  <p v-if="error" class="field-error">{{ error }}</p>
+  <p v-if="error && showRhythm" class="field-error">{{ error }}</p>
 </template>
 
 <style scoped>

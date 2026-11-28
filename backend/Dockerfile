@@ -1,5 +1,5 @@
 # Build stage
-FROM public.ecr.aws/docker/library/rust:1.98-slim-bookworm AS builder
+FROM mirror.gcr.io/library/rust:1.98-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY backend/src ./src
 RUN touch src/main.rs && cargo build --release --locked
 
 # Frontend build stage for admin SPA
-FROM public.ecr.aws/docker/library/node:20-slim AS frontend-builder
+FROM mirror.gcr.io/library/node:20-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -33,7 +33,7 @@ COPY frontend ./
 # Stream URLs are baked into the admin SPA at build time (Vite inlines
 # import.meta.env.VITE_*). Without these the admin's stream config is empty —
 # e.g. "Test Your Stream" reports "not configured". Passed as build args from CI
-# (same repo Variables the Pages build uses); empty is a safe no-op fallback.
+# (backend.yml); empty is a safe no-op fallback.
 ARG VITE_STREAM_ICECAST_LIVE_URL=""
 ARG VITE_STREAM_ICECAST_TEST_URL=""
 ARG VITE_STREAM_STATUS_URL=""
@@ -49,7 +49,7 @@ ENV GIT_SHA=$GIT_SHA
 RUN npm run build
 
 # Runtime stage
-FROM public.ecr.aws/docker/library/debian:bookworm-slim
+FROM mirror.gcr.io/library/debian:bookworm-slim
 
 WORKDIR /app
 

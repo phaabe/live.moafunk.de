@@ -1,8 +1,11 @@
 {
   "screen": "studio-problem",
-  "hash": "753f759c",
-  "status": "ok",
+  "hash": "9d7596b2",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
+  "missing": [
+    "check: Record this show",
+    "button: Go Live"
+  ],
   "extra": []
 }

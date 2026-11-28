@@ -42,7 +42,9 @@ impl AnnouncementSlot {
 }
 
 /// States that count against the limits.
-/// cancelled, rejected, failed and draft do not count.
+/// cancelled, rejected, failed and draft do not count; a draft with a booked
+/// time holds its day (see `handlers::announcements::others_near`).
+/// `waiting_soundcloud` (historic name): set up, no time booked yet.
 pub const ACTIVE_STATES: &str =
     "('pending_approval', 'scheduled', 'armed', 'waiting_soundcloud', 'sent')";
 
@@ -56,13 +58,22 @@ pub struct Announcement {
     pub anchor_offset_minutes: Option<i64>,
     pub scheduled_at: Option<String>,
     /// The host's time when the backend moved the post; see [`KEEP_REQUESTED_AT`].
+    /// With no `scheduled_at`: the booked time the backend unset because the
+    /// post could not go out then (`announcement_send::unset_unready_bookings`).
     pub requested_at: Option<String>,
     pub headline: Option<String>,
     pub caption: Option<String>,
     pub image_source: String,
     pub image_key: Option<String>,
     pub layout: String,
+    /// Invite the show's own Instagram account as collaborator.
     pub collaborator: bool,
+    /// More collaborator accounts: a JSON list of handles. Feed posts only.
+    #[serde(serialize_with = "handle_list")]
+    pub extra_collaborators: String,
+    /// Accounts tagged on the image: a JSON list of handles. Feed posts only.
+    #[serde(serialize_with = "handle_list")]
+    pub user_tags: String,
     pub created_by: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -75,6 +86,71 @@ pub struct Announcement {
     /// Set while the scheduler sends this row; see `announcement_send`.
     #[serde(skip)]
     pub send_claimed_at: Option<String>,
+}
+
+/// Instagram takes at most 3 collaborators on a post.
+pub const MAX_COLLABORATORS: usize = 3;
+/// Instagram takes at most 20 tagged accounts on a post.
+pub const MAX_USER_TAGS: usize = 20;
+
+/// A stored JSON list of handles; a broken value reads as none.
+pub fn handles(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn handle_list<S: serde::Serializer>(raw: &str, s: S) -> Result<S::Ok, S::Error> {
+    handles(raw).serialize(s)
+}
+
+/// Instagram handles from the composer: "@" and spaces stripped, lower case,
+/// without duplicates. Err names the first one Instagram would refuse.
+pub fn clean_handles(list: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in list {
+        let h = raw.trim().trim_start_matches('@').to_lowercase();
+        if h.is_empty() {
+            continue;
+        }
+        let allowed = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_';
+        if h.len() > 30 || !h.chars().all(allowed) {
+            return Err(format!(
+                "@{h} is not an Instagram handle: use up to 30 letters, numbers, dots or underscores"
+            ));
+        }
+        if !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
+
+/// The show's own Instagram account, without "@".
+pub async fn show_handle(pool: &SqlitePool, show_id: i64) -> Result<Option<String>, sqlx::Error> {
+    let handle: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT t.instagram_handle FROM shows s JOIN show_templates t ON t.id = s.template_id \
+         WHERE s.id = ?",
+    )
+    .bind(show_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(handle.flatten().filter(|h| !h.is_empty()))
+}
+
+/// The collaborators of a feed post: the show's account when invited, then
+/// the host's extra accounts, at most [`MAX_COLLABORATORS`].
+pub fn collaborators_of(row: &Announcement, handle: Option<&str>) -> Vec<String> {
+    let mut list: Vec<String> = handle
+        .filter(|_| row.collaborator)
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    for h in handles(&row.extra_collaborators) {
+        if !list.iter().any(|x| x.eq_ignore_ascii_case(&h)) {
+            list.push(h);
+        }
+    }
+    list.truncate(MAX_COLLABORATORS);
+    list
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,35 +317,6 @@ pub async fn needs_approval(
             sent < 2
         }
     })
-}
-
-/// Arms the on-air story of a newly booked episode at its start. Keeps an
-/// existing row; does nothing when the start can't be computed.
-pub async fn arm_onair(
-    conn: &mut sqlx::SqliteConnection,
-    show_id: i64,
-    date: &str,
-    start_time: &str,
-    created_by: i64,
-) -> Result<(), sqlx::Error> {
-    let start = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .ok()
-        .zip(crate::series::parse_hhmm(start_time))
-        .and_then(|(day, time)| crate::series::berlin_to_utc(day.and_time(time)));
-    let Some(start) = start else {
-        return Ok(());
-    };
-    sqlx::query(
-        "INSERT OR IGNORE INTO announcements (show_id, slot, channel, state, \
-           anchor_offset_minutes, scheduled_at, created_by) \
-         VALUES (?, 'onair', 'instagram', 'armed', 0, ?, ?)",
-    )
-    .bind(show_id)
-    .bind(to_db_time(start))
-    .bind(created_by)
-    .execute(conn)
-    .await?;
-    Ok(())
 }
 
 /// One announcement with a send time.

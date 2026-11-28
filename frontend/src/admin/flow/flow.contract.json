@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 21,
+  "rev": 43,
   "screens": [
     {
       "id": "dashboard",
@@ -10,8 +10,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/dashboard",
-      "hash": "60a47e42",
-      "notesHash": "4a66ed6e",
+      "hash": "0c483340",
+      "notesHash": "3f923b31",
       "elements": [
         {
           "k": "h1",
@@ -19,31 +19,161 @@
         },
         {
           "k": "h2",
-          "text": "Upcoming shows"
+          "text": "On air"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Dub Kitchen** · mira · Pre-recorded · 18:00–20:00"
+        },
+        {
+          "k": "text",
+          "text": "00:42:10 · 37 listening"
+        },
+        {
+          "k": "button",
+          "text": "Listen live",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "My next show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime #31** · Live · Host: lena · So 25.10. · 12:00–14:00"
+        },
+        {
+          "k": "text",
+          "text": "Starts in 1 day 18 h"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Episodes"
+        },
+        {
+          "k": "nav",
+          "text": "Past",
+          "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Upcoming",
+          "to": null
         },
         {
           "k": "row",
-          "text": "So 25.10. · 12:00–14:00 · Brunchtime · lena",
-          "meta": "Upcoming · Live",
+          "text": "Di 20.10. · 20:00–22:00 · Night Shift · jonas",
+          "meta": "Finished · Live",
+          "to": "episode-view"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · 12:00–14:00 · Brunchtime · lena",
+          "meta": "Finished · wrap-up open · Live",
           "to": "episode"
         },
         {
           "k": "row",
-          "text": "Di 27.10. · 20:00–22:00 · Night Shift · jonas",
-          "meta": "Upcoming · Live",
+          "text": "Fr 16.10. · 18:00–20:00 · Dub Kitchen · mira",
+          "meta": "Finished · Pre-recorded",
           "to": "episode-view"
         },
         {
-          "k": "row",
-          "text": "Fr 30.10. · 18:00–20:00 · Dub Kitchen · mira",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-view"
+          "k": "text",
+          "text": "1–3 of 4"
+        },
+        {
+          "k": "button",
+          "text": "Previous episodes",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Next episodes",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Chalkboard"
+        },
+        {
+          "k": "text",
+          "text": "All hosts"
+        },
+        {
+          "k": "text",
+          "text": "**jonas** · 10:03 · Can someone take Di 03.11.?"
+        },
+        {
+          "k": "text",
+          "text": "**lena · you** · 10:20 · I can do it."
+        },
+        {
+          "k": "field",
+          "text": "Note for all hosts",
+          "value": "Write on the board"
+        },
+        {
+          "k": "button",
+          "text": "Post",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Shows"
+        },
+        {
+          "k": "text",
+          "text": "Most episodes first"
         },
         {
           "k": "row",
-          "text": "So 08.11. · 12:00–14:00 · Brunchtime · lena",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-pre"
+          "text": "Brunchtime · Yours",
+          "meta": "lena · 31 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "Night Shift",
+          "meta": "jonas · 12 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "UNHEARD",
+          "meta": "moafunk · 8 episodes",
+          "to": "show"
+        },
+        {
+          "k": "row",
+          "text": "Dub Kitchen",
+          "meta": "mira · 5 episodes",
+          "to": "show"
+        },
+        {
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -69,6 +199,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -89,57 +224,149 @@
     },
     {
       "id": "schedule",
-      "title": "Schedule",
+      "title": "Show · your episode on air",
       "who": "host",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/schedule",
-      "hash": "49407601",
-      "notesHash": "67e71cb5",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime",
+      "hash": "5ab91009",
+      "notesHash": "b90df5bf",
       "elements": [
         {
-          "k": "h1",
-          "text": "Schedule"
+          "k": "back",
+          "text": "My Show",
+          "to": "my-shows"
         },
         {
           "k": "h2",
           "text": "On air now"
         },
         {
-          "k": "pill",
-          "tone": "live",
-          "text": "On air · Brunchtime · until 14:00"
+          "k": "row",
+          "text": "On air now",
+          "meta": "Brunchtime | lena | until 14:00",
+          "to": "studio-onair"
         },
         {
-          "k": "h2",
-          "text": "Your next episodes"
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "h1",
+          "text": "Brunchtime"
+        },
+        {
+          "k": "button",
+          "text": "Edit",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "Sunday brunch sounds, every week from 12:00."
         },
         {
           "k": "row",
-          "text": "So 25.10. · Brunchtime",
-          "meta": "Upcoming · Live",
+          "text": "Rhythm:",
+          "meta": "Every week · Sundays · 12:00–14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Host:",
+          "meta": "lena",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram:",
+          "meta": "@brunchtime",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Schedule"
+        },
+        {
+          "k": "button",
+          "text": "Book another date",
+          "to": "book-slot",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 25.10. · On air",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 01.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 08.11. · Pre-rec",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 15.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "On air now"
+        },
+        {
+          "k": "text",
+          "text": "So 25.10."
+        },
+        {
+          "k": "text",
+          "text": "12:00–14:00 · Live"
+        },
+        {
+          "k": "text",
+          "text": "The Studio is open."
+        },
+        {
+          "k": "text",
+          "text": "Instagram: Pre-announcement · On-air story · Post-announcement"
+        },
+        {
+          "k": "text",
+          "text": "On air now · until 14:00"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "h2",
+          "text": "Past episodes"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · 12:00–14:00 · Live",
+          "meta": "Finished · wrap-up open",
           "to": "episode"
         },
         {
           "k": "row",
-          "text": "So 08.11. · Brunchtime",
-          "meta": "Upcoming · Pre-recorded",
-          "to": "episode-pre"
+          "text": "So 11.10. · 12:00–14:00 · Pre-recorded",
+          "meta": "Finished · Public on SoundCloud",
+          "to": "episode"
         },
         {
-          "k": "h2",
-          "text": "Free slots"
-        },
-        {
-          "k": "row",
-          "text": "So 01.11. · 12:00–14:00",
-          "meta": "Free",
-          "to": "book-slot"
-        },
-        {
-          "k": "row",
-          "text": "So 15.11. · 12:00–14:00",
-          "meta": "Free",
-          "to": "book-slot"
+          "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
         },
         {
           "k": "nav",
@@ -165,6 +392,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -189,8 +421,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows",
-      "hash": "868f9bba",
-      "notesHash": "ea6f100c",
+      "hash": "a95e8f5b",
+      "notesHash": "ab9dea67",
       "elements": [
         {
           "k": "h1",
@@ -216,6 +448,11 @@
         },
         {
           "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
           "text": "Dashboard",
           "to": "dashboard"
         },
@@ -238,6 +475,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -326,17 +568,17 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime",
-      "hash": "25c1eea7",
-      "notesHash": "81e1aa2b",
+      "hash": "106ff9fa",
+      "notesHash": "04656bea",
       "elements": [
         {
           "k": "back",
-          "text": "My Shows",
+          "text": "My Show",
           "to": "my-shows"
         },
         {
           "k": "media",
-          "text": "Show cover · drop an image",
+          "text": "Show cover · the Show’s initials when it has none",
           "to": null
         },
         {
@@ -344,18 +586,153 @@
           "text": "Brunchtime"
         },
         {
+          "k": "button",
+          "text": "Edit",
+          "to": "my-show-edit",
+          "primary": false
+        },
+        {
           "k": "text",
           "text": "Sunday brunch sounds, every week from 12:00."
         },
         {
+          "k": "row",
+          "text": "Rhythm:",
+          "meta": "Every week · Sundays · 12:00–14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Host:",
+          "meta": "lena",
+          "to": "profile"
+        },
+        {
+          "k": "row",
+          "text": "Instagram:",
+          "meta": "@brunchtime",
+          "to": null
+        },
+        {
+          "k": "h2",
+          "text": "Schedule"
+        },
+        {
           "k": "button",
-          "text": "Book Slot",
+          "text": "Book another date",
           "to": "book-slot",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 25.10. · Next",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 01.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 08.11. · Pre-rec",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "So 15.11. · Free",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "Next episode"
+        },
+        {
+          "k": "text",
+          "text": "So 25.10."
+        },
+        {
+          "k": "text",
+          "text": "12:00–14:00 · Live"
+        },
+        {
+          "k": "text",
+          "text": "Test your audio in the Studio before air time."
+        },
+        {
+          "k": "text",
+          "text": "Instagram: Pre-announcement · On-air story · Post-announcement"
+        },
+        {
+          "k": "text",
+          "text": "Starts in 2 days 4 h"
+        },
+        {
+          "k": "button",
+          "text": "Open episode",
+          "to": "episode",
           "primary": true
         },
         {
           "k": "h2",
-          "text": "Details"
+          "text": "Past episodes"
+        },
+        {
+          "k": "row",
+          "text": "So 18.10. · 12:00–14:00 · Live",
+          "meta": "Finished · wrap-up open",
+          "to": "episode"
+        },
+        {
+          "k": "row",
+          "text": "So 11.10. · 12:00–14:00 · Pre-recorded",
+          "meta": "Finished · Public on SoundCloud",
+          "to": "episode"
+        }
+      ]
+    },
+    {
+      "id": "my-show-edit",
+      "title": "My Show · editing",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows?edit=brunchtime",
+      "hash": "ec62311d",
+      "notesHash": "7ea347ed",
+      "elements": [
+        {
+          "k": "back",
+          "text": "My Shows",
+          "to": "my-shows"
+        },
+        {
+          "k": "h1",
+          "text": "My Show"
+        },
+        {
+          "k": "text",
+          "text": "Editing show details"
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": "my-shows",
+          "primary": false
+        },
+        {
+          "k": "media",
+          "text": "Show cover · drop an image or pick a file",
+          "to": null
         },
         {
           "k": "field",
@@ -366,6 +743,10 @@
           "k": "field",
           "text": "Description",
           "value": "Sunday brunch sounds, every week from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Rhythm"
         },
         {
           "k": "field",
@@ -388,32 +769,25 @@
           "value": "@brunchtime"
         },
         {
-          "k": "button",
-          "text": "Save",
-          "to": null,
-          "primary": false
-        },
-        {
           "k": "h2",
-          "text": "Episodes"
+          "text": "Hosts"
         },
         {
           "k": "row",
-          "text": "So 25.10. · Live",
-          "meta": "Upcoming",
-          "to": "episode"
-        },
-        {
-          "k": "row",
-          "text": "So 18.10. · Live",
-          "meta": "Finished · wrap-up open",
-          "to": "wrapup"
-        },
-        {
-          "k": "row",
-          "text": "So 11.10. · Pre-recorded",
-          "meta": "Finished",
+          "text": "lena",
+          "meta": "Owner",
           "to": null
+        },
+        {
+          "k": "row",
+          "text": "jonas",
+          "meta": "Co-host · Remove",
+          "to": null
+        },
+        {
+          "k": "field",
+          "text": "Add host",
+          "value": "Pick a host ▾"
         }
       ]
     },
@@ -423,8 +797,8 @@
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
-      "hash": "a3675931",
-      "notesHash": "9f0648fb",
+      "hash": "34d7cfff",
+      "notesHash": "2136e1ca",
       "elements": [
         {
           "k": "back",
@@ -432,17 +806,22 @@
           "to": "show"
         },
         {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
+        },
+        {
           "k": "h1",
-          "text": "Book Slot"
+          "text": "Brunchtime"
         },
         {
-          "k": "field",
-          "text": "Show",
-          "value": "Brunchtime ▾"
-        },
-        {
-          "k": "h2",
-          "text": "Mode"
+          "k": "text",
+          "text": "Every week · Sundays · 12:00–14:00"
         },
         {
           "k": "choice",
@@ -457,22 +836,532 @@
           "on": false
         },
         {
-          "k": "field",
-          "text": "Date",
-          "value": "So 25.10.2026 ▾"
+          "k": "h2",
+          "text": "Day"
         },
         {
-          "k": "field",
-          "text": "Time",
-          "value": "12:00–14:00 ▾"
+          "k": "choice",
+          "text": "Now · 22:13",
+          "to": "book-now",
+          "on": false
         },
         {
-          "k": "notice",
-          "text": "Pre-recorded shows need the file before you pick a time."
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
         },
         {
           "k": "button",
-          "text": "Book slot",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Start · So 01.11."
+        },
+        {
+          "k": "choice",
+          "text": "00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "01",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "02",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "03",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "04",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "05",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "06",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "07",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "08",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "09",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "10",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "11",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "12",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "13",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "14",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "16",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "17",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "18",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "19",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "20",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "21",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "22",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "23",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": ":15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":30",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":45",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Live · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "So 01.11. · 12:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "So 01.11. · 14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Book episode",
+          "to": "episode",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "book-now",
+      "title": "Book Slot · Now",
+      "who": "host",
+      "lane": "plan",
+      "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
+      "hash": "fe9ad71c",
+      "notesHash": "c81966a5",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
+        },
+        {
+          "k": "h1",
+          "text": "Brunchtime"
+        },
+        {
+          "k": "text",
+          "text": "Every week · Sundays · 12:00–14:00"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": "upload",
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Day"
+        },
+        {
+          "k": "choice",
+          "text": "Now · 22:13",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": "book-slot",
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "notice",
+          "text": "Starts right away at 22:13."
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "Live · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "Now · Di 27.10. · 22:13",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "Mi 28.10. · 00:13 · +1 day",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Start show now",
           "to": "episode",
           "primary": true
         }
@@ -480,25 +1369,47 @@
     },
     {
       "id": "upload",
-      "title": "Upload Your Set",
+      "title": "Book Slot · Pre-recorded",
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book?mode=prerecorded",
-      "hash": "a5da7c09",
-      "notesHash": "51e1820b",
+      "hash": "ff776a95",
+      "notesHash": "4087e5ca",
       "elements": [
         {
           "k": "back",
-          "text": "Book Slot",
-          "to": "book-slot"
+          "text": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "media",
+          "text": "Show cover · the Show’s initials when it has none",
+          "to": null
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Book an episode"
         },
         {
           "k": "h1",
-          "text": "Upload Your Set"
+          "text": "Brunchtime"
         },
         {
           "k": "text",
-          "text": "Pre-recorded episodes start with the file."
+          "text": "Every week · Sundays · 12:00–14:00"
+        },
+        {
+          "k": "choice",
+          "text": "Live",
+          "to": "book-slot",
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Pre-recorded",
+          "to": null,
+          "on": true
         },
         {
           "k": "media",
@@ -508,21 +1419,325 @@
         {
           "k": "pill",
           "tone": "ok",
-          "text": "brunchtime-0811.mp3 · 1:58:40 · uploaded"
+          "text": "brunchtime-0111.mp3 · 1:58:40 · uploaded"
         },
         {
-          "k": "field",
-          "text": "Date",
-          "value": "So 08.11.2026 ▾"
+          "k": "h2",
+          "text": "Day"
         },
         {
-          "k": "field",
-          "text": "Time",
-          "value": "12:00–14:00 ▾"
+          "k": "choice",
+          "text": "Today · Di 27.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Mi 28.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Do 29.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Fr 30.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 31.10.",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "So 01.11.",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Mo 02.11.",
+          "to": null,
+          "on": false
         },
         {
           "k": "button",
-          "text": "Book slot",
+          "text": "More days",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Start · So 01.11."
+        },
+        {
+          "k": "choice",
+          "text": "00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "01",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "02",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "03",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "04",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "05",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "06",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "07",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "08",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "09",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "10",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "11",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "12",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "13",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "14",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "16",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "17",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "18",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "19",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "20",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "21",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "22",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "23",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": ":15",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":30",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": ":45",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "h2",
+          "text": "Length"
+        },
+        {
+          "k": "choice",
+          "text": "30 min",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "1½ h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "2 h",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "3 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "4 h",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "−15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "+15 min",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Overview"
+        },
+        {
+          "k": "button",
+          "text": "Edit manually",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Pre-recorded · Brunchtime"
+        },
+        {
+          "k": "row",
+          "text": "Start",
+          "meta": "So 01.11. · 12:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "End",
+          "meta": "So 01.11. · 14:00",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Length",
+          "meta": "2 h",
+          "to": null
+        },
+        {
+          "k": "media",
+          "text": "Time bar · start to end, with a 00:00 mark when the show passes midnight",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Book episode",
           "to": "episode-pre",
           "primary": true
         }
@@ -534,8 +1749,8 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "e7a8a2aa",
-      "notesHash": "38d6a67d",
+      "hash": "35d8aab3",
+      "notesHash": "f604f797",
       "elements": [
         {
           "k": "back",
@@ -557,7 +1772,7 @@
         },
         {
           "k": "text",
-          "text": "Test your audio before air time. The Studio opens 30 min before the start."
+          "text": "Test your audio in the Studio before air time."
         },
         {
           "k": "button",
@@ -609,68 +1824,332 @@
         },
         {
           "k": "button",
-          "text": "Create guest link",
-          "to": "guest-link",
-          "primary": false
-        },
-        {
-          "k": "button",
           "text": "Cancel booking",
           "to": null,
           "primary": false
         },
         {
-          "k": "h2",
-          "text": "Promotion · Instagram"
-        },
-        {
-          "k": "text",
-          "text": "Posted by @moafunk_radio. @brunchtime is invited as collaborator."
-        },
-        {
           "k": "row",
-          "text": "Pre · feed post 4:5",
-          "meta": "Scheduled · Fr 23.10. · 18:00",
-          "to": "announce"
+          "text": "Hosts",
+          "meta": "lena, jonas · mira · DJ Lumen (guest)",
+          "to": null
         },
         {
           "k": "button",
-          "text": "Edit pre-announcement",
+          "text": "Add host",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Add guest",
+          "to": "guest-link",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "text",
+          "text": "Posts go out on @moafunk_radio."
+        },
+        {
+          "k": "row",
+          "text": "Pre-announcement",
+          "meta": "Scheduled",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Goes out",
+          "meta": "Fr 23.10. · 18:00 · in 3 days",
+          "to": "book-time"
+        },
+        {
+          "k": "button",
+          "text": "Edit",
           "to": "announce",
           "primary": false
         },
         {
-          "k": "button",
-          "text": "Cancel pre-announcement",
-          "to": null,
-          "primary": false
-        },
-        {
-          "k": "check",
-          "text": "On air · story 9:16",
-          "meta": "Sent when you go live",
-          "on": true
+          "k": "row",
+          "text": "On-air story",
+          "meta": "Scheduled",
+          "to": null
         },
         {
           "k": "row",
-          "text": "Post · feed post 4:5",
-          "meta": "Set up in Wrap-up when the SoundCloud track is public",
+          "text": "Goes out",
+          "meta": "So 25.10. · 12:00 · when you go live",
           "to": null
+        },
+        {
+          "k": "button",
+          "text": "Edit",
+          "to": "announce",
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Post-announcement",
+          "meta": "Not set up",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Book a time",
+          "meta": "",
+          "to": "book-time"
+        },
+        {
+          "k": "button",
+          "text": "Set up",
+          "to": "announce",
+          "primary": true
         },
         {
           "k": "h2",
           "text": "Recording"
-        },
+        }
+      ]
+    },
+    {
+      "id": "episode-recording",
+      "title": "Recording tab",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "8a94cb68",
+      "notesHash": "d788ca79",
+      "elements": [
         {
-          "k": "field",
-          "text": "Recording file",
-          "value": "MP3 or WAV"
+          "k": "h2",
+          "text": "Recording & SoundCloud"
         },
         {
           "k": "button",
-          "text": "Upload to SoundCloud",
+          "text": "Download",
           "to": null,
           "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": "episode-recording-file"
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Private · Show recording, edited · So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording, edited (1:47:40)",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Uploaded",
+          "meta": "So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Open on SoundCloud",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Private",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Public",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement waits for a public track",
+          "to": "episode-recording-instagram"
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "episode-recording-file",
+      "title": "Recording tab · File",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "b86e06fa",
+      "notesHash": "e6b60141",
+      "elements": [
+        {
+          "k": "h2",
+          "text": "Recording & SoundCloud"
+        },
+        {
+          "k": "button",
+          "text": "Download",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": null
+        },
+        {
+          "k": "choice",
+          "text": "Show recording",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Own file",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "button",
+          "text": "Edit recording",
+          "to": "edit-recording",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Choose file",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Private · Show recording, edited · So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement waits for a public track",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "episode-recording-instagram",
+      "title": "Recording tab · Instagram",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "611ca77e",
+      "notesHash": "af28ac11",
+      "elements": [
+        {
+          "k": "h2",
+          "text": "Recording & SoundCloud"
+        },
+        {
+          "k": "button",
+          "text": "Download",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Download original",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "row",
+          "text": "File",
+          "meta": "Show recording · edited · 1:47:40",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "Public · Show recording, edited · So 25.10. · 14:20",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "Post-announcement: Scheduled · Mi 28.10. · 18:00",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "The post-announcement goes out at its booked time once the SoundCloud track is public. You set it up in step 1 Social media."
+        },
+        {
+          "k": "text",
+          "text": "Snippets are up to 3 short clips from your set, 5 to 30 s each. They go into the post as video slides after the image, so pick the moments that make people want to listen."
+        },
+        {
+          "k": "button",
+          "text": "Go to Social media",
+          "to": "episode",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Publish episode",
+          "to": null,
+          "primary": true
         }
       ]
     },
@@ -680,8 +2159,8 @@
       "who": "host",
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/shows/42/announce/pre",
-      "hash": "b3ca3db6",
-      "notesHash": "db3d3c75",
+      "hash": "bb6c95e6",
+      "notesHash": "e2641c58",
       "elements": [
         {
           "k": "back",
@@ -745,28 +2224,10 @@
           "text": "When"
         },
         {
-          "k": "choice",
-          "text": "Fr 23.10. · 18:00",
-          "to": null,
-          "on": true
-        },
-        {
-          "k": "choice",
-          "text": "Sa 24.10. · 12:00",
-          "to": null,
-          "on": false
-        },
-        {
-          "k": "choice",
-          "text": "Sa 24.10. · 18:00",
-          "to": null,
-          "on": false
-        },
-        {
-          "k": "choice",
-          "text": "Post now",
-          "to": null,
-          "on": false
+          "k": "row",
+          "text": "Goes out",
+          "meta": "Fr 23.10. · 18:00 · in 3 days",
+          "to": "book-time"
         },
         {
           "k": "h2",
@@ -800,12 +2261,88 @@
       ]
     },
     {
+      "id": "book-time",
+      "title": "Book a time",
+      "who": "host",
+      "lane": "promo",
+      "path": "admin.live.moafunk.de/#/shows/42",
+      "hash": "c6a2bf8d",
+      "notesHash": "45ad4010",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode"
+        },
+        {
+          "k": "h1",
+          "text": "Book a time"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Pre-announcement · before your show"
+        },
+        {
+          "k": "media",
+          "text": "Week grid · one column per day with 12:00 and 18:00 · your show as a yellow marker",
+          "to": null
+        },
+        {
+          "k": "choice",
+          "text": "Fr 23.10. · 18:00",
+          "to": null,
+          "on": true
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 12:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "choice",
+          "text": "Sa 24.10. · 18:00",
+          "to": null,
+          "on": false
+        },
+        {
+          "k": "notice",
+          "text": "It goes out only if your SoundCloud track is public by then. If not, the time is unset and you book a new one."
+        },
+        {
+          "k": "h2",
+          "text": "Goes out"
+        },
+        {
+          "k": "text",
+          "text": "Fr 23.10. · 18:00"
+        },
+        {
+          "k": "text",
+          "text": "in 3 days · 2 days before your show"
+        },
+        {
+          "k": "button",
+          "text": "Book this time",
+          "to": "episode",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "back",
+          "primary": false
+        }
+      ]
+    },
+    {
       "id": "episode-pre",
       "title": "Episode · Pre-recorded",
       "who": "host",
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/43",
-      "hash": "2867c7b5",
+      "hash": "71f40e7b",
       "notesHash": "5efe2392",
       "elements": [
         {
@@ -828,7 +2365,7 @@
         },
         {
           "k": "text",
-          "text": "Nothing to do. The set plays at air time. Wrap-up opens after 14:00."
+          "text": "Nothing to do. The set plays at air time."
         },
         {
           "k": "media",
@@ -840,12 +2377,6 @@
           "text": "Replace file",
           "to": "upload",
           "primary": false
-        },
-        {
-          "k": "button",
-          "text": "Open Wrap-up",
-          "to": "wrapup",
-          "primary": true
         },
         {
           "k": "h2",
@@ -978,13 +2509,13 @@
       "who": "host",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/shows/44",
-      "hash": "e507e038",
-      "notesHash": "c4d3be8b",
+      "hash": "fc7f14af",
+      "notesHash": "bf421e4d",
       "elements": [
         {
           "k": "back",
-          "text": "Dashboard",
-          "to": "dashboard"
+          "text": "Night Shift",
+          "to": "show"
         },
         {
           "k": "media",
@@ -1012,7 +2543,192 @@
           "k": "row",
           "text": "Host",
           "meta": "jonas",
-          "to": null
+          "to": "profile-view"
+        }
+      ]
+    },
+    {
+      "id": "edit-recording",
+      "title": "Edit recording · Start & end",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
+      "hash": "db656db2",
+      "notesHash": "3c4f1275",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode-recording"
+        },
+        {
+          "k": "h1",
+          "text": "Edit recording"
+        },
+        {
+          "k": "button",
+          "text": "Zoom out",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Zoom in",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Show all",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Start & end",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Volume",
+          "to": "edit-recording-volume",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Cut the set"
+        },
+        {
+          "k": "text",
+          "text": "Set where your set starts and ends. Everything before and after is cut, like the soundcheck or the silence at the end, and the cuts get a short fade. Here you also set the volume of the whole set."
+        },
+        {
+          "k": "field",
+          "text": "Start",
+          "value": "0:06:09.6"
+        },
+        {
+          "k": "field",
+          "text": "End",
+          "value": "1:53:50.4"
+        },
+        {
+          "k": "button",
+          "text": "Set to playhead",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "field",
+          "text": "Volume of the whole set",
+          "value": "+2.5 dB"
+        },
+        {
+          "k": "button",
+          "text": "Next: volume",
+          "to": "edit-recording-volume",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Discard",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Apply edit",
+          "to": "episode-recording",
+          "primary": true
+        }
+      ]
+    },
+    {
+      "id": "edit-recording-volume",
+      "title": "Edit recording · Volume",
+      "who": "host",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/shows/42/edit-recording",
+      "hash": "08f8a85f",
+      "notesHash": "eda1adbe",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Episode",
+          "to": "episode-recording"
+        },
+        {
+          "k": "h1",
+          "text": "Edit recording"
+        },
+        {
+          "k": "button",
+          "text": "Zoom out",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Zoom in",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Show all",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Play",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Start & end",
+          "to": "edit-recording",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Volume",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "Fix loud or quiet parts"
+        },
+        {
+          "k": "text",
+          "text": "Mark a part that is too loud or too quiet, like a talk break or one loud track, and change only its volume. The rest of the set stays as it is. The volume changes smoothly at the edges, so there are no clicks."
+        },
+        {
+          "k": "button",
+          "text": "Add section",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Discard",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Apply edit",
+          "to": "episode-recording",
+          "primary": true
         }
       ]
     },
@@ -1022,8 +2738,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "5e94b0cd",
-      "notesHash": "bc9ceae0",
+      "hash": "c4c59017",
+      "notesHash": "c1bc1e25",
       "elements": [
         {
           "k": "back",
@@ -1048,6 +2764,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -1121,7 +2842,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "8f6dff6c",
+      "hash": "dee37f5a",
       "notesHash": "54b583db",
       "elements": [
         {
@@ -1147,6 +2868,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -1220,8 +2946,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "85fbd85f",
-      "notesHash": "d5625cae",
+      "hash": "5a4c62e9",
+      "notesHash": "f0534f9e",
       "elements": [
         {
           "k": "back",
@@ -1246,6 +2972,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -1330,7 +3061,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "753f759c",
+      "hash": "9d7596b2",
       "notesHash": "eacaa2a2",
       "elements": [
         {
@@ -1356,6 +3087,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -1440,7 +3176,7 @@
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
       "hash": "06b0ad1a",
-      "notesHash": "22c11896",
+      "notesHash": "fa499aec",
       "elements": [
         {
           "k": "h1",
@@ -1716,7 +3452,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/on-air",
-      "hash": "029901f4",
+      "hash": "67b13e6a",
       "notesHash": "1ddc7d23",
       "elements": [
         {
@@ -1780,7 +3516,7 @@
         {
           "k": "button",
           "text": "End Episode",
-          "to": "wrapup",
+          "to": "episode",
           "primary": true
         }
       ]
@@ -1831,122 +3567,115 @@
       ]
     },
     {
-      "id": "wrapup",
-      "title": "Wrap-up",
-      "who": "host",
+      "id": "onair-bar",
+      "title": "On-air bar",
+      "who": "shared",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "831e0603",
-      "notesHash": "d4b89a34",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "38437603",
+      "notesHash": "81863d4a",
       "elements": [
         {
-          "k": "back",
-          "text": "Episode",
-          "to": "episode"
-        },
-        {
-          "k": "h1",
-          "text": "Wrap-up"
-        },
-        {
           "k": "pill",
-          "tone": "ok",
-          "text": "Recording ready · 1:58:40"
+          "tone": "live",
+          "text": "On air · 00:42:10"
         },
         {
-          "k": "h2",
-          "text": "SoundCloud"
-        },
-        {
-          "k": "field",
-          "text": "Track title",
-          "value": "Brunchtime #31 · 25.10.2026"
-        },
-        {
-          "k": "check",
-          "text": "Upload as private track",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "Add to playlist “Brunchtime”",
-          "meta": "",
-          "on": true
-        },
-        {
-          "k": "h2",
-          "text": "Post-announcement"
-        },
-        {
-          "k": "row",
-          "text": "Post · feed post 4:5",
-          "meta": "Mi 28.10. · 18:00 · waits for the public track",
-          "to": "announce"
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
         },
         {
           "k": "button",
-          "text": "Set up post-announcement",
-          "to": "announce",
+          "text": "Back to On Air",
+          "to": "studio-onair",
           "primary": false
         },
         {
-          "k": "h2",
-          "text": "3 moments for Instagram"
-        },
-        {
-          "k": "check",
-          "text": "00:12:30",
-          "meta": "Opening track",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "00:31:05",
-          "meta": "Guest talk",
-          "on": true
-        },
-        {
-          "k": "check",
-          "text": "01:20:44",
-          "meta": "Closing set",
-          "on": false
-        },
-        {
           "k": "button",
-          "text": "Publish",
-          "to": "done",
+          "text": "End Episode",
+          "to": "onair-bar-end",
           "primary": true
+        },
+        {
+          "k": "media",
+          "text": "The admin page the host opened",
+          "to": null
         }
       ]
     },
     {
-      "id": "done",
-      "title": "Published",
-      "who": "host",
+      "id": "onair-bar-warn",
+      "title": "On-air bar, warning",
+      "who": "shared",
       "lane": "showday",
-      "path": "admin.live.moafunk.de/#/shows/42",
-      "hash": "bed29c37",
-      "notesHash": "d07f892e",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "45c3f7b2",
+      "notesHash": "a0558705",
       "elements": [
         {
-          "k": "h1",
-          "text": "Episode published"
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10"
         },
         {
-          "k": "pill",
-          "tone": "ok",
-          "text": "SoundCloud · private track uploaded"
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
         },
         {
-          "k": "pill",
-          "tone": "ok",
-          "text": "Instagram · post-announcement Mi 28.10. · 18:00"
+          "k": "notice",
+          "text": "Audio device is no longer active. Re-select your device."
         },
         {
           "k": "button",
-          "text": "Back to Schedule",
-          "to": "schedule",
+          "text": "Back to On Air",
+          "to": "studio-onair-noinput",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "onair-bar-end",
+          "primary": false
+        },
+        {
+          "k": "media",
+          "text": "The admin page the host opened",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "onair-bar-end",
+      "title": "On-air bar, ending",
+      "who": "shared",
+      "lane": "showday",
+      "path": "admin.live.moafunk.de/#/dashboard",
+      "hash": "f2b760cb",
+      "notesHash": "9d7e61e2",
+      "elements": [
+        {
+          "k": "pill",
+          "tone": "live",
+          "text": "On air · 00:42:10"
+        },
+        {
+          "k": "text",
+          "text": "**Brunchtime** · 12:00–14:00"
+        },
+        {
+          "k": "text",
+          "text": "End the episode?"
+        },
+        {
+          "k": "button",
+          "text": "Keep on air",
+          "to": "onair-bar",
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "End Episode",
+          "to": "episode",
           "primary": true
         }
       ]
@@ -1957,8 +3686,8 @@
       "who": "host",
       "lane": "unheard",
       "path": "admin.live.moafunk.de/#/artists",
-      "hash": "e0e462bc",
-      "notesHash": "d0328353",
+      "hash": "6ed03dd1",
+      "notesHash": "70e29443",
       "elements": [
         {
           "k": "back",
@@ -2022,6 +3751,11 @@
         },
         {
           "k": "nav",
+          "text": "Admin",
+          "to": "dashboard"
+        },
+        {
+          "k": "nav",
           "text": "Dashboard",
           "to": "dashboard"
         },
@@ -2044,6 +3778,11 @@
           "k": "nav",
           "text": "lena",
           "to": null
+        },
+        {
+          "k": "nav",
+          "text": "Profile",
+          "to": "profile"
         },
         {
           "k": "nav",
@@ -2591,7 +4330,7 @@
       "lane": "promo",
       "path": "admin.live.moafunk.de/#/admin/instagram",
       "hash": "807be5fd",
-      "notesHash": "8dd7ca5f",
+      "notesHash": "6eaec4c5",
       "elements": [
         {
           "k": "h1",
@@ -2720,6 +4459,286 @@
           "text": "Save policy",
           "to": null,
           "primary": true
+        }
+      ]
+    },
+    {
+      "id": "profile",
+      "title": "Profile",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile",
+      "hash": "e945aab3",
+      "notesHash": "4e0f368b",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Profile"
+        },
+        {
+          "k": "button",
+          "text": "Edit profile",
+          "to": "profile-edit",
+          "primary": false
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**Lena K.**"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Host"
+        },
+        {
+          "k": "row",
+          "text": "Show:",
+          "meta": "Brunchtime",
+          "to": "show"
+        },
+        {
+          "k": "text",
+          "text": "**About me**"
+        },
+        {
+          "k": "text",
+          "text": "Sunday brunch sounds: soul, disco and slow house. Every Sunday from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "@lena.brunch",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "SoundCloud",
+          "meta": "soundcloud.com/lena-brunch",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Bandcamp",
+          "meta": "lenabrunch.bandcamp.com",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Website",
+          "meta": "lena.example.org",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Mixtapes",
+          "meta": "lena.example.org/mixes",
+          "to": null
+        }
+      ]
+    },
+    {
+      "id": "profile-edit",
+      "title": "Profile · editing",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile",
+      "hash": "9339f4f6",
+      "notesHash": "92d6f1a8",
+      "elements": [
+        {
+          "k": "h1",
+          "text": "Edit profile"
+        },
+        {
+          "k": "text",
+          "text": "Empty fields stay hidden on your profile."
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "button",
+          "text": "Upload photo",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Remove",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "text",
+          "text": "JPG or PNG. A square photo works best."
+        },
+        {
+          "k": "field",
+          "text": "Name",
+          "value": "Lena K."
+        },
+        {
+          "k": "field",
+          "text": "About me",
+          "value": "Sunday brunch sounds: soul, disco and slow house. Every Sunday from 12:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "text",
+          "text": "Type only your handle."
+        },
+        {
+          "k": "field",
+          "text": "Instagram",
+          "value": "lena.brunch"
+        },
+        {
+          "k": "field",
+          "text": "SoundCloud",
+          "value": "lena-brunch"
+        },
+        {
+          "k": "field",
+          "text": "Mixcloud",
+          "value": ""
+        },
+        {
+          "k": "field",
+          "text": "Bandcamp",
+          "value": "lenabrunch"
+        },
+        {
+          "k": "field",
+          "text": "Platform",
+          "value": "Website"
+        },
+        {
+          "k": "field",
+          "text": "Website",
+          "value": "lena.example.org"
+        },
+        {
+          "k": "field",
+          "text": "Platform",
+          "value": "Custom…"
+        },
+        {
+          "k": "field",
+          "text": "Link name",
+          "value": "Mixtapes"
+        },
+        {
+          "k": "field",
+          "text": "Link URL",
+          "value": "https://lena.example.org/mixes"
+        },
+        {
+          "k": "button",
+          "text": "+ Add link",
+          "to": null,
+          "primary": false
+        },
+        {
+          "k": "button",
+          "text": "Save",
+          "to": "profile",
+          "primary": true
+        },
+        {
+          "k": "button",
+          "text": "Cancel",
+          "to": "profile",
+          "primary": false
+        }
+      ]
+    },
+    {
+      "id": "profile-view",
+      "title": "Profile (other host)",
+      "who": "host",
+      "lane": "account",
+      "path": "admin.live.moafunk.de/#/profile/jonas",
+      "hash": "1f1e9a11",
+      "notesHash": "bf6960db",
+      "elements": [
+        {
+          "k": "back",
+          "text": "Back",
+          "to": "back"
+        },
+        {
+          "k": "h1",
+          "text": "Profile"
+        },
+        {
+          "k": "h2",
+          "text": "About you"
+        },
+        {
+          "k": "media",
+          "text": "Profile photo · round",
+          "to": null
+        },
+        {
+          "k": "text",
+          "text": "**jonas**"
+        },
+        {
+          "k": "pill",
+          "tone": "",
+          "text": "Host"
+        },
+        {
+          "k": "row",
+          "text": "Show:",
+          "meta": "Night Shift",
+          "to": "show"
+        },
+        {
+          "k": "text",
+          "text": "**About me**"
+        },
+        {
+          "k": "text",
+          "text": "Club records after dark, every Tuesday from 20:00."
+        },
+        {
+          "k": "h2",
+          "text": "Social media"
+        },
+        {
+          "k": "row",
+          "text": "Instagram",
+          "meta": "@nightshift.jonas",
+          "to": null
+        },
+        {
+          "k": "row",
+          "text": "Mixcloud",
+          "meta": "mixcloud.com/nightshift",
+          "to": null
         }
       ]
     }

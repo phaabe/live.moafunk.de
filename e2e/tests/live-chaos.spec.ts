@@ -1,6 +1,6 @@
 // The chaos test show: a live episode on staging that must survive a
-// network cut, a Liquidsoap restart and a page reload by itself, and end in
-// exactly one recording as long as the time on air.
+// network cut, a Liquidsoap, API and Icecast restart and a page reload by
+// itself, and end in exactly one recording as long as the time on air.
 import { test, expect, type Dialog, type Page } from '@playwright/test';
 import {
   RUN,
@@ -50,13 +50,14 @@ test('a live show recovers by itself and ends in one recording', async () => {
 
   await test.step('create a Show and book a live slot a minute ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-live`);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     const start = nextMinute(60);
     episode = await bookSlot(page, start, new Date(start.getTime() + (60 + DURATION_MIN) * 60_000));
   });
 
   const live = await test.step('soundcheck, then Go Live at the start time', async () => {
-    await page.getByRole('button', { name: 'Open Studio' }).click();
+    // The Studio on its own page: the reload below relies on its On Air route.
+    await page.goto(`/#/stream/live?show=${episode}`);
     await soundcheckAndGoLive(page);
     const at = Date.now();
     await toneBack(FIRST_TONE_S);
@@ -72,6 +73,25 @@ test('a live show recovers by itself and ends in one recording', async () => {
   await test.step('a Liquidsoap restart on staging', async () => {
     staging('e2e-restart-liquidsoap');
     console.log(`tone back ${await toneBack(RECOVER_S)} s after the restart`);
+  });
+
+  await test.step('an API restart on staging', async () => {
+    const restarted = Date.now();
+    // Returns once the new API answers /health.
+    staging('e2e-restart-api');
+    // The harbor can still play the old producer's audio for up to 20 s: the
+    // tone must not stop for 15 s until then, and be there after.
+    while (Date.now() < restarted + HARBOR_MAX_S * 1000) await toneBack(RECOVER_S);
+    console.log(`tone back ${await toneBack(RECOVER_S)} s after the old audio ran out`);
+    // The Studio reconnects to the new API by itself: the host does nothing.
+    await expect(page).toHaveURL(/#\/stream\/on-air/);
+  });
+
+  await test.step('an Icecast restart on staging', async () => {
+    // Returns once Icecast lists both mounts again.
+    staging('e2e-restart-icecast');
+    console.log(`tone back ${await toneBack(RECOVER_S)} s after the Icecast restart`);
+    await expect(page).toHaveURL(/#\/stream\/on-air/);
   });
 
   await test.step('a page reload', async () => {
@@ -105,18 +125,18 @@ test('a live show recovers by itself and ends in one recording', async () => {
     });
   }
 
-  await test.step('End Episode, Wrap-up, Publish, Finished', async () => {
+  await test.step('End Episode, Publish episode, Finished', async () => {
     // End Episode asks once: the second click ends the broadcast.
     await page.getByRole('button', { name: 'End Episode' }).click();
     await expect(page.getByText('End the episode?')).toBeVisible();
     await page.getByRole('button', { name: 'End Episode' }).click();
     onAirMs = Date.now() - live - offAirMs;
     await page.waitForURL(new RegExp(`#/shows/${episode}$`));
-    const publish = page.getByRole('button', { name: 'Publish' });
-    // The wrap-up waits while the recording converts.
+    // The episode opens on its Recording card, which waits while the recording converts.
+    const publish = page.getByRole('button', { name: 'Publish episode' });
     await expect(publish).toBeEnabled({ timeout: 5 * 60_000 });
     await publish.click();
-    await expect(page.getByRole('heading', { name: 'Episode published' })).toBeVisible();
+    await expect(publish).toHaveCount(0);
     await page.goto(`/#/shows/${show!.slug}`);
     await expect(page.getByText('Finished', { exact: true })).toBeVisible();
   });

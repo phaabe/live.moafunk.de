@@ -1,7 +1,7 @@
 {
   "screen": "my-shows",
-  "hash": "868f9bba",
-  "status": "ok",
+  "hash": "a95e8f5b",
+  "status": "drift",
   "leftOut": [
     {
       "item": "row: UNHEARD | Monthly · 4 artists",
@@ -12,6 +12,21 @@
       "release": "UNHEARD"
     }
   ],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: My Shows",
+    "row: Brunchtime | Sundays · 12:00–14:00",
+    "nav: Schedule",
+    "nav: My Shows"
+  ],
+  "extra": [
+    "h1: My Show",
+    "h2: Brunchtime",
+    "button: Book Slot",
+    "button: Edit",
+    "link: My Show",
+    "link: Brunchtime",
+    "row: Next episode | So 04.01. · 12:00–14:00",
+    "row: Rhythm | Every week · Sundays · 12:00–14:00",
+    "row: Instagram | Not set"
+  ]
 }

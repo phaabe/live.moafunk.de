@@ -4,12 +4,14 @@ name: GATE - Require release label
 # release::fix or release::internal. The label puts the PR into a group of the
 # release notes (.github/release.yml, docs/deployment.md). Runs again when
 # labels change, so a missing label is fixed without a new push.
+# On opened it waits 15 s, so labels set right after create are seen.
 on:
   pull_request:
     branches: [staging]
     types: [opened, reopened, synchronize, edited, labeled, unlabeled]
 
-permissions: {}
+permissions:
+  pull-requests: read
 
 jobs:
   release-label:
@@ -17,10 +19,16 @@ jobs:
     steps:
       - name: Check for exactly one release label
         env:
-          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTION: ${{ github.event.action }}
+        # Read the labels from the API, not the event: `gh pr create --label`
+        # adds them in a second call, after the opened event was sent.
         run: |
           set -euo pipefail
-          found="$(jq -r '[.[] | select(startswith("release::"))] | join(" ")' <<<"$LABELS")"
+          if [[ "$ACTION" == opened ]]; then sleep 15; fi
+          found="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '[.labels[].name | select(startswith("release::"))] | join(" ")')"
           case "$found" in
             release::feature | release::fix | release::internal)
               echo "Release label: $found" ;;

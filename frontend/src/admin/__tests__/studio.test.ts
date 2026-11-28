@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue';
+import {
+  createApp,
+  defineComponent,
+  h,
+  nextTick,
+  ref,
+  type App,
+  type Component,
+  type Ref,
+} from 'vue';
 
 // Flow screens `studio` (/stream/live) and `studio-onair` (/stream/on-air)
 // for a live episode: a manual Go Live, then a lean On Air.
@@ -15,8 +24,24 @@ const mocks = vi.hoisted(() => ({
   audioDropped: null as null | { value: boolean },
   verdict: null as null | { value: string },
   capture: {} as Record<string, unknown>,
+  /** The recorder's onError, as the live session gave it (ownCaptureCallbacks). */
+  captureOnError: null as null | ((message: string) => void),
   flowReset: vi.fn(),
   recording: { is_recording: true, show_id: 7 },
+  // On Air's live panel (#1053).
+  listeners: 37 as number | null,
+  /** L and R meters of the sent audio. */
+  meters: [] as {
+    db: Ref<number>;
+    peakDb: Ref<number>;
+    level: Ref<number>;
+    running: Ref<boolean>;
+  }[],
+  socketStats: {} as Record<string, unknown>,
+  chat: null as null | { messages: Ref<unknown[]>; connected: Ref<boolean> },
+  health: {} as Record<string, Ref<unknown>>,
+  /** GET /api/stream/status: who sends the stream. */
+  streamStatus: { active: false } as { active: boolean; user?: string },
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -29,21 +54,53 @@ vi.mock('@admin/components/DbMeter.vue', () => ({
   default: { props: ['label'], render: (p: { label: string }) => h('div', p.label) },
 }));
 vi.mock('@admin/api', () => ({
+  // The Studio and the live panel save their values to the episode.
+  showsApi: { saveStudioLog: vi.fn(() => Promise.resolve()) },
   streamApi: {
-    metrics: vi.fn(() => Promise.resolve({ online: true, total_listeners: 37, mounts: [] })),
+    status: vi.fn(() => Promise.resolve(mocks.streamStatus)),
+    metrics: vi.fn(() =>
+      Promise.resolve({
+        online: mocks.listeners !== null,
+        total_listeners: mocks.listeners ?? 0,
+        mounts: [],
+      })
+    ),
   },
   recordingApi: { status: vi.fn(() => Promise.resolve(mocks.recording)) },
 }));
+vi.mock('@admin/stores/auth', () => ({
+  useAuthStore: () => ({ user: { id: 2, username: 'jonas', role: 'host' } }),
+}));
+// The public stream: On Air offers "What listeners hear".
+vi.mock('@/config', () => ({
+  config: { stream: { icecast: 'https://stream.example/live.mp3', icecastTestUrl: '' } },
+}));
 
 // Refs are made fresh in beforeEach; the stubs read them when a page mounts.
-vi.mock('@admin/composables', () => {
+vi.mock('@admin/composables', async () => {
+  const meter = await vi.importActual<typeof import('../composables/useDbMeter')>(
+    '../composables/useDbMeter'
+  );
   return {
+    dbToLevel: meter.dbToLevel,
+    DB_FLOOR: meter.DB_FLOOR,
+    useDbMeter: (_stream: unknown, channel?: 0 | 1) => mocks.meters[channel ?? 0],
+    useSpectrum: () => ({ bands: ref(new Array(24).fill(0)) }),
+    getStreamSocketStats: () => mocks.socketStats,
+    QUALITY_STEPS_KBPS: [320, 192, 128, 96],
+    useLiveChat: () => ({ ...mocks.chat!, error: ref(null), send: vi.fn(() => true) }),
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
     DEVICE_ENDED_MESSAGE: 'Audio device is no longer active. Re-select your device.',
     STREAM_AUDIO_BITS_PER_SECOND: 128000,
     streamRecordingMimeType: () => 'audio/webm',
     useHostFlow: () => ({
-      show: ref({ id: 7, date: '2026-11-15', start_time: '12:00', end_time: '14:00' }),
+      show: ref({
+        id: 7,
+        title: 'Brunchtime',
+        date: '2026-11-15',
+        start_time: '12:00',
+        end_time: '14:00',
+      }),
       showId: ref(7),
       liveTestPassed: mocks.passed,
       recordStream: mocks.record,
@@ -54,6 +111,14 @@ vi.mock('@admin/composables', () => {
       berlinToUtcDate: (date: string, time: string) => new Date(`${date}T${time}:00Z`),
     }),
     useAudioCapture: () => mocks.capture,
+    // The live session takes the callbacks; the stubs keep them for the tests.
+    ownStreamCallbacks: (callbacks: typeof mocks.options | null) => {
+      if (callbacks) mocks.options = callbacks;
+    },
+    ownCaptureCallbacks: (callbacks: { onError: (message: string) => void } | null) => {
+      if (callbacks) mocks.captureOnError = callbacks.onError;
+    },
+    streamShowId: () => 7,
     useStreamSocket: (options: typeof mocks.options = {}) => {
       mocks.options = options;
       return {
@@ -64,7 +129,7 @@ vi.mock('@admin/composables', () => {
         stopStream: mocks.stopStream,
       };
     },
-    useUploadHealth: () => ({ bufferSeconds: ref(0), ticks: ref(0), verdict: mocks.verdict }),
+    useUploadHealth: () => ({ ...mocks.health, verdict: mocks.verdict }),
     useAutoBitrate: vi.fn(),
   };
 });
@@ -95,14 +160,11 @@ async function mountPage(page: Component) {
 const text = () => root.textContent ?? '';
 const goLiveButton = () =>
   [...root.querySelectorAll('button')].find((b) => b.textContent?.includes('Go Live'))!;
-const recordBox = () =>
-  [...root.querySelectorAll('label')]
-    .find((l) => l.textContent?.includes('Record this show'))!
-    .querySelector('input')!;
 
 beforeEach(() => {
   vi.useFakeTimers();
   mocks.push.mockReset();
+  mocks.streamStatus = { active: false };
   mocks.connect.mockReset().mockResolvedValue(undefined);
   mocks.stopStream.mockReset();
   mocks.flowReset.mockReset();
@@ -126,10 +188,43 @@ beforeEach(() => {
     stopRecordingAndFlush: vi.fn(() => Promise.resolve()),
     stopCapture: vi.fn(),
     setStreamBitsPerSecond: vi.fn(),
-    devices: ref([{ deviceId: 'mic-2', label: 'Focusrite USB' }]),
+    devices: ref([
+      { deviceId: 'mic-1', label: 'USB Audio Interface' },
+      { deviceId: 'mic-2', label: 'Focusrite USB' },
+    ]),
+    selectedDeviceId: ref('mic-1'),
+    analyserNode: ref(null),
+    inputVolume: ref(1),
+    setInputVolume: vi.fn(),
     listDevices: vi.fn(),
     captureDevice: vi.fn(() => Promise.resolve(true)),
     captureScreenAudio: vi.fn(() => Promise.resolve(true)),
+  };
+  mocks.listeners = 37;
+  // A good level on both sides.
+  mocks.meters = [0, 1].map(() => ({
+    db: ref(-18),
+    peakDb: ref(-6),
+    level: ref(0.7),
+    running: ref(true),
+  }));
+  // The server confirmed all the audio sent so far.
+  mocks.socketStats = {
+    connected: true,
+    bufferedAmount: 0,
+    bytesQueued: 4_000_000,
+    rttMs: 48,
+    serverChunks: 2531,
+    serverBytes: 3_990_000,
+    serverLate: 0,
+  };
+  mocks.chat = { messages: ref([]), connected: ref(true) };
+  mocks.health = {
+    uploadKbps: ref(150),
+    bufferSeconds: ref(0.2),
+    rttMs: ref(48),
+    history: ref([140, 150, 148]),
+    ticks: ref(0),
   };
 });
 
@@ -150,34 +245,48 @@ describe('Studio', () => {
     await mountPage(FlowLive);
   }
 
-  it('shows the soundcheck and keeps Go Live closed before the start', async () => {
+  it('shows the soundcheck and the countdown before the start, no Go Live and no record choice', async () => {
     await mountStudio('2026-11-15T11:41:18Z');
     for (const part of [
       '< Episode',
       'Studio',
       'Soundcheck · show starts in 18:42',
       'Audio input',
-      'Record this show',
-      'Go Live',
     ]) {
       expect(text()).toContain(part);
     }
     expect(root.querySelector('a')!.getAttribute('data-to')).toBe('/shows/7');
-    expect(recordBox().checked).toBe(true);
+    expect(text()).not.toContain('Record this show');
 
     mocks.passed!.value = true;
     await nextTick();
-    expect(goLiveButton().disabled).toBe(true);
+    expect(goLiveButton()).toBeUndefined();
   });
 
-  it('opens Go Live at the start once the soundcheck is confirmed', async () => {
+  it('is open hours and days before the start: the pill counts hours, then names the day', async () => {
+    await mountStudio('2026-11-15T09:41:18Z');
+    expect(text()).toContain('Soundcheck · show starts in 2:18:42');
+    app!.unmount();
+    root.remove();
+    await mountStudio('2026-11-13T15:00:00Z');
+    expect(text()).toContain('Soundcheck · show starts So 15.11. · 12:00');
+    // Go Live comes at the start, from the countdown.
+    expect(goLiveButton()).toBeUndefined();
+  });
+
+  it('turns the countdown into Go Live at the start; it blinks once the soundcheck is confirmed', async () => {
     await mountStudio('2026-11-15T11:59:58Z');
     await vi.advanceTimersByTimeAsync(2000);
+    expect(text()).not.toContain('show starts in');
+    expect(text()).toContain('It is air time · confirm the soundcheck first');
     expect(goLiveButton().disabled).toBe(true);
+    expect(goLiveButton().classList.contains('ready')).toBe(false);
 
     mocks.passed!.value = true;
     await nextTick();
     expect(goLiveButton().disabled).toBe(false);
+    expect(goLiveButton().classList.contains('ready')).toBe(true);
+    expect(text()).toContain('It is air time · start your show');
   });
 
   it('never goes live by itself', async () => {
@@ -187,16 +296,13 @@ describe('Studio', () => {
     expect(mocks.connect).not.toHaveBeenCalled();
   });
 
-  it('goes live with the record choice, then opens On Air', async () => {
+  it('goes live, always recorded, then opens On Air', async () => {
     mocks.passed!.value = true;
     await mountStudio('2026-11-15T12:00:30Z');
-    recordBox().click();
-    await nextTick();
-    expect(mocks.record!.value).toBe(false);
 
     goLiveButton().click();
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, false);
+    expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
     expect(mocks.capture.startRecording).toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
 
@@ -217,6 +323,21 @@ describe('Studio', () => {
     expect(goLiveButton().disabled).toBe(false);
   });
 
+  it('refuses Go Live while another host of the episode is on air (#1047)', async () => {
+    mocks.passed!.value = true;
+    mocks.streamStatus = { active: true, user: 'lena' };
+    await mountStudio('2026-11-15T12:00:30Z');
+    // The co-host's broadcast is not this host's to go back on air to.
+    expect(goLiveButton().textContent).toContain('Go Live');
+
+    goLiveButton().click();
+    await vi.advanceTimersByTimeAsync(0);
+    await nextTick();
+    expect(text()).toContain('lena is on air from another device.');
+    expect(mocks.connect).not.toHaveBeenCalled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
   it('stays on the Studio when the input was unplugged before Go Live', async () => {
     mocks.passed!.value = true;
     mocks.capture.startRecording = vi.fn(() => {
@@ -235,54 +356,383 @@ describe('Studio', () => {
 });
 
 describe('On Air', () => {
-  async function mountOnAir() {
-    vi.setSystemTime(new Date('2026-11-15T12:42:10Z'));
+  async function mountOnAir(at = '2026-11-15T12:42:10Z') {
+    vi.setSystemTime(new Date(at));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
   }
 
-  it('shows only the flow items', async () => {
+  /** A card of the live panel, by its title. */
+  const card = (title: string) =>
+    [...root.querySelectorAll('section')].find(
+      (s) => s.querySelector('h2')?.textContent?.trim() === title
+    )!;
+  const cardStatus = (title: string) =>
+    card(title).querySelector('.panel-status')?.textContent?.trim();
+  const bar = () => root.querySelector('.bar')!;
+  const button = (label: string) =>
+    [...root.querySelectorAll('button')].find(
+      (b) => (b.getAttribute('aria-label') ?? b.textContent?.trim()) === label
+    );
+
+  it('shows the live panel: status bar, audio, connection, listeners, chat, moments', async () => {
     await mountOnAir();
     await vi.advanceTimersByTimeAsync(3000);
-    for (const part of [
-      'Studio',
-      'On air · 00:00:03 · REC',
-      'Live level',
-      'Connectionstable',
-      'End Episode',
-    ]) {
-      expect(text()).toContain(part);
+    expect(root.querySelector('h1')!.textContent).toBe('Studio');
+    // The flow's pill, read as one line.
+    expect(root.querySelector('.pill')!.textContent).toBe('On air · 00:00:03 · REC');
+    for (const part of ['Brunchtime', '12:00–14:00', 'ends in 1:17:47', 'End Episode']) {
+      expect(bar().textContent).toContain(part);
     }
-    for (const gone of [
+    expect(root.querySelector('.progress')!.getAttribute('aria-label')).toBe(
+      'Show progress 35 percent'
+    );
+    expect([...root.querySelectorAll('h2')].map((h) => h.textContent?.trim())).toEqual([
+      'Audio',
+      'Connection',
       'Listeners',
-      'Reconnect',
-      'Stream Ended',
-      'Ends in',
-      'chat',
+      'Live chat',
       'Moments',
-      'Stop',
-    ]) {
+    ]);
+    expect(cardStatus('Audio')).toBe('Good level');
+    expect(card('Audio').textContent).toContain('Input USB Audio Interface');
+    expect(card('Audio').textContent).toContain('What listeners hear');
+    expect(cardStatus('Connection')).toBe('Stable');
+    expect(cardStatus('Live chat')).toBe('Telegram');
+    expect(card('Listeners').textContent).toContain('Listeners now37');
+    expect(bar().textContent).toContain('37 listening');
+    // No problem: no notice, no alarm, no bar warning.
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    expect(root.querySelector('.bar-alert')).toBeNull();
+    for (const gone of ['Reconnect', 'Stream Ended', 'Stop', 'End the episode?']) {
       expect(text()).not.toContain(gone);
     }
-    expect(root.querySelectorAll('button')).toHaveLength(1);
+    expect(root.querySelector('select')).toBeNull();
+  });
+
+  it('hides the on-air bar while it is on screen (#1063)', async () => {
+    await mountOnAir();
+    const { useLiveSession } = await import('../liveSession');
+    const { panelShown, session } = useLiveSession();
+    expect(session.value?.showId).toBe(7);
+    expect(panelShown.value).toBe(true);
+    // Leaving On Air keeps the session: the bar shows on the next page.
+    app!.unmount();
+    app = null;
+    expect(panelShown.value).toBe(false);
+    expect(session.value?.showId).toBe(7);
+  });
+
+  it('lets the on-air bar show while the episode page shows another tab', async () => {
+    vi.setSystemTime(new Date('2026-11-15T12:42:10Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    const shown = ref(false);
+    await mountPage(
+      defineComponent(() => () => h(StudioOnAir, { embedded: true, shown: shown.value }))
+    );
+    const { panelShown } = (await import('../liveSession')).useLiveSession();
+    expect(panelShown.value).toBe(false);
+    shown.value = true;
+    await nextTick();
+    expect(panelShown.value).toBe(true);
   });
 
   it('shows REC only while this episode records', async () => {
     mocks.recording = { is_recording: false, show_id: 7 };
     await mountOnAir();
-    expect(text()).toContain('On air · 00:00:00');
+    expect(root.querySelector('.pill')!.textContent).toBe('On air · 00:00:00');
     expect(text()).not.toContain('REC');
   });
 
   it('keeps the screen on a drop and shows the connection state', async () => {
     await mountOnAir();
     mocks.socketState!.value = 'connecting';
-    await nextTick();
-    expect(text()).toContain('Connectionreconnecting…');
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(cardStatus('Connection')).toBe('Reconnecting…');
+    expect(bar().querySelector('[role="status"]')!.textContent).toContain('Reconnecting · 4 s');
     mocks.socketState!.value = 'error';
     await nextTick();
-    expect(text()).toContain('Connectionlost');
+    expect(cardStatus('Connection')).toBe('Lost');
+    expect(bar().textContent).toContain('Connection lost');
     expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('warns when the upload is too slow and says when Auto stepped down', async () => {
+    mocks.verdict!.value = 'slow';
+    await mountOnAir();
+    expect(cardStatus('Connection')).toBe('Too slow');
+    expect(card('Connection').classList).toContain('alert');
+
+    // Auto's switch, as useAutoBitrate reports it.
+    const { useAutoBitrate } = await import('@admin/composables');
+    const options = (useAutoBitrate as Mock).mock.calls.at(-1)![0];
+    options.onChange(96);
+    await nextTick();
+    expect(mocks.capture.setStreamBitsPerSecond).toHaveBeenCalledWith(96000);
+    expect(card('Connection').textContent).toContain('Auto stepped down from 128 to 96 kbps');
+  });
+
+  it('lets the host pick a fixed upload quality, and Auto again', async () => {
+    await mountOnAir();
+    expect(button('Auto · 128')!.getAttribute('aria-pressed')).toBe('true');
+    button('96')!.click();
+    await nextTick();
+    expect(mocks.capture.setStreamBitsPerSecond).toHaveBeenCalledWith(96000);
+    expect(button('96')!.getAttribute('aria-pressed')).toBe('true');
+    button('Auto · 128')!.click();
+    await nextTick();
+    expect(button('Auto · 128')!.getAttribute('aria-pressed')).toBe('true');
+    expect(mocks.capture.setStreamBitsPerSecond).toHaveBeenCalledOnce();
+  });
+
+  describe('chunks', () => {
+    const chunks = () =>
+      [...card('Connection').querySelectorAll('dl > div')]
+        .find((d) => d.querySelector('dt')?.textContent === 'Chunks')!
+        .querySelector('dd')!
+        .textContent!.replace(/\s+/g, ' ')
+        .trim();
+
+    it('shows the chunks the server confirmed', async () => {
+      await mountOnAir();
+      expect(chunks()).toBe('2531 confirmed · all arrived');
+    });
+
+    it('says when sent audio does not arrive', async () => {
+      await mountOnAir();
+      // 10 s of 128 kbps (with the container) sent, not confirmed.
+      mocks.socketStats = {
+        ...mocks.socketStats,
+        bytesQueued: 3_990_000 + 184_000,
+      };
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(chunks()).toBe('2531 confirmed · 10 s on the way');
+    });
+
+    it('waits for the first pong', async () => {
+      mocks.socketStats = {
+        ...mocks.socketStats,
+        serverChunks: 0,
+        serverBytes: 0,
+      };
+      await mountOnAir();
+      expect(chunks()).toBe('— waiting for the server');
+    });
+  });
+
+  describe('silence alarm', () => {
+    const silent = () => mocks.meters.forEach((m) => (m.db.value = -60));
+
+    it('warns after 10 s without sound, and stops when the sound is back', async () => {
+      await mountOnAir();
+      silent();
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+      expect(cardStatus('Audio')).toBe('No sound · 8 s');
+
+      await vi.advanceTimersByTimeAsync(1500);
+      const alarm = card('Audio').querySelector('[role="alert"]')!;
+      expect(alarm.textContent).toContain('No sound for 10 s.');
+      expect(alarm.textContent).toContain('Listeners hear silence.');
+      expect(cardStatus('Audio')).toBe('No sound · 10 s');
+      expect(card('Audio').classList).toContain('alert');
+
+      mocks.meters[1].db.value = -20;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+      expect(cardStatus('Audio')).toBe('Good level');
+    });
+
+    it('does not count a short gap between two tracks', async () => {
+      await mountOnAir();
+      silent();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(cardStatus('Audio')).toBe('Good level');
+      mocks.meters[0].db.value = -18;
+      await vi.advanceTimersByTimeAsync(500);
+      silent();
+      await vi.advanceTimersByTimeAsync(9500);
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it('stays quiet while the meter cannot read the audio', async () => {
+      mocks.meters.forEach((m) => (m.running.value = false));
+      await mountOnAir();
+      silent();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(root.querySelector('[role="alert"]')).toBeNull();
+      expect(cardStatus('Audio')).toBe('Not measured');
+    });
+
+    it('leaves a gone input to its own notice', async () => {
+      await mountOnAir();
+      silent();
+      mocks.captureOnError!(DEVICE_ENDED);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect([...root.querySelectorAll('[role="alert"]')].map((a) => a.textContent)).toEqual([
+        DEVICE_ENDED,
+      ]);
+      expect(cardStatus('Audio')).toBe('Input gone');
+    });
+  });
+
+  it('shows the listener peak and keeps it across a remount', async () => {
+    await mountOnAir();
+    const figures = () =>
+      [...card('Listeners').querySelectorAll('dl > div')].map((d) =>
+        [...d.children].map((c) => c.textContent).join(' | ')
+      );
+    expect(figures()).toEqual(['Listeners now | 37', 'Peak | 37']);
+    mocks.listeners = 41;
+    await vi.advanceTimersByTimeAsync(10_000);
+    mocks.listeners = 30;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(figures()).toEqual(['Listeners now | 30', 'Peak | 41']);
+    expect(card('Listeners').textContent).toContain('Peak at');
+
+    // Leaving On Air does not end the broadcast; the history stays.
+    app!.unmount();
+    root.remove();
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    await mountPage(StudioOnAir);
+    expect(figures()).toEqual(['Listeners now | 30', 'Peak | 41']);
+  });
+
+  it('shows no count while the stream server cannot say', async () => {
+    mocks.listeners = null;
+    await mountOnAir();
+    expect(card('Listeners').querySelector('dd')!.textContent).toBe('—');
+    expect(bar().textContent).not.toContain('listening');
+  });
+
+  describe('Mark moment', () => {
+    const momentRows = () =>
+      [...card('Moments').querySelectorAll('li')].map((li) =>
+        [...li.children].map((c) => c.textContent).join(' | ')
+      );
+    const press = (target: EventTarget, init: KeyboardEventInit = {}) =>
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true, ...init }));
+
+    it('keeps the on-air time with the button or the M key', async () => {
+      await mountOnAir();
+      await vi.advanceTimersByTimeAsync(5000);
+      button('Mark moment')!.click();
+      await nextTick();
+      await vi.advanceTimersByTimeAsync(7000);
+      press(document.body);
+      await nextTick();
+      expect(momentRows()).toEqual(['00:00:05 | Moment 1', '00:00:12 | Moment 2']);
+      expect(cardStatus('Moments')).toBe('2 marked');
+      expect(button('Mark moment')!.getAttribute('aria-keyshortcuts')).toBe('M');
+    });
+
+    it('does not mark while the host types a chat reply', async () => {
+      await mountOnAir();
+      const reply = card('Live chat').querySelector('input')!;
+      press(reply);
+      press(document.body, { ctrlKey: true });
+      press(document.body, { repeat: true });
+      await nextTick();
+      expect(momentRows()).toEqual([]);
+    });
+
+    it('listens for M only while On Air is open', async () => {
+      const add = vi.spyOn(window, 'addEventListener');
+      const remove = vi.spyOn(window, 'removeEventListener');
+      await mountOnAir();
+      const handler = add.mock.calls.find(([type]) => type === 'keydown')![1];
+      expect(remove).not.toHaveBeenCalledWith('keydown', handler);
+      app!.unmount();
+      app = null;
+      expect(remove).toHaveBeenCalledWith('keydown', handler);
+    });
+  });
+
+  describe('Screen stays on', () => {
+    interface FakeLock {
+      released: boolean;
+      release: Mock;
+      addEventListener: (type: string, cb: () => void) => void;
+      fire: () => void;
+    }
+    let locks: FakeLock[];
+    function fakeLock(): FakeLock {
+      let onRelease = () => {};
+      const lock: FakeLock = {
+        released: false,
+        release: vi.fn(async () => {
+          lock.released = true;
+        }),
+        addEventListener: (_type, cb) => (onRelease = cb),
+        fire: () => {
+          lock.released = true;
+          onRelease();
+        },
+      };
+      locks.push(lock);
+      return lock;
+    }
+    const chip = () => bar().querySelector('.wake-chip');
+
+    beforeEach(() => {
+      locks = [];
+    });
+    afterEach(() => {
+      delete (navigator as { wakeLock?: unknown }).wakeLock;
+    });
+
+    it('keeps the screen on while On Air is open, and asks again when the tab is back', async () => {
+      Object.defineProperty(navigator, 'wakeLock', {
+        configurable: true,
+        value: { request: vi.fn(async () => fakeLock()) },
+      });
+      await mountOnAir();
+      expect(chip()!.textContent).toBe('Screen stays on');
+
+      // The browser lets go when the tab is hidden.
+      locks[0].fire();
+      await nextTick();
+      expect(chip()).toBeNull();
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(locks).toHaveLength(2);
+      expect(chip()).not.toBeNull();
+
+      // Leaving On Air keeps it: the show is still on air (#1063).
+      app!.unmount();
+      app = null;
+      expect(locks[1].release).not.toHaveBeenCalled();
+    });
+
+    it('shows nothing when the browser has no wake lock or refuses it', async () => {
+      await mountOnAir();
+      expect(chip()).toBeNull();
+      app!.unmount();
+      root.remove();
+
+      Object.defineProperty(navigator, 'wakeLock', {
+        configurable: true,
+        value: {
+          request: vi.fn(() => Promise.reject(new Error('NotAllowedError'))),
+        },
+      });
+      vi.resetModules();
+      await mountOnAir();
+      expect(chip()).toBeNull();
+    });
+  });
+
+  it('keeps the screen on a drop: reconnecting warns in the bar, nothing ends', async () => {
+    await mountOnAir();
+    mocks.socketState!.value = 'connecting';
+    await nextTick();
+    expect(bar().classList).toContain('warn');
+    expect(bar().textContent).toContain('Your audio waits in this browser');
+    mocks.socketState!.value = 'live';
+    await nextTick();
+    expect(bar().classList).not.toContain('warn');
+    expect(cardStatus('Connection')).toBe('Stable');
+    expect(root.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('warns when a long drop cost recorded audio', async () => {
@@ -293,24 +743,13 @@ describe('On Air', () => {
     expect(text()).toContain('The recording misses some audio.');
   });
 
-  it('is stable again after a short drop, with no notice', async () => {
-    await mountOnAir();
-    mocks.socketState!.value = 'connecting';
-    await nextTick();
-    expect(text()).toContain('Connectionreconnecting…');
-    mocks.socketState!.value = 'live';
-    await nextTick();
-    expect(text()).toContain('Connectionstable');
-    expect(root.querySelector('[role="alert"]')).toBeNull();
-  });
-
   it('keeps the 10-minute notice after the reconnect', async () => {
     mocks.socketState!.value = 'connecting';
     mocks.audioDropped!.value = true;
     await mountOnAir();
     mocks.socketState!.value = 'live';
     await nextTick();
-    expect(text()).toContain('Connectionstable');
+    expect(cardStatus('Connection')).toBe('Stable');
     expect(text()).toContain('The recording misses some audio.');
   });
 
@@ -319,15 +758,34 @@ describe('On Air', () => {
     mocks.socketState!.value = 'disconnected';
     mocks.options.onError!('Another connection took over the stream');
     await nextTick();
-    expect(text()).toContain('Connectionlost');
+    expect(cardStatus('Connection')).toBe('Lost');
     expect(text()).toContain('Another connection took over the stream');
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
+  it('sets the input gain', async () => {
+    await mountOnAir();
+    const gain = [...card('Audio').querySelectorAll('label')]
+      .find((l) => l.textContent?.includes('Input gain'))!
+      .querySelector('input')!;
+    expect(gain.value).toBe('100');
+    gain.value = '80';
+    gain.dispatchEvent(new Event('input'));
+    expect(mocks.capture.setInputVolume).toHaveBeenCalledWith(0.8);
+  });
+
+  it('names each fader by its label, not by its value', async () => {
+    await mountOnAir();
+    const faders = [...card('Audio').querySelectorAll<HTMLLabelElement>('label.fad')];
+    expect(faders.length).toBeGreaterThan(0);
+    for (const label of faders) {
+      expect(label.control).toBe(label.querySelector('input[type="range"]'));
+    }
+  });
+
   describe('when the audio input is gone', () => {
     /** What useAudioCapture calls when the device's track ends on air. */
-    const captureError = (message: string) =>
-      (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](message);
+    const captureError = (message: string) => mocks.captureOnError!(message);
     const inputSelect = () => root.querySelector('select');
     async function pick(value: string) {
       const select = inputSelect()!;
@@ -345,7 +803,7 @@ describe('On Air', () => {
       captureError(DEVICE_ENDED);
       await nextTick();
       expect(text()).toContain(DEVICE_ENDED);
-      expect(text()).toContain('Audio input');
+      expect(card('Audio').querySelector('.input-field')!.textContent).toContain('Audio input');
       expect(mocks.capture.listDevices).toHaveBeenCalled();
       expect(mocks.push).not.toHaveBeenCalled();
 
@@ -406,26 +864,56 @@ describe('On Air', () => {
       expect(text()).toContain('Recording error');
       expect(inputSelect()).toBeNull();
     });
+
+    it('lets the host change a working input, and keeps a fixed quality', async () => {
+      await mountOnAir();
+      button('128')!.click();
+      button('Change')!.click();
+      await nextTick();
+      expect(text()).not.toContain(DEVICE_ENDED);
+      expect(mocks.capture.listDevices).toHaveBeenCalled();
+      expect(button('Change')).toBeUndefined();
+
+      await pick('mic-2');
+      expect(mocks.capture.captureDevice).toHaveBeenCalledWith('mic-2');
+      expect(mocks.capture.setStreamBitsPerSecond).toHaveBeenLastCalledWith(128000);
+      expect(mocks.capture.startRecording).toHaveBeenCalledOnce();
+      expect(inputSelect()).toBeNull();
+    });
+
+    it('closes the picker when the host keeps the input', async () => {
+      await mountOnAir();
+      button('Change')!.click();
+      await nextTick();
+      button('Keep this input')!.click();
+      await nextTick();
+      expect(inputSelect()).toBeNull();
+      expect(mocks.capture.captureDevice).not.toHaveBeenCalled();
+    });
   });
 
   const press = async (label: string) => {
     [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === label)!.click();
     await vi.advanceTimersByTimeAsync(0);
   };
+  const endButtons = () =>
+    [...root.querySelectorAll('button')].filter((b) => b.textContent?.trim() === 'End Episode');
 
   it('End Episode asks once; Keep on air goes back and stops nothing', async () => {
     await mountOnAir();
     await press('End Episode');
     expect(text()).toContain('End the episode?');
+    expect(endButtons()).toHaveLength(1);
     expect(mocks.stopStream).not.toHaveBeenCalled();
     await press('Keep on air');
     expect(text()).not.toContain('End the episode?');
-    expect(root.querySelectorAll('button')).toHaveLength(1);
+    expect(button('Keep on air')).toBeUndefined();
+    expect(endButtons()).toHaveLength(1);
     expect(mocks.stopStream).not.toHaveBeenCalled();
     expect(mocks.push).not.toHaveBeenCalled();
   });
 
-  it('End Episode, asked and confirmed, stops the stream and opens the Wrap-up', async () => {
+  it('End Episode, asked and confirmed, stops the stream and opens the episode', async () => {
     mocks.socketState!.value = 'error';
     await mountOnAir();
     await press('End Episode');
@@ -433,7 +921,10 @@ describe('On Air', () => {
     await press('End Episode');
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
-    expect(mocks.push).toHaveBeenCalledWith({ path: '/shows/7', state: { episodeEnded: 7 } });
+    expect(mocks.push).toHaveBeenCalledWith({
+      path: '/shows/7',
+      state: { episodeEnded: 7 },
+    });
   });
 
   it('End Episode sends the last recorder chunk before it stops the stream', async () => {
@@ -452,24 +943,37 @@ describe('On Air', () => {
     expect(mocks.stopStream).toHaveBeenCalledOnce();
     expect(mocks.capture.stopCapture).toHaveBeenCalledOnce();
   });
-});
 
-// The Studio's own flow checks are in studioSoundcheck.test.ts.
-describe('flow', () => {
-  it('Studio · On Air matches the flow', async () => {
-    vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
+  it('End Episode forgets the moments and the listener history', async () => {
+    await mountOnAir();
+    button('Mark moment')!.click();
+    await press('End Episode');
+    await press('End Episode');
+    app!.unmount();
+    root.remove();
+    mocks.listeners = 3;
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
-    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
-    await expectFlow('studio-onair', root);
+    expect(card('Moments').querySelectorAll('li')).toHaveLength(0);
+    expect(card('Listeners').textContent).toContain('Peak3');
   });
-
+});
+// The Studio's own flow checks are in studioSoundcheck.test.ts.
+describe('flow', () => {
+  // Jump the clock to 42:09, then run one 1 s tick. Running every timer
+  // through 42 minutes took over 5 s per test on a busy CI box.
   async function mountOnAirAt4210() {
     vi.setSystemTime(new Date('2026-11-15T12:00:00Z'));
     const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
     await mountPage(StudioOnAir);
-    await vi.advanceTimersByTimeAsync((42 * 60 + 10) * 1000);
+    vi.setSystemTime(new Date('2026-11-15T12:42:09Z'));
+    await vi.advanceTimersByTimeAsync(1000);
   }
+
+  it('Studio · On Air matches the flow', async () => {
+    await mountOnAirAt4210();
+    await expectFlow('studio-onair', root);
+  });
 
   it('Studio · On Air, reconnecting matches the flow (a drop of more than 10 minutes)', async () => {
     mocks.socketState = ref('connecting');
@@ -497,7 +1001,7 @@ describe('flow', () => {
 
   it('Studio · On Air, input gone matches the flow', async () => {
     await mountOnAirAt4210();
-    (mocks.capture.setOnError as Mock).mock.calls.at(-1)![0](DEVICE_ENDED);
+    mocks.captureOnError!(DEVICE_ENDED);
     await nextTick();
     await expectFlow('studio-onair-noinput', root);
   });

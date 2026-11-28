@@ -77,8 +77,8 @@ async function sent(slot: Slot, timeout: number): Promise<Announcement> {
   return last!;
 }
 
-/** Fill the composer (pre or post) and send it with the chosen time. */
-async function compose(slot: 'pre' | 'post', time: RegExp): Promise<void> {
+/** Fill the composer (pre or post) and send it with the chosen time, or Post now. */
+async function compose(slot: 'pre' | 'post', time: RegExp | 'now'): Promise<void> {
   await page.goto(`/#/shows/${episode}/announce/${slot}`);
   // The composer fills its fields once its data is loaded, over anything typed
   // before: type until the text stays.
@@ -89,8 +89,17 @@ async function compose(slot: 'pre' | 'post', time: RegExp): Promise<void> {
     await page.waitForTimeout(1_500);
     expect(await headline.inputValue()).toBe(`e2e ${slot}`);
   }).toPass({ timeout: 30_000 });
-  // The feed time is offered on every day ahead: the first one is today.
-  await page.getByRole('radio', { name: time }).first().check();
+  // When: Book a time opens the time picker (Post now: staging only).
+  await page.getByRole('button', { name: /^(Goes out|Book a time)/ }).click();
+  const picker = page.getByRole('dialog');
+  if (time === 'now') {
+    await picker.getByRole('button', { name: 'Post now' }).click();
+  } else {
+    // The feed time is offered on every day ahead: the first one is today.
+    await picker.getByRole('radio', { name: time }).first().check();
+    await picker.getByRole('button', { name: 'Book this time' }).click();
+  }
+  await expect(picker).toBeHidden();
   const saved = page.waitForResponse(
     (r) => r.url().endsWith(`/announcements/${slot}`) && r.request().method() === 'PUT'
   );
@@ -104,31 +113,39 @@ test('a host announces an episode on Instagram', async () => {
 
   await test.step('create a Show and book a live slot a few minutes ahead', async () => {
     show = await createShow(page, `e2e-${RUN}-instagram`);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     // Time for the pre-announcement while the episode is still upcoming.
     start = nextMinute(4 * 60);
     episode = await bookSlot(page, start, new Date(start.getTime() + 30 * 60_000));
   });
 
   await test.step('pre-announcement with Post now', async () => {
-    await compose('pre', /^Post now$/);
+    await compose('pre', 'now');
     await sent('pre', 3 * 60_000);
   });
 
-  await test.step('switch the on-air story on', async () => {
+  await test.step('set up the on-air story', async () => {
+    // A booking no longer arms it: the host sets it up on the Social media tab.
     await page.goto(`/#/shows/${episode}`);
+    await page.getByRole('tab', { name: /Social media/ }).click();
+    await page
+      .getByRole('group', { name: 'On-air story' })
+      .getByRole('button', { name: 'Set up' })
+      .click();
     const saved = page.waitForResponse(
       (r) => r.url().endsWith('/announcements/onair') && r.request().method() === 'PUT'
     );
-    await page.getByRole('checkbox', { name: /On air · story/ }).check();
-    expect((await saved).ok(), 'PUT onair').toBe(true);
+    await page.getByRole('button', { name: 'Schedule story' }).click();
+    const res = await saved;
+    expect(res.ok(), `PUT onair: ${res.status()} ${await res.text()}`).toBe(true);
     expect((await announcement('onair'))?.state).toBe('armed');
   });
 
   await test.step('Go Live sends the on-air story', async () => {
     // Go Live opens at the start; the soundcheck helper waits 3 minutes for it.
     await page.waitForTimeout(Math.max(0, start.getTime() - 150_000 - Date.now()));
-    await page.getByRole('button', { name: 'Open Studio' }).click();
+    // The Studio on its own page: the episode page keeps it in its Soundcheck tab.
+    await page.goto(`/#/stream/live?show=${episode}`);
     await soundcheckAndGoLive(page);
     await sent('onair', 3 * 60_000);
   });

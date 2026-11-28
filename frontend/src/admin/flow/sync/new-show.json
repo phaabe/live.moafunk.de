@@ -1,8 +1,12 @@
 {
   "screen": "new-show",
   "hash": "bbe1a73e",
-  "status": "ok",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "back: My Shows"
+  ],
+  "extra": [
+    "link: < My Show"
+  ]
 }

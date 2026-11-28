@@ -61,7 +61,7 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
 
   await test.step('create a Show and book a live slot a day ahead', async () => {
     show = await createShow(page, SHOW_NAME);
-    await page.locator('a, button').filter({ hasText: /^Book Slot$/ }).click();
+    await page.getByRole('button', { name: 'Book another date' }).click();
     // A day ahead: the episode never goes on air during the test.
     const start = nextMinute(24 * 3600);
     episode = await bookSlot(page, start, new Date(start.getTime() + 60 * 60_000));
@@ -70,16 +70,18 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
   const send = page.getByRole('button', { name: 'Upload to SoundCloud' });
 
   await test.step('upload the recording on the episode page', async () => {
-    await page.getByLabel('Recording file').setInputFiles(SET_MP3);
+    await page.getByRole('tab', { name: /Recording/ }).click();
+    await page.getByLabel('Own file').setInputFiles(SET_MP3);
     // The button opens once the episode has its recording.
     await expect(send).toBeEnabled({ timeout: 2 * 60_000 });
   });
 
   await test.step('Upload to SoundCloud gives a track link', async () => {
     await send.click();
-    await expect(page.getByRole('link', { name: /soundcloud\.com/ })).toBeVisible({
-      timeout: 3 * 60_000,
-    });
+    const link = page.getByRole('link', { name: 'Open on SoundCloud' });
+    await expect(link).toBeVisible({ timeout: 3 * 60_000 });
+    // The track is private: only its secret link opens it.
+    await expect(link).toHaveAttribute('href', /^https:\/\/soundcloud\.com\/.+\/s-[A-Za-z0-9]+$/);
     await expect(page.getByRole('alert')).toHaveCount(0);
     const res = await page.request.get(`/api/shows/${episode}`);
     expect(res.ok(), `GET /api/shows/${episode}: ${res.status()}`).toBe(true);

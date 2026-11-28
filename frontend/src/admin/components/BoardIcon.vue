@@ -28,8 +28,18 @@ const PATHS = {
   repeat: 'M17 1l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3',
   plus: 'M12 5v14M5 12h14',
   check: 'M20 6L9 17l-5-5',
+  pencil: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z',
+  lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
   close: 'M18 6L6 18M6 6l12 12',
   image: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM21 15l-5-5L5 21',
+  // #1049 dashboard
+  clock: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM12 7v5l3 2',
+  chat: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  grid: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
+  send: 'M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z',
+  // #1050 My Show
+  instagram:
+    'M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5zM16 11.4A4 4 0 1 1 12.6 8a4 4 0 0 1 3.4 3.4zM17.5 6.5h.01',
 } as const;
 
 withDefaults(defineProps<{ name: keyof typeof PATHS; size?: number }>(), { size: 18 });

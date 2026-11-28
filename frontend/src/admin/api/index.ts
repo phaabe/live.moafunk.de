@@ -1,4 +1,6 @@
 // API client for admin panel
+import type { RecordingEdit, Snippet } from '../components/recording-editor/edit';
+
 // In production, admin panel is hosted at admin.live.moafunk.de (same origin as API)
 const API_BASE = '';
 
@@ -91,6 +93,8 @@ export interface User {
   artist_name?: string;
   has_show?: boolean;
   must_change_password?: boolean;
+  /** The profile photo for the nav bar (#1117): a srcset of small copies. */
+  photo_srcset?: string | null;
 }
 
 export interface LoginResponse {
@@ -214,6 +218,7 @@ export interface ArtistDetail {
     title: string;
     date: string;
     cover_url?: string;
+    cover_srcset?: string | null;
     cover_generated_at?: string;
   }[];
   available_shows: AvailableShow[];
@@ -466,6 +471,8 @@ export interface AssignedArtist {
   name: string;
   pronouns: string;
   pic_url?: string;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  pic_srcset?: string | null;
   voice_url?: string;
   track1_url?: string;
   track2_url?: string;
@@ -491,6 +498,8 @@ export interface ShowDetail {
   available_artists: { id: number; name: string; pronouns: string }[];
   artists_left: number;
   cover_url?: string;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  cover_srcset?: string | null;
   collage_url?: string;
   cover_generated_at?: string;
   active_overlay_preset_id?: number;
@@ -502,6 +511,25 @@ export interface ShowDetail {
   soundcloud_url?: string;
   soundcloud_uploaded_at?: string;
   soundcloud_public?: boolean;
+  /** The Edit recording page (#883): none, draft, rendering, done or failed. */
+  recording_edit_status?: string | null;
+  /** When the edited file was made (server time, "YYYY-MM-DD HH:MM:SS"). */
+  recording_edited_at?: string | null;
+  /** Length of the edited file in seconds. */
+  recording_edited_seconds?: number | null;
+  /** The edited file; Upload to SoundCloud sends it. */
+  edited_recording_url?: string | null;
+  /** Which file goes to SoundCloud and gets edited (#1082): the show recording or the own file. */
+  recording_source?: RecordingFile;
+  /** The picked file as it goes to SoundCloud (its edit when there is one), as a download. */
+  recording_download_url?: string | null;
+  /** The picked file without its edit; only when there is an edit. */
+  recording_original_download_url?: string | null;
+  /** Which file the SoundCloud track was made from. */
+  soundcloud_source?: RecordingFile | null;
+  soundcloud_edited?: boolean;
+  /** False when SoundCloud has another file than the one that would go up now. */
+  soundcloud_current?: boolean | null;
   prerecorded_key?: string;
   prerecorded_filename?: string;
   prerecorded_confirmed_at?: string;
@@ -511,6 +539,12 @@ export interface ShowDetail {
   host_has_logged_in: boolean | null;
   host_username?: string;
   available_hosts?: { id: number; username: string }[];
+  /** The episode's hosts (#1047): the Show's owner and co-hosts, then its own co-hosts. */
+  hosts?: SeriesHost[];
+  /** The caller hosts this episode: may edit it, open the Studio and go live. */
+  can_edit?: boolean;
+  /** The caller may also cancel it and change who hosts it (not an episode co-host). */
+  can_manage?: boolean;
   /** Intended delivery: 'live' or 'prerecorded' (changeable after creation). */
   stream_mode?: 'live' | 'prerecorded';
   /** The user who created the show (may differ from the assigned host). */
@@ -528,6 +562,7 @@ export interface ShowDetail {
   /** The Show's description and cover, for hosts who view another host's episode. */
   series_description?: string | null;
   series_cover_url?: string | null;
+  series_cover_srcset?: string | null;
   /** Same rule as the Show page: upcoming, wrap-up open or finished. */
   episode_status?: EpisodeStatus;
   /** "Upcoming" | "Finished · wrap-up open" | "Finished" */
@@ -540,6 +575,51 @@ export interface ShowDetail {
   live_ended_at?: string | null;
   /** Whether the broadcast the host ended with End Episode was recorded. */
   live_recorded?: boolean | null;
+  /** What the host's browser saved in the Studio and the live panel. */
+  studio_log?: StudioLog | null;
+  /** Listener counts the server took while the episode was on air, oldest first. */
+  listener_samples?: { at: number; count: number }[];
+}
+
+/** The soundcheck the Studio saved at Go Live: the input and each check. */
+export interface StudioSoundcheckLog {
+  /** Unix ms when it was saved. */
+  at: number;
+  input: string;
+  checks: {
+    id: 'music' | 'mic' | 'server' | 'return';
+    name: string;
+    state: 'pending' | 'running' | 'ok' | 'warn' | 'fail' | 'skipped';
+    detail: string;
+  }[];
+}
+
+/** The live panel's values, saved every 15 s while on air and at End Episode. */
+export interface StudioOnAirLog {
+  /** Unix ms when it was saved. */
+  at: number;
+  /** Unix ms when this tab went on air. */
+  since: number;
+  /** Saved by End Episode: the values from the end. */
+  ended: boolean;
+  input: string;
+  /** 0..2 (1 = as it comes in). */
+  gain: number;
+  connection: 'stable' | 'tight' | 'too slow' | 'reconnecting…' | 'lost';
+  upload_kbps: number;
+  buffer_s: number;
+  rtt_ms: number | null;
+  /** Upload kbit/s, one sample a second, oldest first. */
+  history: number[];
+  target_kbps: number;
+  quality: 'auto' | number;
+  /** `at`: seconds on air; `markedAt`: unix ms. */
+  moments: { at: number; markedAt: number }[];
+}
+
+export interface StudioLog {
+  soundcheck?: StudioSoundcheckLog;
+  on_air?: StudioOnAirLog;
 }
 
 export type RecordingVersionStatus = 'raw' | 'finalizing' | 'finalized' | 'failed';
@@ -561,6 +641,10 @@ export const showsApi = {
   overview: () => api.get<{ shows: ShowOverviewItem[] }>('/api/shows-overview'),
 
   get: (id: number) => api.get<ShowDetail>(`/api/shows/${id}`),
+
+  /** The host's browser saves the Studio's or the live panel's values (each part replaces its own). */
+  saveStudioLog: (id: number, part: StudioLog) =>
+    api.put<void>(`/api/shows/${id}/studio-log`, part),
 
   create: (data: Partial<Show> & { template_id?: number; host_user_id?: number }) =>
     api.post<Show>('/api/shows', data),
@@ -794,6 +878,7 @@ export type AnnouncementState =
   | 'pending_approval'
   | 'scheduled'
   | 'armed'
+  | 'waiting_soundcloud'
   | 'sent'
   | 'failed'
   | 'cancelled';
@@ -805,21 +890,31 @@ export interface Announcement {
   slot: AnnouncementSlot;
   channel: string;
   state: AnnouncementState;
-  /** RFC 3339; null for the on-air story and a post slot that waits for SoundCloud. */
+  /** RFC 3339; null while no time is booked (`draft`, `waiting_soundcloud`). */
   scheduled_at: string | null;
-  /** RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved. */
+  /**
+   * RFC 3339; the time the host picked. Differs from `scheduled_at` when the post was moved.
+   * With no `scheduled_at`: the booked time that was unset because the post could not go out.
+   */
   requested_at: string | null;
   headline: string;
   caption: string;
   image_source: AnnouncementImage;
   image_key: string | null;
   layout: 'band' | 'split';
+  /** Invite the show's own Instagram account as collaborator. */
   collaborator: boolean;
+  /** More collaborator accounts (handles without "@"). Feed posts only. */
+  extra_collaborators: string[];
+  /** Accounts tagged on the image (handles without "@"). Feed posts only. */
+  user_tags: string[];
   sent_at: string | null;
   permalink: string | null;
   error: string | null;
   /** The host chose "Post now". */
   send_now: boolean;
+  /** Changes with every save: the version of the slot's picture. */
+  updated_at: string;
 }
 
 export interface AnnouncementInput {
@@ -829,6 +924,8 @@ export interface AnnouncementInput {
   image_key?: string;
   layout: 'band' | 'split';
   collaborator: boolean;
+  extra_collaborators?: string[];
+  user_tags?: string[];
   scheduled_at?: string;
   /** Send within a minute instead of at `scheduled_at` (pre slot only). */
   send_now?: boolean;
@@ -848,13 +945,81 @@ export interface AnnouncementMeta {
   paused: boolean;
   /** This host's posts wait for an admin first. */
   needs_approval: boolean;
+  /** "Post now" is offered (the Instagram test account, staging only). */
+  post_now?: boolean;
   /** Admin switches; a service that is off is "temporarily not available". */
   services: ServiceSettings;
 }
 
+/** Waveform data of a recording: the loudest sample per bucket, 0..1. */
+export interface RecordingPeaks {
+  duration: number;
+  per_second: number;
+  peaks: number[];
+}
+
+export type RecordingEditStatus = 'none' | 'draft' | 'rendering' | 'done' | 'failed';
+
+/** The two files of an episode (#1082): recorded on air, or uploaded by the host. */
+export type RecordingFile = 'show' | 'own';
+
+/** GET /api/shows/:id/recording/edit — the Edit recording page (#883). */
+export interface RecordingEditState {
+  /** The original recording; null when the episode has none. */
+  source: { url: string; duration: number | null } | null;
+  /** The picked file this edit belongs to, and its name. */
+  file?: RecordingFile;
+  filename?: string | null;
+  edit: RecordingEdit | null;
+  /** The snippets for the post-announcement, in slot order. Saved apart from the edit. */
+  snippets: Snippet[];
+  status: RecordingEditStatus;
+  error: string | null;
+  edited_url: string | null;
+  rendered_at: string | null;
+}
+
+export const recordingEditApi = {
+  get: (showId: number) => api.get<RecordingEditState>(`/api/shows/${showId}/recording/edit`),
+
+  /** 202 `{status: 'processing'}` while the server still computes them. */
+  peaks: (showId: number) =>
+    api.get<RecordingPeaks | { status: 'processing' }>(`/api/shows/${showId}/recording/peaks`),
+
+  save: (showId: number, edit: RecordingEdit) =>
+    api.put<RecordingEditState>(`/api/shows/${showId}/recording/edit`, edit),
+
+  /** Saves the picked file's snippets; the edit and its file stay as they are. */
+  saveSnippets: (showId: number, snippets: Snippet[]) =>
+    api.put<RecordingEditState>(`/api/shows/${showId}/recording/snippets`, { snippets }),
+
+  /** Starts the render on the server: 202 `{status: 'rendering'}`. */
+  apply: (showId: number) =>
+    api.post<{ status: RecordingEditStatus }>(`/api/shows/${showId}/recording/edit/apply`),
+
+  /** Picks the file for SoundCloud and Edit recording (#1082). */
+  setSource: (showId: number, source: RecordingFile) =>
+    api.put<{ source: RecordingFile }>(`/api/shows/${showId}/recording/source`, { source }),
+};
+
+/**
+ * Where an announcement is, without its text, image or error: what every host
+ * may see on another host's episode (GET …/announcements/status). Drafts are left out.
+ */
+export type AnnouncementStatus = Pick<
+  Announcement,
+  'slot' | 'channel' | 'state' | 'scheduled_at' | 'sent_at' | 'permalink'
+> & {
+  /** Set for a sent post: its picture may be loaded (see `imageUrl`). */
+  image_version?: string | null;
+};
+
 const announcementsPath = (showId: number) => `/api/shows/${showId}/announcements`;
 
 export const announcementsApi = {
+  /** Read-only status of the slots, for every signed-in user. */
+  status: (showId: number) => api.get<AnnouncementStatus[]>(`${announcementsPath(showId)}/status`),
+
   list: async (showId: number): Promise<Announcement[]> => {
     const r = await api.get<Announcement[] | { announcements: Announcement[] }>(
       announcementsPath(showId)
@@ -869,6 +1034,12 @@ export const announcementsApi = {
   /** Cancel a slot; refused once it is sent. */
   cancel: (showId: number, slot: AnnouncementSlot) =>
     api.delete<Announcement>(`${announcementsPath(showId)}/${slot}`),
+
+  /** Book or change a feed post's time, also before the post is set up. 409 when taken. */
+  book: (showId: number, slot: AnnouncementSlot, scheduledAt: string) =>
+    api.put<Announcement>(`${announcementsPath(showId)}/${slot}/time`, {
+      scheduled_at: scheduledAt,
+    }),
 
   times: async (showId: number, slot: AnnouncementSlot): Promise<AnnouncementTime[]> => {
     const r = await api.get<AnnouncementTime[] | { slots: AnnouncementTime[] }>(
@@ -908,6 +1079,16 @@ export const announcementsApi = {
       layout,
       image_source: image,
       ...(imageKey ? { image_key: imageKey } : {}),
+    })}`,
+
+  /**
+   * The picture of a set-up slot (the episode's hosts) or a sent post (every
+   * host). `version` changes with the slot, so the browser may cache it.
+   */
+  imageUrl: (showId: number, slot: AnnouncementSlot, version: string, size?: 'thumb') =>
+    `${API_BASE}${announcementsPath(showId)}/${slot}/image.jpg?${new URLSearchParams({
+      v: version,
+      ...(size ? { size } : {}),
     })}`,
 };
 
@@ -960,11 +1141,15 @@ export interface Series {
   name: string;
   description: string | null;
   cover_url: string | null;
+  /** `srcset` of small copies of the image (signed `/api/img` links). */
+  cover_srcset?: string | null;
   rhythm: SeriesRhythm | null;
   /** e.g. "Sundays · 12:00–14:00" */
   rhythm_line: string | null;
   /** The host's own Instagram account, without "@"; announcements invite it as collaborator. */
   instagram_handle?: string | null;
+  /** The owner first, then the co-hosts (#1047). */
+  hosts?: SeriesHost[];
 }
 
 export type EpisodeStatus = 'upcoming' | 'wrapup_open' | 'finished';
@@ -979,9 +1164,25 @@ export interface SeriesEpisode {
   mode_label: string;
   status: EpisodeStatus;
   status_label: string;
+  /** A pre-recorded episode has its set file. */
+  has_file?: boolean;
+  /** Set once the recording is on SoundCloud. */
+  soundcloud?: 'public' | 'private' | null;
+  /** Its Instagram posts (no drafts), pre → onair → post. */
+  instagram?: Pick<Announcement, 'slot' | 'state' | 'scheduled_at' | 'sent_at'>[];
+}
+
+/** A host of a Show or an episode (#1047). */
+export interface SeriesHost {
+  user_id: number;
+  username: string;
+  /** The Show's owner, a Show co-host, or a co-host of one episode. */
+  role: 'owner' | 'cohost' | 'episode';
 }
 
 export interface SeriesDetail extends Series {
+  /** The caller may book and manage its episodes: its owner, a co-host or an admin. */
+  can_edit?: boolean;
   /** Newest first. */
   episodes: SeriesEpisode[];
 }
@@ -989,13 +1190,40 @@ export interface SeriesDetail extends Series {
 /** A row of the host Dashboard: an upcoming episode of any host. */
 export interface UpcomingEpisode {
   id: number;
+  /** The episode's own title, e.g. "Brunchtime #31". */
+  title: string;
   date: string;
   start_time: string | null;
   end_time: string | null;
   show_name: string;
+  /** The Show's slug: its page and its cover in the Shows grid. */
+  series_slug: string;
   host_username: string;
+  /** Every host by name: the owner, the Show's co-hosts, the episode's co-hosts. */
+  hosts?: string[];
   mode: 'live' | 'prerecorded';
   mode_label: string;
+}
+
+/** A past row of the host Dashboard: an episode of any host whose broadcast is over. */
+export interface PastEpisode extends UpcomingEpisode {
+  status: Exclude<EpisodeStatus, 'upcoming'>;
+  /** "Finished · wrap-up open" | "Finished" */
+  status_label: string;
+}
+
+/** A tile of the host Dashboard's Shows grid: a Show of any host. */
+export interface SeriesOverviewItem {
+  id: number;
+  slug: string;
+  name: string;
+  cover_url: string | null;
+  cover_srcset?: string | null;
+  host_username: string;
+  /** The owner, then the co-hosts. */
+  hosts?: string[];
+  /** Episodes whose broadcast is over (wrap-up open or finished). */
+  finished_episodes: number;
 }
 
 export interface NewSeries {
@@ -1013,6 +1241,15 @@ export interface SeriesSlot {
   date: string;
   start_time: string;
   end_time: string;
+}
+
+/** A booked show's date and times, without its name (Book Slot marks them as taken). */
+export interface BookedTime {
+  date: string;
+  start_time: string;
+  end_time: string | null;
+  /** Started 10+ min ago and not on air for 10 min: Book Slot may book over it after a confirm. */
+  take_over?: boolean;
 }
 
 export interface BookedEpisode extends SeriesSlot {
@@ -1046,7 +1283,7 @@ export const seriesApi = {
   /** All hosts' upcoming episodes, by date and start time. */
   upcoming: () => api.get<{ episodes: UpcomingEpisode[] }>('/api/upcoming-episodes'),
 
-  /** One of the caller's series, or null when it is not theirs (404). */
+  /** A series with its episodes, any host's (read-only unless `can_edit`); null when unknown (404). */
   get: async (slug: string): Promise<SeriesDetail | null> => {
     const resp = await apiFetch(seriesPath(slug), { credentials: 'include' });
     if (resp.status === 404) return null;
@@ -1057,9 +1294,15 @@ export const seriesApi = {
   /** Free slots of the rhythm for the next weeks (none without a rhythm). */
   slots: (slug: string) => api.get<{ slots: SeriesSlot[] }>(`${seriesPath(slug)}/slots`),
 
+  /** Every booked show from the day before `from` to `to` ("YYYY-MM-DD"), times only. */
+  bookedTimes: (from: string, to: string) =>
+    api.get<{ times: BookedTime[] }>(`/api/booked-times?from=${from}&to=${to}`),
+
   /** Book a slot. A slot someone else took in the meantime is rejected. */
-  book: (slug: string, body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string }) =>
-    api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
+  book: (
+    slug: string,
+    body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string; take_over?: boolean }
+  ) => api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
 
   /** Chunked upload of a pre-recorded set before it is booked. */
   uploadSet: async (
@@ -1109,6 +1352,48 @@ export const seriesApi = {
 
   /** The owner edits a Show. The slug stays; a missing cover keeps the old one. */
   update: (slug: string, input: NewSeries) => sendSeries('PUT', seriesPath(slug), input),
+
+  /** All hosts' past episodes (wrap-up open or finished), newest first, at most 50. */
+  past: () => api.get<{ episodes: PastEpisode[] }>('/api/past-episodes'),
+
+  /** All hosts' Shows with cover, host and finished episodes, most episodes first. */
+  overview: () => api.get<{ series: SeriesOverviewItem[] }>('/api/series-overview'),
+};
+
+/** A host account that Add host offers. */
+export interface HostAccount {
+  id: number;
+  username: string;
+}
+
+/** Co-hosts of a Show and of one episode (#1047). Each change returns the new host list. */
+export const hostsApi = {
+  /** Every active host account (no guests, no admins). */
+  list: () => api.get<HostAccount[]>('/api/hosts'),
+  addToSeries: (slug: string, userId: number) =>
+    api.post<SeriesHost[]>(`${seriesPath(slug)}/hosts`, { user_id: userId }),
+  /** The owner removes a co-host, or a co-host leaves (their own id). */
+  removeFromSeries: (slug: string, userId: number) =>
+    api.delete<SeriesHost[]>(`${seriesPath(slug)}/hosts/${userId}`),
+  addToEpisode: (showId: number, userId: number) =>
+    api.post<SeriesHost[]>(`/api/shows/${showId}/hosts`, { user_id: userId }),
+  /** The owner or a Show co-host removes an episode co-host, or one leaves. */
+  removeFromEpisode: (showId: number, userId: number) =>
+    api.delete<SeriesHost[]>(`/api/shows/${showId}/hosts/${userId}`),
+};
+
+/** A note on the Dashboard's chalkboard. `ts` is seconds since the epoch. */
+export interface ChalkNote {
+  id: number;
+  author: string;
+  text: string;
+  ts: number;
+}
+
+/** The hosts' and admins' chalkboard: the latest 50 notes, oldest first. */
+export const chalkboardApi = {
+  list: () => api.get<{ notes: ChalkNote[] }>('/api/chalkboard'),
+  add: (text: string) => api.post<ChalkNote>('/api/chalkboard', { text }),
 };
 
 async function sendSeries(method: 'POST' | 'PUT', url: string, input: NewSeries): Promise<Series> {
@@ -1143,8 +1428,12 @@ export const soundcloudApi = {
 };
 
 // Settings API
+/** Moafunkbot switches: technical alerts (`enabled`), the On Air live chat
+ * and the on-air message to the channel. */
 export interface NotificationSettings {
   enabled: boolean;
+  live_chat: boolean;
+  onair_message: boolean;
 }
 
 /** Admin switches for the outside services. Off blocks every post there. */
@@ -1156,8 +1445,9 @@ export interface ServiceSettings {
 export const settingsApi = {
   getNotifications: () => api.get<NotificationSettings>('/api/settings/notifications'),
 
-  setNotifications: (enabled: boolean) =>
-    api.put<NotificationSettings>('/api/settings/notifications', { enabled }),
+  /** Sends only the switches it is given; the server keeps the others. */
+  setNotifications: (changes: Partial<NotificationSettings>) =>
+    api.put<NotificationSettings>('/api/settings/notifications', changes),
 
   getServices: () => api.get<ServiceSettings>('/api/settings/services'),
 
@@ -1252,6 +1542,7 @@ export interface RecordingArtist {
   name: string;
   pronouns: string;
   pic_url?: string;
+  pic_srcset?: string | null;
   voice_url?: string;
   voice_key?: string;
   track1_url?: string;
@@ -1558,4 +1849,74 @@ export const instagramAdminApi = {
   act: (id: number, action: 'approve' | 'reject' | 'retry') =>
     api.post<QueuedAnnouncement>(`/api/admin/announcements/${id}/${action}`),
   status: () => api.get<InstagramStatus>('/api/admin/instagram/status'),
+};
+
+// Profiles (#1117)
+export interface ProfileLink {
+  platform: string;
+  /** The platform's name, or the host's own name for a Custom link. */
+  name: string;
+  label: string | null;
+  /** The handle, or the whole address. */
+  value: string;
+  url: string;
+  /** "@lena.brunch", "soundcloud.com/lena-brunch" */
+  text: string;
+}
+
+export interface Profile {
+  username: string;
+  display_name: string | null;
+  /** The display name, else the username. */
+  name: string;
+  role: User['role'];
+  about: string | null;
+  photo_url: string | null;
+  photo_srcset: string | null;
+  shows: { slug: string; name: string }[];
+  links: ProfileLink[];
+}
+
+/** A platform a link can point to; prefix "https://" means a whole address. */
+export interface ProfilePlatform {
+  key: string;
+  name: string;
+  group: 'common' | 'music' | 'social' | 'other';
+  prefix: string;
+  suffix: string;
+  at: boolean;
+  hint: string;
+}
+
+export interface ProfileInput {
+  display_name: string;
+  about: string;
+  links: { platform: string; value: string; label?: string }[];
+}
+
+export const profileApi = {
+  /** The own profile, with the platform list for the edit form. */
+  own: () => api.get<{ profile: Profile; platforms: ProfilePlatform[] }>('/api/profile'),
+  /** Another host's profile, read-only; null when there is none (404). */
+  of: async (username: string): Promise<Profile | null> => {
+    const resp = await apiFetch(`/api/profiles/${encodeURIComponent(username)}`, {
+      credentials: 'include',
+    });
+    if (resp.status === 404) return null;
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
+  save: (body: ProfileInput) => api.put<Profile>('/api/profile', body),
+  uploadPhoto: async (file: File): Promise<Profile> => {
+    const form = new FormData();
+    form.append('photo', file);
+    const resp = await apiFetch('/api/profile/photo', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!resp.ok) throw await errorOf(resp);
+    return resp.json();
+  },
+  removePhoto: () => api.delete<Profile>('/api/profile/photo'),
 };

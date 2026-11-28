@@ -31,6 +31,9 @@ struct ScCall {
     body: Value,
 }
 
+/// The secret token of every fake track.
+const SECRET: &str = "s-Secret1";
+
 /// A playlist as `(id, title, track ids)`.
 type Playlist = (i64, String, Vec<i64>);
 
@@ -159,13 +162,19 @@ async fn fake_request(
         }))
         .into_response(),
         ("POST", ["tracks"]) => {
-            let mut track = json!({ "id": 555 });
+            let mut track = json!({ "id": 555, "sharing": "private", "secret_token": SECRET });
             if let Some(url) = fake.permalink.lock().unwrap().clone() {
                 track["permalink_url"] = json!(url);
             }
             (StatusCode::CREATED, Json(track)).into_response()
         }
-        ("DELETE" | "PUT", ["tracks", _]) => Json(json!({})).into_response(),
+        ("DELETE", ["tracks", _]) => Json(json!({})).into_response(),
+        // A track as its owner sees it: with the secret token, public or not.
+        ("PUT", ["tracks", id]) => Json(json!({
+            "id": id.parse::<i64>().unwrap(), "sharing": body["track"]["sharing"],
+            "permalink_url": format!("https://soundcloud.com/radio-moafunk/t{id}"), "secret_token": SECRET
+        }))
+        .into_response(),
         ("GET", ["tracks", id]) => {
             let id: i64 = id.parse().unwrap();
             let sharing = if fake.public.lock().unwrap().contains(&id) {
@@ -173,7 +182,11 @@ async fn fake_request(
             } else {
                 "private"
             };
-            Json(json!({ "id": id, "sharing": sharing })).into_response()
+            Json(json!({
+                "id": id, "sharing": sharing,
+                "permalink_url": format!("https://soundcloud.com/radio-moafunk/t{id}"), "secret_token": SECRET
+            }))
+            .into_response()
         }
         ("GET", ["me"]) => {
             let mut me = json!({ "id": 1, "permalink": *fake.me.lock().unwrap() });
@@ -359,10 +372,25 @@ async fn show_with_recording(state: &Arc<AppState>, r2: &FakeR2) -> i64 {
     id
 }
 
+/// A show with a finalized live take in R2 and no own file.
+async fn show_with_take(state: &Arc<AppState>, r2: &FakeR2) -> i64 {
+    let id = add_show(state, "Late Night", Some("Show bio")).await;
+    sqlx::query(
+        "INSERT INTO recording_versions (show_id, version, status, final_key) \
+         VALUES (?, 'v1', 'finalized', 'final/v1.mp3')",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    r2.insert(state, "final/v1.mp3", b"take");
+    id
+}
+
 #[test]
 fn auto_upload_only_when_enabled_and_configured() {
-    // Happy path: on + configured (fires even if the show already has a
-    // track — a new recording replaces that track's audio).
+    // Happy path: on + configured (a show with a track is skipped later, in
+    // `auto_upload_on_finalize`).
     assert!(should_auto_upload(true, true));
 
     // Either blocker prevents the upload.
@@ -553,7 +581,7 @@ async fn finalize_after_expiry_refreshes_and_uploads() {
     exchange_code(&state, "the-code", &login_state(&state))
         .await
         .unwrap();
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     set_expires_in(&state, -3600).await;
     assert!(
         has_token(&state).await,
@@ -1012,9 +1040,10 @@ async fn upload_sends_a_private_track_and_stores_it() {
     let result = upload_track(&state, id).await.unwrap();
     assert!(result.success);
     assert_eq!(result.track_id.as_deref(), Some("555"));
+    // A private track opens only with its secret link.
     assert_eq!(
         result.track_url.as_deref(),
-        Some("https://soundcloud.com/radio-moafunk/new")
+        Some("https://soundcloud.com/radio-moafunk/new/s-Secret1")
     );
 
     let upload = fake.call("POST /tracks");
@@ -1036,10 +1065,19 @@ async fn upload_sends_a_private_track_and_stores_it() {
     assert_eq!(stored.soundcloud_track_id.as_deref(), Some("555"));
     assert_eq!(
         stored.soundcloud_url.as_deref(),
-        Some("https://soundcloud.com/radio-moafunk/new")
+        Some("https://soundcloud.com/radio-moafunk/new/s-Secret1")
     );
     assert!(stored.soundcloud_uploaded_at.is_some());
     assert_eq!(stored.soundcloud_public, Some(false));
+    // Which file went up.
+    assert_eq!(
+        (
+            stored.soundcloud_source.as_deref(),
+            stored.soundcloud_source_key.as_deref(),
+            stored.soundcloud_edited
+        ),
+        (Some("own"), Some("shows/rec.mp3"), Some(false))
+    );
 
     // A new playlist named like the show, holding the track.
     let create = fake.call("POST /playlists");
@@ -1049,8 +1087,8 @@ async fn upload_sends_a_private_track_and_stores_it() {
     );
 }
 
-/// Without a manual recording, the newest finalized version wins over the
-/// newest streamed archive; the archive comes from the shows bucket.
+/// Without a manual recording, a part's finalized mp3 wins over its streamed
+/// archive; the archive comes from the shows bucket.
 #[tokio::test]
 async fn upload_source_order() {
     let (state, _temp, fake, r2) = setup(json!({})).await;
@@ -1084,19 +1122,152 @@ async fn upload_source_order() {
         .is_none());
 
     sqlx::query(
-        "INSERT INTO recording_versions (show_id, version, status, final_key) \
-         VALUES (?, 'v0', 'finalized', 'final/v0.mp3')",
+        "UPDATE recording_versions SET status = 'finalized', final_key = 'final/v1.mp3' \
+         WHERE show_id = ?",
     )
     .bind(id)
     .execute(&state.db)
     .await
     .unwrap();
-    r2.insert(&state, "final/v0.mp3", b"final");
+    r2.insert(&state, "final/v1.mp3", b"final");
     fake.calls.lock().unwrap().clear();
     upload_track(&state, id).await.unwrap();
     assert_eq!(
         fake.call("POST /tracks").body["track[asset_data]"],
-        json!({"file": "v0.mp3", "len": 5})
+        json!({"file": "v1.mp3", "len": 5})
+    );
+}
+
+/// Two parts of a show recording go up as one track that holds both, joined
+/// in time order. A failed part is left out.
+#[tokio::test]
+async fn two_parts_go_up_as_one_track() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = add_show(&state, "Late Night", None).await;
+    let mp3 = ["-c:a", "libmp3lame", "-b:a", "128k"];
+    let parts = [("v1", "raw", 3), ("v2", "failed", 2), ("v3", "raw", 2)];
+    for (version, status, secs) in parts {
+        let key = format!("shows/late-night-{version}.mp3");
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, archive_key, duration_ms) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(version)
+        .bind(status)
+        .bind(&key)
+        .bind(secs * 1000)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let data = crate::recording_tests::tone(secs as u32, &mp3, "mp3").await;
+        r2.objects
+            .lock()
+            .unwrap()
+            .insert(format!("{}/{key}", state.config.r2_shows_bucket_name), data);
+    }
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    let stored = show(&state, id).await;
+    let key = stored.soundcloud_source_key.unwrap();
+    assert!(
+        key.starts_with(&format!("recordings/{id}/joined/")),
+        "{key}"
+    );
+    let joined = r2.object(&state, &key).unwrap();
+    // v1 + v3; the failed v2 is not in it.
+    let secs = crate::recording_tests::seconds(&joined).await;
+    assert!((secs - 5.0).abs() < 0.2, "{secs}");
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "v1.mp3", "len": joined.len()})
+    );
+}
+
+/// Parts that cannot be joined send nothing: SoundCloud never gets one part
+/// as the whole show.
+#[tokio::test]
+async fn parts_that_cannot_be_joined_upload_nothing() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = add_show(&state, "Late Night", None).await;
+    for version in ["v1", "v2"] {
+        let key = format!("final/{version}.mp3");
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, final_key) \
+             VALUES (?, ?, 'finalized', ?)",
+        )
+        .bind(id)
+        .bind(version)
+        .bind(&key)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        r2.insert(&state, &key, b"not audio");
+    }
+    let err = upload_track(&state, id).await.unwrap_err().to_string();
+    assert!(err.contains("ffmpeg failed"), "{err}");
+    assert!(fake.routes().is_empty(), "{:?}", fake.routes());
+}
+
+/// The auto-upload after a new part never touches a track the show has:
+/// nothing deletes it by itself.
+#[tokio::test]
+async fn auto_upload_keeps_an_existing_track() {
+    let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
+    let id = show_with_take(&state, &r2).await;
+    sqlx::query("UPDATE shows SET soundcloud_track_id = '111' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    auto_upload_on_finalize(&state, id).await;
+    assert!(fake.routes().is_empty(), "{:?}", fake.routes());
+    assert_eq!(
+        show(&state, id).await.soundcloud_track_id.as_deref(),
+        Some("111")
+    );
+}
+
+/// A rendered edit of the current recording goes up instead of it, named
+/// after it; an edit of an older recording does not.
+#[tokio::test]
+async fn upload_prefers_the_edited_recording() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = show_with_recording(&state, &r2).await;
+    sqlx::query(
+        "INSERT INTO recording_edits (show_id, source, edit_json, status, edited_key, source_key) \
+         VALUES (?, 'own', '{}', 'done', 'recordings/1/edited/a.mp3', 'shows/rec.mp3')",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    r2.insert(&state, "recordings/1/edited/a.mp3", b"edited!");
+    upload_track(&state, id).await.unwrap();
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "set-edited.mp3", "len": 7})
+    );
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (
+            stored.soundcloud_source_key.as_deref(),
+            stored.soundcloud_edited
+        ),
+        (Some("recordings/1/edited/a.mp3"), Some(true))
+    );
+
+    sqlx::query("UPDATE recording_edits SET source_key = 'shows/older.mp3' WHERE show_id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    fake.calls.lock().unwrap().clear();
+    upload_track(&state, id).await.unwrap();
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "set.mp3", "len": 9})
     );
 }
 
@@ -1262,12 +1433,29 @@ async fn privacy_toggle_updates_the_track() {
         .unwrap();
     let result = set_track_privacy(&state, id, true).await.unwrap();
     assert!(result.success);
-    assert_eq!(result.track_url.as_deref(), Some("u"));
+    // Public: the plain link.
+    let public = "https://soundcloud.com/radio-moafunk/t555";
+    assert_eq!(result.track_url.as_deref(), Some(public));
     assert_eq!(
         fake.call("PUT /tracks/555").body,
         json!({"track": {"sharing": "public"}})
     );
-    assert_eq!(show(&state, id).await.soundcloud_public, Some(true));
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (stored.soundcloud_public, stored.soundcloud_url.as_deref()),
+        (Some(true), Some(public))
+    );
+
+    // Private again: the secret link.
+    let private = "https://soundcloud.com/radio-moafunk/t555/s-Secret1";
+    let result = set_track_privacy(&state, id, false).await.unwrap();
+    assert_eq!(result.track_url.as_deref(), Some(private));
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (stored.soundcloud_public, stored.soundcloud_url.as_deref()),
+        (Some(false), Some(private))
+    );
+    set_track_privacy(&state, id, true).await.unwrap();
 
     fake.fail("PUT /tracks/555", 500);
     let result = set_track_privacy(&state, id, false).await.unwrap();
@@ -1276,8 +1464,10 @@ async fn privacy_toggle_updates_the_track() {
     assert_eq!(show(&state, id).await.soundcloud_public, Some(true));
 }
 
+/// The booking stays; the announcement tick unsets it only if the track is
+/// still private at the booked time.
 #[tokio::test]
-async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
+async fn back_to_private_keeps_the_booked_post_time() {
     let (state, _temp, _fake, _r2) = setup(json!({})).await;
     let id = add_show(&state, "Late Night", None).await;
     sqlx::query("UPDATE shows SET soundcloud_track_id = '555', soundcloud_public = 1 WHERE id = ?")
@@ -1306,7 +1496,11 @@ async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
     assert_eq!(
         rows,
         [
-            ("post".into(), "waiting_soundcloud".into(), None),
+            (
+                "post".into(),
+                "scheduled".into(),
+                Some("2026-11-22T17:00:00Z".into())
+            ),
             (
                 "pre".into(),
                 "scheduled".into(),
@@ -1317,7 +1511,7 @@ async fn back_to_private_puts_an_unsent_post_back_to_waiting() {
 }
 
 #[tokio::test]
-async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
+async fn a_track_made_public_on_soundcloud_is_marked_for_an_unsent_post() {
     let (state, _temp, fake, _r2) = setup(json!({})).await;
     let waiting = add_show(&state, "Late Night", None).await;
     let no_post = add_show(&state, "Early Bird", None).await;
@@ -1351,7 +1545,13 @@ async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
 
     fake.public.lock().unwrap().extend([555, 556]);
     assert_eq!(sync_public_tracks(&state).await.unwrap(), [waiting]);
-    assert_eq!(show(&state, waiting).await.soundcloud_public, Some(true));
+    let stored = show(&state, waiting).await;
+    assert_eq!(stored.soundcloud_public, Some(true));
+    assert_eq!(
+        stored.soundcloud_url.as_deref(),
+        Some("https://soundcloud.com/radio-moafunk/t555"),
+        "public: the plain link"
+    );
     assert_eq!(show(&state, no_post).await.soundcloud_public, Some(false));
 
     // Marked public: not asked again.
@@ -1370,22 +1570,91 @@ async fn a_track_made_public_on_soundcloud_unlocks_the_waiting_post() {
     assert_eq!(show(&state, waiting).await.soundcloud_public, Some(false));
 }
 
+/// Private tracks stored with a plain link get their secret link once.
+#[tokio::test]
+async fn private_tracks_get_their_secret_link_once() {
+    let (state, _temp, fake, _r2) = setup(json!({})).await;
+    let plain = add_show(&state, "Late Night", None).await;
+    let secret = add_show(&state, "Early Bird", None).await;
+    let public = add_show(&state, "Noon", None).await;
+    let gone = add_show(&state, "Gone", None).await;
+    for (id, track, url, is_public) in [
+        (plain, "555", "https://soundcloud.com/radio-moafunk/t555", 0),
+        (
+            secret,
+            "556",
+            "https://soundcloud.com/radio-moafunk/t556/s-Old",
+            0,
+        ),
+        (
+            public,
+            "557",
+            "https://soundcloud.com/radio-moafunk/t557",
+            1,
+        ),
+        (gone, "558", "https://soundcloud.com/radio-moafunk/t558", 0),
+    ] {
+        sqlx::query(
+            "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_public = ? WHERE id = ?",
+        )
+        .bind(track)
+        .bind(url)
+        .bind(is_public)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+    fake.fail("GET /tracks/558", 404);
+
+    assert_eq!(repair_private_links(&state).await.unwrap(), [plain]);
+    assert_eq!(fake.routes(), ["GET /tracks/555", "GET /tracks/558"]);
+    let url = |id| {
+        let state = state.clone();
+        async move { show(&state, id).await.soundcloud_url.unwrap() }
+    };
+    assert_eq!(
+        url(plain).await,
+        "https://soundcloud.com/radio-moafunk/t555/s-Secret1"
+    );
+    assert_eq!(
+        url(secret).await,
+        "https://soundcloud.com/radio-moafunk/t556/s-Old"
+    );
+    assert_eq!(url(gone).await, "https://soundcloud.com/radio-moafunk/t558");
+
+    // Fixed: not asked again.
+    fake.calls.lock().unwrap().clear();
+    repair_private_links(&state).await.unwrap();
+    assert_eq!(fake.routes(), ["GET /tracks/558"]);
+}
+
 #[tokio::test]
 async fn auto_upload_runs_only_when_switched_on() {
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": false })).await;
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     auto_upload_on_finalize(&state, id).await;
     assert!(fake.routes().is_empty());
 
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
-    let id = show_with_recording(&state, &r2).await;
+    // A new take leaves a picked own file alone.
+    let own = show_with_recording(&state, &r2).await;
+    auto_upload_on_finalize(&state, own).await;
+    assert!(fake.routes().is_empty());
+
+    let id = show_with_take(&state, &r2).await;
     auto_upload_on_finalize(&state, 999).await;
     assert!(fake.routes().is_empty());
     auto_upload_on_finalize(&state, id).await;
     assert!(fake.routes().contains(&"POST /tracks".to_string()));
+    let stored = show(&state, id).await;
+    assert_eq!(stored.soundcloud_track_id.as_deref(), Some("555"));
     assert_eq!(
-        show(&state, id).await.soundcloud_track_id.as_deref(),
-        Some("555")
+        (
+            stored.soundcloud_source.as_deref(),
+            stored.soundcloud_source_key.as_deref()
+        ),
+        (Some("show"), Some("final/v1.mp3"))
     );
 }
 
@@ -1394,7 +1663,7 @@ async fn auto_upload_runs_only_when_switched_on() {
 #[tokio::test]
 async fn turned_off_refuses_every_write() {
     let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
-    let id = show_with_recording(&state, &r2).await;
+    let id = show_with_take(&state, &r2).await;
     crate::db::set_setting(&state.db, crate::db::SOUNDCLOUD_ENABLED, "false")
         .await
         .unwrap();

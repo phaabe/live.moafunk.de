@@ -1,8 +1,14 @@
 {
   "screen": "announce",
-  "hash": "b3ca3db6",
-  "status": "ok",
+  "hash": "bb6c95e6",
+  "status": "drift",
   "leftOut": [],
   "missing": [],
-  "extra": []
+  "extra": [
+    "h2: People",
+    "button: Invite",
+    "button: Tag",
+    "field: More collaborators",
+    "field: Tag people"
+  ]
 }

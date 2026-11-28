@@ -147,6 +147,8 @@ impl Finalizer {
         show_id: i64,
         deadline: tokio::time::Instant,
     ) {
+        // A deploy waits for the grace too: the finalize comes after it.
+        let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
         tokio::time::sleep_until(deadline).await;
         let live = ops.stream_active().await;
         let started = {
@@ -193,6 +195,7 @@ impl Finalizer {
             done,
         } = started;
         let _unregister = Unregister(self, id);
+        let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
         if let Some(mut after) = after {
             // An error means that finalize ended without reporting; go on.
             let _ = after.wait_for(|d| *d).await;
@@ -410,6 +413,25 @@ mod tests {
 
     fn show(outcome: Outcome) -> Option<i64> {
         outcome.unwrap().map(|r| r.show_id)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn grace_wait_and_running_finalize_are_busy() {
+        use crate::metrics::{running, Work};
+        let (f, ops) = (finalizer(), Fake::new(Some(1), false));
+        f.schedule(ops.clone(), 1);
+        settle().await;
+        assert!(running(Work::Finalize) >= 1, "grace wait");
+        // Another show goes live: the wait ends and show 1 finalizes now. Its
+        // upload waits for `open`, so the finalize is still running.
+        f.go_live(ops.clone(), Some(2)).await;
+        settle().await;
+        assert_eq!(ops.detached(), vec![1]);
+        assert!(ops.uploaded().is_empty());
+        assert!(running(Work::Finalize) >= 1, "running finalize");
+        ops.open_all();
+        settle().await;
+        assert_eq!(ops.uploaded(), vec![1]);
     }
 
     #[tokio::test(start_paused = true)]

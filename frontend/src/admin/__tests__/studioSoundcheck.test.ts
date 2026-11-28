@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent, h, nextTick, ref, type App, type Ref } from 'vue';
+import { createSoundcheckResult, type SoundcheckResult } from '../composables/useSoundcheck';
 
 // The Studio's soundcheck (flow screens `studio`, `studio-ready`,
 // `studio-checking`, `studio-problem`): the host tests the music and the mic,
@@ -21,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   peak: null as null | Ref<number>,
   connect: vi.fn(),
   stopStream: vi.fn(),
-  socketOptions: {} as { onError?: (message: string) => void },
+  socketOptions: {} as { onLive?: () => void; onError?: (message: string) => void },
   // Chunks the server confirmed.
   serverChunks: 0,
   recorder: null as null | FakeRecorder,
@@ -33,10 +34,23 @@ const mocks = vi.hoisted(() => ({
   captureDevice: vi.fn(),
   // GET /api/shows/:id: `on_air` opens Studio · Back on air.
   showsGet: vi.fn(),
+  // PUT /api/shows/:id/studio-log: Go Live saves the soundcheck.
+  saveStudioLog: vi.fn(),
+  // The Studio's result for the browser tab: fresh in each test.
+  result: null as null | SoundcheckResult,
+  // The captured input's track: unplugging it ends it.
+  track: null as null | (EventTarget & { readyState: string }),
+  // Input gain, 0..2.
+  gain: null as null | Ref<number>,
+  setInputVolume: vi.fn(),
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
-vi.mock('@admin/api', () => ({ showsApi: { get: mocks.showsGet } }));
+// On Air's live session is not part of the Studio.
+vi.mock('@admin/liveSession', () => ({ startLiveSession: vi.fn() }));
+vi.mock('@admin/api', () => ({
+  showsApi: { get: mocks.showsGet, saveStudioLog: mocks.saveStudioLog },
+}));
 vi.mock('@/config', () => ({
   config: { stream: { icecastTestUrl: 'https://test.example/test.mp3' } },
 }));
@@ -53,6 +67,9 @@ vi.mock('@admin/composables', async () => {
     BROWSER_UNSUPPORTED_MESSAGE: 'unsupported',
     streamRecordingMimeType: () => 'audio/webm',
     useSoundcheck: real.useSoundcheck,
+    get studioSoundcheckResult() {
+      return mocks.result;
+    },
     createReturnFeed: () => ({
       peakDb: () => mocks.feedPeak,
       playing: () => mocks.feedPlaying,
@@ -79,8 +96,10 @@ vi.mock('@admin/composables', async () => {
       selectedDeviceId: ref('usb'),
       isCapturing: mocks.capturing,
       error: ref(null),
-      mediaStream: ref({ getAudioTracks: () => [{ readyState: 'live' }] }),
+      mediaStream: ref({ getAudioTracks: () => [mocks.track] }),
       processedStream: ref(null),
+      inputVolume: mocks.gain,
+      setInputVolume: mocks.setInputVolume,
       refreshDevices: vi.fn(async () => {}),
       listDevices: vi.fn(),
       captureDevice: mocks.captureDevice,
@@ -125,8 +144,11 @@ async function mount(at = '2026-11-15T12:00:30Z') {
 }
 
 const text = () => root.textContent ?? '';
+// Go Live is the countdown at the start: its name is the big line, under the label.
 const button = (name: string) =>
-  [...root.querySelectorAll('button')].find((b) => b.textContent?.trim() === name);
+  [...root.querySelectorAll('button')].find(
+    (b) => (b.querySelector('.countdown-clock') ?? b).textContent?.trim() === name
+  );
 const goLive = () => button('Go Live')!;
 const rows = () =>
   Object.fromEntries(
@@ -198,6 +220,7 @@ beforeEach(() => {
   mocks.db = ref(-21);
   mocks.peak = ref(-9);
   mocks.connect.mockReset().mockResolvedValue(undefined);
+  mocks.saveStudioLog.mockReset().mockResolvedValue(undefined);
   mocks.stopStream.mockReset();
   mocks.socketOptions = {};
   mocks.serverChunks = 4;
@@ -208,6 +231,10 @@ beforeEach(() => {
   mocks.closeFeed.mockReset();
   mocks.captureDevice.mockReset().mockResolvedValue(true);
   mocks.showsGet.mockReset().mockResolvedValue({ on_air: false });
+  mocks.result = createSoundcheckResult();
+  mocks.track = Object.assign(new EventTarget(), { readyState: 'live' });
+  mocks.gain = ref(1);
+  mocks.setInputVolume.mockReset().mockImplementation((v: number) => (mocks.gain!.value = v));
   vi.stubGlobal('navigator', {
     ...navigator,
     mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
@@ -270,6 +297,19 @@ describe('Studio soundcheck', () => {
     expect(goLive().disabled).toBe(true);
   });
 
+  it('sets the input gain, the same fader as on air', async () => {
+    await mount();
+    const fader = root.querySelector<HTMLInputElement>('input[type="range"]')!;
+    const field = fader.closest('label')!;
+    expect(field.querySelector('.ls-label')!.textContent).toBe('Input gain');
+    expect(field.querySelector('.ls-fader-value')!.textContent).toBe('100 %');
+    fader.value = '60';
+    fader.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(mocks.setInputVolume).toHaveBeenCalledWith(0.6);
+    expect(field.querySelector('.ls-fader-value')!.textContent).toBe('60 %');
+  });
+
   it('tests the music, then the mic, proposes OK and opens Go Live', async () => {
     await mount();
     await pressIn('Music', 'Start test');
@@ -312,6 +352,27 @@ describe('Studio soundcheck', () => {
     expect(mocks.setAudible).not.toHaveBeenCalledWith(true);
     expect(text()).not.toContain('headphones');
     expect(goLive().disabled).toBe(false);
+  });
+
+  it('saves the input and each check to the episode when the show goes live', async () => {
+    await mount();
+    await testAll();
+    goLive().click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.saveStudioLog).not.toHaveBeenCalled();
+    mocks.socketOptions.onLive!();
+    expect(mocks.saveStudioLog).toHaveBeenCalledOnce();
+    const [id, { soundcheck }] = mocks.saveStudioLog.mock.calls[0];
+    expect(id).toBe(7);
+    expect(soundcheck.input).toBe('Focusrite USB');
+    expect(
+      soundcheck.checks.map((c: { name: string; state: string }) => [c.name, c.state])
+    ).toEqual([
+      ['Music', 'ok'],
+      ['Mic', 'ok'],
+      ['Server', 'ok'],
+      ['Return feed', 'ok'],
+    ]);
   });
 
   it('waits for the server and the relay', async () => {
@@ -666,6 +727,54 @@ describe('Studio soundcheck', () => {
     await press('Not OK');
     expect(goLive().disabled).toBe(true);
   });
+
+  /** Leave the Studio (another page or tab of the app), then open it again. */
+  async function leaveAndReturn() {
+    app!.unmount();
+    root.remove();
+    await mount();
+  }
+
+  it('keeps the result when the host leaves the Studio and comes back', async () => {
+    await mount();
+    await testAll();
+    const checked = rows();
+    await leaveAndReturn();
+    expect(rows()).toEqual(checked);
+    expect(text()).toContain('Sounds good — ready to go live');
+    expect(goLive().disabled).toBe(false);
+  });
+
+  it('forgets the result when the input is lost', async () => {
+    await mount();
+    await testAll();
+    expect(goLive().disabled).toBe(false);
+    // Unplugged, or the screen share stopped.
+    mocks.track!.readyState = 'ended';
+    mocks.track!.dispatchEvent(new Event('ended'));
+    await nextTick();
+    expect(rows()).toEqual({
+      Music: 'Waiting: Not checked yet',
+      Mic: 'Waiting: Not checked yet',
+      Server: 'Waiting: Not checked yet',
+      'Return feed': 'Waiting: Not checked yet',
+    });
+    expect(mocks.passed!.value).toBe(false);
+    expect(goLive().disabled).toBe(true);
+    // The same input can be picked again.
+    expect(root.querySelector('select')!.value).toBe('');
+  });
+
+  it('forgets a kept result when the input was lost while the Studio was closed', async () => {
+    await mount();
+    await testAll();
+    app!.unmount();
+    root.remove();
+    mocks.track!.readyState = 'ended';
+    await mount();
+    expect(rows().Music).toBe('Waiting: Not checked yet');
+    expect(mocks.passed!.value).toBe(false);
+  });
 });
 
 describe('Studio · Back on air', () => {
@@ -689,6 +798,9 @@ describe('Studio · Back on air', () => {
     await nextTick();
     await press('Go back on air');
     expect(mocks.connect).toHaveBeenCalledWith(false, 7, false, true);
+    // The soundcheck saved at the first Go Live stays.
+    mocks.socketOptions.onLive!();
+    expect(mocks.saveStudioLog).not.toHaveBeenCalled();
   });
 
   it('shows the normal soundcheck when the 5 minutes ran out', async () => {
@@ -696,7 +808,7 @@ describe('Studio · Back on air', () => {
     await mount();
     await press('Go back on air');
     expect(mocks.connect).not.toHaveBeenCalled();
-    expect(text()).toContain('Soundcheck · it is air time');
+    expect(text()).toContain('It is air time · confirm the soundcheck first');
     expect(goLive().disabled).toBe(true);
   });
 

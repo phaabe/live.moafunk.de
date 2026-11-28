@@ -146,6 +146,21 @@ test('build preserves SHA tags and exports the digest, exact image and source SH
   });
 });
 
+test('the image plays the stream mounts of the host that serves it', () => {
+  // Staging and production run the same image. A full URL here made staging's
+  // "What listeners hear" play the production stream
+  // (https://github.com/phaabe/live.moafunk.de/issues/1114).
+  const image = build.steps.find((step) => step.id === 'image');
+  const args = Object.fromEntries(
+    image.with['build-args']
+      .trim()
+      .split('\n')
+      .map((line) => line.trim().split(/=(.*)/s, 2))
+  );
+  assert.equal(args.VITE_STREAM_ICECAST_LIVE_URL, '/live.mp3');
+  assert.equal(args.VITE_STREAM_ICECAST_TEST_URL, '/test.mp3');
+});
+
 test('image summary records the exact image and source without contacting a host', () => {
   const step = build.steps.find((step) => step.id === 'image-reference');
   assert.ok(step);
@@ -402,4 +417,12 @@ test('every file the backend Dockerfile copies triggers an image build', () => {
   };
   assert.deepEqual(uncoveredSources(sources, workflow.on.push.paths, isDir), []);
   assert.ok(workflow.on.push.paths.includes('.github/workflows/backend.yml'));
+});
+
+test('the backend Dockerfile pulls every base image from mirror.gcr.io', () => {
+  // Anonymous ECR Public pulls fail on shared runner IPs (429: rate and data limits).
+  const dockerfile = readFileSync(path.resolve(__dirname, '../../../backend/Dockerfile'), 'utf8');
+  const images = [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].map((match) => match[1]);
+  assert.ok(images.length > 0);
+  for (const image of images) assert.match(image, /^mirror\.gcr\.io\/library\//);
 });

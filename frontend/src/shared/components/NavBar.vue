@@ -24,7 +24,6 @@ const navItems: NavItem[] = [
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
   },
-  { label: 'Schedule', path: '/schedule', roles: ['host'], category: 'Radio' },
   {
     label: 'Calendar',
     path: '/calendar',
@@ -33,7 +32,7 @@ const navItems: NavItem[] = [
   },
   {
     label: 'Shows',
-    hostLabel: 'My Shows',
+    hostLabel: 'My Show',
     path: '/shows',
     roles: ['admin', 'superadmin', 'host'],
     category: 'Radio',
@@ -64,6 +63,10 @@ const categoryOrder = ['Radio', 'UNHEARD', 'Configuration'];
 const flatCategories = ['Radio'];
 
 const isHost = computed(() => authStore.user?.role === 'host');
+/** Hosts and admins have a profile (#1117); guests do not. */
+const hasProfile = computed(() =>
+  ['host', 'admin', 'superadmin'].includes(authStore.user?.role ?? '')
+);
 
 const visibleNavItems = computed(() =>
   navItems
@@ -119,10 +122,10 @@ watch(
 <template>
   <nav class="nav-bar">
     <div class="nav-content">
-      <div class="nav-brand">
+      <router-link to="/dashboard" class="nav-brand">
         <img src="/assets/brand/moafunk.png" alt="Moafunk" class="logo" />
         <span class="brand-text">Admin</span>
-      </div>
+      </router-link>
 
       <!-- Desktop nav links -->
       <div class="nav-links desktop-only">
@@ -166,8 +169,18 @@ watch(
       <!-- Desktop user info -->
       <div class="nav-user desktop-only">
         <div class="user-dropdown">
-          <span class="username">{{ authStore.user?.username }}</span>
+          <span class="username"
+            ><img
+              v-if="authStore.user?.photo_srcset"
+              class="nav-avatar"
+              :srcset="authStore.user.photo_srcset"
+              sizes="28px"
+              alt=""
+            /><span v-else class="nav-avatar placeholder" aria-hidden="true"></span
+            >{{ authStore.user?.username }}</span
+          >
           <div class="user-dropdown-menu">
+            <router-link v-if="hasProfile" to="/profile" class="dropdown-link">Profile</router-link>
             <router-link to="/change-password" class="dropdown-link"> Change Password </router-link>
             <router-link
               v-if="['host', 'admin'].includes(authStore.user?.role ?? '')"
@@ -203,7 +216,7 @@ watch(
         <button class="close-button" @click="closeMobileMenu" aria-label="Close menu">✕</button>
       </div>
       <div class="mobile-menu-links">
-        <!-- Hosts have three items (Dashboard, Schedule, My Shows): no category toggle. -->
+        <!-- Hosts have two items (Dashboard, My Show): no category toggle. -->
         <template v-if="isHost">
           <router-link
             v-for="item in visibleNavItems"
@@ -240,7 +253,24 @@ watch(
         </template>
       </div>
       <div class="mobile-menu-footer">
-        <span class="mobile-username">{{ authStore.user?.username }}</span>
+        <span class="mobile-username"
+          ><img
+            v-if="authStore.user?.photo_srcset"
+            class="nav-avatar"
+            :srcset="authStore.user.photo_srcset"
+            sizes="28px"
+            alt=""
+          /><span v-else class="nav-avatar placeholder" aria-hidden="true"></span
+          >{{ authStore.user?.username }}</span
+        >
+        <router-link
+          v-if="hasProfile"
+          to="/profile"
+          class="mobile-change-password"
+          @click="closeMobileMenu"
+        >
+          Profile
+        </router-link>
         <router-link to="/change-password" class="mobile-change-password" @click="closeMobileMenu">
           Change Password
         </router-link>
@@ -381,6 +411,25 @@ watch(
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+}
+
+/* Profile photo before the username (#1117); a grey head and shoulders without one. */
+.nav-avatar {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  margin-right: var(--spacing-sm);
+  border-radius: 50%;
+  object-fit: cover;
+  vertical-align: middle;
+  background: #26263e;
+  flex: none;
+}
+
+.nav-avatar.placeholder {
+  background:
+    radial-gradient(circle at 50% 40%, #4a4a62 0 22%, transparent 23%),
+    radial-gradient(ellipse at 50% 100%, #4a4a62 0 45%, transparent 46%), #26263e;
 }
 
 .user-dropdown {

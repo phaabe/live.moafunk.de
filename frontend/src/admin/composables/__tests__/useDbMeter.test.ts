@@ -26,7 +26,32 @@ class FakeAudioContext {
   }
   createMediaStreamSource() {
     if (FakeAudioContext.refuse) throw FakeAudioContext.refuse;
-    return { connect() {}, disconnect() {} };
+    return {
+      connect: (to: unknown) => FakeAudioContext.links.push(['source', to]),
+      disconnect() {},
+    };
+  }
+  /** What was connected to what (and to which splitter output). */
+  static links: [string, unknown, number?][] = [];
+  createGain() {
+    const gain = {
+      kind: 'gain',
+      channelCount: 1,
+      channelCountMode: 'max',
+      channelInterpretation: 'discrete',
+      connect: (to: unknown) => FakeAudioContext.links.push(['gain', to]),
+      disconnect() {},
+    };
+    return gain;
+  }
+  createChannelSplitter(outputs: number) {
+    return {
+      kind: 'splitter',
+      outputs,
+      connect: (to: unknown, output?: number) =>
+        FakeAudioContext.links.push(['splitter', to, output]),
+      disconnect() {},
+    };
   }
   async close() {
     this.state = 'closed';
@@ -43,12 +68,12 @@ function frame(ts: number) {
 }
 
 let app: App | undefined;
-function mountMeter(stream: Ref<MediaStream | null>) {
+function mountMeter(stream: Ref<MediaStream | null>, channel?: 0 | 1) {
   let result!: ReturnType<typeof useDbMeter>;
   app = createApp(
     defineComponent({
       setup() {
-        result = useDbMeter(stream);
+        result = useDbMeter(stream, channel);
         return () => null;
       },
     })
@@ -63,6 +88,7 @@ beforeEach(() => {
   signal = silence;
   frames = new Map();
   FakeAudioContext.all = [];
+  FakeAudioContext.links = [];
   FakeAudioContext.refuse = null;
   vi.stubGlobal('AudioContext', FakeAudioContext);
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
@@ -167,5 +193,38 @@ describe('dB meter lifecycle', () => {
     const meter = mountMeter(ref(input()));
     expect(meter.db.value).toBe(DB_FLOOR);
     expect(frames.size).toBe(0);
+  });
+});
+
+describe('dB meter for one channel (On Air L/R, #1053)', () => {
+  it('reads the mixed signal without a channel', () => {
+    mountMeter(ref(input()));
+    expect(FakeAudioContext.links.map(([from]) => from)).toEqual(['source']);
+  });
+
+  it('meters one side through a splitter, with mono copied to both sides', () => {
+    mountMeter(ref(input()), 1);
+    const [toGain, toSplitter, toAnalyser] = FakeAudioContext.links;
+    expect(toGain[0]).toBe('source');
+    expect(toGain[1]).toMatchObject({
+      kind: 'gain',
+      channelCount: 2,
+      channelCountMode: 'explicit',
+      channelInterpretation: 'speakers',
+    });
+    expect(toSplitter[0]).toBe('gain');
+    expect(toSplitter[1]).toMatchObject({ kind: 'splitter', outputs: 2 });
+    expect(toAnalyser[0]).toBe('splitter');
+    expect(toAnalyser[2]).toBe(1);
+  });
+
+  it('says whether it reads real audio: a suspended context does not', () => {
+    const meter = mountMeter(ref(input()), 0);
+    expect(meter.running.value).toBe(false);
+    frame(16);
+    expect(meter.running.value).toBe(true);
+    FakeAudioContext.all[0].state = 'suspended';
+    frame(32);
+    expect(meter.running.value).toBe(false);
   });
 });

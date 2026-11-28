@@ -1,25 +1,22 @@
 {
   "screen": "schedule",
-  "hash": "49407601",
-  "status": "ok",
+  "hash": "5ab91009",
+  "status": "drift",
   "leftOut": [
-    {
-      "item": "h2: Free slots",
-      "release": "R3"
-    },
-    {
-      "item": "row: So 01.11. · 12:00–14:00 | Free",
-      "release": "R3"
-    },
-    {
-      "item": "row: So 15.11. · 12:00–14:00 | Free",
-      "release": "R3"
-    },
     {
       "item": "nav: Pool",
       "release": "UNHEARD"
     }
   ],
-  "missing": [],
+  "missing": [
+    "nav: Admin",
+    "nav: Dashboard",
+    "nav: Schedule",
+    "nav: My Shows",
+    "nav: Profile",
+    "nav: Change Password",
+    "nav: Recovery Email",
+    "nav: Logout"
+  ],
   "extra": []
 }

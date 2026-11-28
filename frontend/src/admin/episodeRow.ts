@@ -1,5 +1,3 @@
-import type { SeriesEpisode } from './api';
-
 /**
  * Short episode day as the flow writes it: "So 25.10." (German weekday
  * without its dot, then day and month). `date` is "YYYY-MM-DD".
@@ -29,12 +27,4 @@ export function setLength(seconds: number): string {
   const s = Math.floor(seconds % 60);
   const pad = (n: number) => String(n).padStart(2, '0');
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
-
-/**
- * Where an episode row on the Show page opens. Upcoming opens the episode, an
- * open wrap-up opens the wrap-up (the same path), a finished one is no link.
- */
-export function episodeTarget(episode: Pick<SeriesEpisode, 'id' | 'status'>): string | null {
-  return episode.status === 'finished' ? null : `/shows/${episode.id}`;
 }

@@ -178,6 +178,106 @@ async fn due_pre_is_sent_once_with_caption_alt_text_and_collaborator() {
     tg.assert_all_sends_in_topic();
 }
 
+/// The Social media card's picture of a slot: status and JPEG bytes.
+async fn picture(
+    state: &Arc<AppState>,
+    user: i64,
+    slot: &str,
+    size: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let result = crate::announcement_image::api_announcement_image(
+        State(state.clone()),
+        Path((SHOW, slot.to_string())),
+        Query(crate::announcement_image::ImageQuery {
+            size: size.map(str::to_string),
+        }),
+        headers(state, user).await,
+    )
+    .await;
+    let response = match result {
+        Ok(r) => r.into_response(),
+        Err(e) => e.into_response(),
+    };
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 20 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, bytes.to_vec())
+}
+
+async fn image_version(state: &Arc<AppState>, user: i64) -> Value {
+    let (status, body) = outcome(
+        ann::api_announcement_status(State(state.clone()), Path(SHOW), headers(state, user).await)
+            .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body[0]["image_version"].clone()
+}
+
+#[tokio::test]
+async fn slot_picture_for_the_episode_hosts_and_once_sent_for_everyone() {
+    let (state, _t, _tg, _ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    let other = add_user(&state, "other", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let id = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+
+    // Not sent yet: the episode's host sees the rendered post, others don't.
+    let (status, jpeg) = picture(&state, host, "pre", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let full = image::load_from_memory(&jpeg).unwrap();
+    assert_eq!((full.width(), full.height()), (1080, 1350));
+    let (status, thumb) = picture(&state, host, "pre", Some("thumb")).await;
+    assert_eq!(status, StatusCode::OK);
+    let small = image::load_from_memory(&thumb).unwrap();
+    assert_eq!((small.width(), small.height()), (160, 200));
+    assert_eq!(
+        picture(&state, other, "pre", None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(image_version(&state, other).await, Value::Null);
+    // A slot nobody set up has no picture.
+    assert_eq!(
+        picture(&state, host, "post", None).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Sent: every signed-in user gets the posted JPEG.
+    check_due_announcements(&state, berlin(3, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+    let posted = r2.object(&state, "shows/1/announcements/pre.jpg").unwrap();
+    let (status, jpeg) = picture(&state, other, "pre", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(jpeg, posted);
+    assert!(image_version(&state, other).await.is_string());
+}
+
+#[tokio::test]
+async fn extra_collaborators_and_tags_go_with_the_feed_post() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let id = add(&state, SHOW, "pre", "scheduled", Some(berlin(3, 18)), host).await;
+    sqlx::query(
+        "UPDATE announcements SET extra_collaborators = '[\"NightBass\",\"guest\"]', \
+           user_tags = '[\"label\"]' WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    .unwrap();
+
+    check_due_announcements(&state, berlin(3, 18)).await;
+    let post = &media_posts(&ig)[0];
+    // The show's own account comes first and is not repeated.
+    assert_eq!(post.json("collaborators"), json!(["nightbass", "guest"]));
+    assert_eq!(
+        post.json("user_tags"),
+        json!([{ "username": "label", "x": 0.5, "y": 0.5 }])
+    );
+}
+
 #[tokio::test]
 async fn hashtags_setting_and_no_collaborator() {
     let (state, _t, _tg, ig, _r2) = setup().await;
@@ -251,99 +351,100 @@ async fn an_armed_story_of_an_episode_that_never_went_live_expires() {
 }
 
 #[tokio::test]
-async fn post_unlock_sets_the_time_then_approval_and_pending_is_never_sent() {
+async fn going_public_books_no_time_and_pending_is_never_sent() {
     let (state, _t, _tg, ig, _r2) = setup().await;
     let host = add_user(&state, "host", "host").await;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, host, 5).await;
-    episode(&state, 2, host, 5).await;
-    let by_host = add(&state, SHOW, "post", "waiting_soundcloud", None, host).await;
-    let by_admin = add(&state, 2, "post", "waiting_soundcloud", None, admin).await;
-    // One day after the episode, so "the next day" below.
-    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
-        .await
-        .unwrap();
-
-    // Not public yet: nothing changes.
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(row(&state, by_host).await.state, "waiting_soundcloud");
-
+    episode(&state, 2, admin, 5).await;
+    let waiting = add(&state, SHOW, "post", "waiting_soundcloud", None, host).await;
+    let pending = add(
+        &state,
+        2,
+        "post",
+        "pending_approval",
+        Some(berlin(7, 18)),
+        host,
+    )
+    .await;
     sqlx::query("UPDATE shows SET soundcloud_public = 1")
         .execute(&state.db)
         .await
         .unwrap();
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    let a = row(&state, by_host).await;
-    assert_eq!(a.state, "pending_approval", "a new host needs approval");
-    assert_eq!(a.scheduled_at, Some(to_db_time(berlin(6, 18))));
-    // 18:00 on the 6th is 2 days − 2 h after the 5th 20:00 start.
-    assert_eq!(a.anchor_offset_minutes, Some(22 * 60));
-    let b = row(&state, by_admin).await;
-    assert_eq!(b.state, "scheduled");
-    // The 6th is taken (one feed post a day): the next day.
-    assert_eq!(b.scheduled_at, Some(to_db_time(berlin(7, 18))));
 
-    // Pending stays pending after its time; only the approved one goes out.
+    // A public track gives a post without a time no time: the host books one.
     check_due_announcements(&state, berlin(7, 19)).await;
-    assert_eq!(row(&state, by_host).await.state, "pending_approval");
-    assert_eq!(row(&state, by_admin).await.state, "sent");
+    let a = row(&state, waiting).await;
+    assert_eq!(a.state, "waiting_soundcloud");
+    assert_eq!(a.scheduled_at, None);
+    // Pending stays pending after its time.
+    assert_eq!(row(&state, pending).await.state, "pending_approval");
+    assert!(media_posts(&ig).is_empty());
+}
+
+#[tokio::test]
+async fn a_booking_that_cannot_go_out_is_unset_and_the_post_kept() {
+    let (state, _t, _tg, ig, _r2) = setup().await;
+    let admin = add_user(&state, "admin", "admin").await;
+    episode(&state, SHOW, admin, 5).await;
+    episode(&state, 2, admin, 5).await;
+    // A time booked before the post was set up.
+    let draft = sqlx::query(
+        "INSERT INTO announcements (show_id, slot, state, scheduled_at) \
+         VALUES (?, 'pre', 'draft', ?)",
+    )
+    .bind(SHOW)
+    .bind(to_db_time(berlin(3, 18)))
+    .execute(&state.db)
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    // Set up, but the track is still private at its time.
+    let private = add(
+        &state,
+        SHOW,
+        "post",
+        "scheduled",
+        Some(berlin(7, 18)),
+        admin,
+    )
+    .await;
+    // Set up and public: goes out.
+    let public = add(&state, 2, "post", "scheduled", Some(berlin(8, 18)), admin).await;
+    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 2")
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    // Before their times nothing changes.
+    check_due_announcements(&state, berlin(3, 17)).await;
+    assert_eq!(
+        row(&state, draft).await.scheduled_at,
+        Some(to_db_time(berlin(3, 18)))
+    );
+
+    check_due_announcements(&state, berlin(3, 19)).await;
+    let d = row(&state, draft).await;
+    assert_eq!(d.state, "draft");
+    assert_eq!(d.scheduled_at, None);
+    assert_eq!(d.requested_at, Some(to_db_time(berlin(3, 18))));
+
+    check_due_announcements(&state, berlin(8, 19)).await;
+    let p = row(&state, private).await;
+    assert_eq!(p.state, "waiting_soundcloud", "set up, no time");
+    assert_eq!(p.scheduled_at, None);
+    assert_eq!(p.requested_at, Some(to_db_time(berlin(7, 18))));
+    assert_eq!(p.headline.as_deref(), Some("Tonight"), "the post is kept");
+    assert_eq!(row(&state, public).await.state, "sent");
     assert_eq!(media_posts(&ig).len(), 1);
 }
 
 #[tokio::test]
-async fn full_day_pushes_the_post_to_the_next_free_slot() {
-    let (state, _t, _tg, _ig, _r2) = setup().await;
-    let admin = add_user(&state, "admin", "admin").await;
-    crate::db::set_setting(&state.db, "announce_feed_per_day", "2")
-        .await
-        .unwrap();
-    crate::db::set_setting(&state.db, "announce_post_days_after", "1")
-        .await
-        .unwrap();
-    episode(&state, SHOW, admin, 5).await;
-    episode(&state, 2, admin, 9).await;
-    episode(&state, 3, admin, 10).await;
-    // The 6th: evening taken, noon still free.
-    add(&state, 2, "pre", "scheduled", Some(berlin(6, 18)), admin).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(6, 12)))
-    );
-
-    // The 6th full: the 7th.
-    sqlx::query(
-        "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL WHERE id = ?",
-    )
-    .bind(post)
-    .execute(&state.db)
-    .await
-    .unwrap();
-    add(&state, 3, "pre", "scheduled", Some(berlin(6, 12)), admin).await;
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(7, 18)))
-    );
-}
-
-#[tokio::test]
-async fn post_defaults_to_three_days_after_the_episode_at_the_evening_slot() {
+async fn post_slots_suggest_three_days_after_the_episode_also_while_private() {
     let (state, _t, _tg, _ig, _r2) = setup().await;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, admin, 5).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
 
-    // The slots endpoint suggests the same time the unlock picks.
     let (status, body) = outcome(
         ann::api_announcement_slots(
             State(state.clone()),
@@ -357,39 +458,40 @@ async fn post_defaults_to_three_days_after_the_episode_at_the_evening_slot() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let defaults: Vec<&Value> = body
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| t["default"] == true)
-        .collect();
+    let times = body.as_array().unwrap();
+    let defaults: Vec<&Value> = times.iter().filter(|t| t["default"] == true).collect();
     assert_eq!(defaults.len(), 1);
     assert_eq!(defaults[0]["scheduled_at"], to_db_time(berlin(8, 18)));
-
-    unlock_waiting_posts(&state, berlin(5, 23)).await.unwrap();
-    let a = row(&state, post).await;
-    assert_eq!(a.state, "scheduled");
-    assert_eq!(a.scheduled_at, Some(to_db_time(berlin(8, 18))));
+    // 14 days after the episode: the 6th up to the 19th.
+    let first = times.first().unwrap()["scheduled_at"].as_str().unwrap();
+    let last = times.last().unwrap()["scheduled_at"].as_str().unwrap();
+    assert_eq!(first, to_db_time(berlin(6, 12)));
+    assert_eq!(last, to_db_time(berlin(19, 18)));
 }
 
 #[tokio::test]
-async fn track_public_late_takes_the_next_free_slot_from_now() {
-    let (state, _t, _tg, _ig, _r2) = setup().await;
+async fn send_now_is_refused_on_the_production_account() {
+    let (r2, endpoint) = FakeR2::serve().await;
+    let (state, _t, _tg) = telegram_state(json!({
+        "r2_endpoint": endpoint,
+        "instagram_account": "prod",
+        "instagram_access_token_prod": "prod-token",
+        "instagram_business_account_id_prod": "ig-prod",
+    }))
+    .await;
+    let _r2 = r2;
     let admin = add_user(&state, "admin", "admin").await;
     episode(&state, SHOW, admin, 5).await;
-    let post = add(&state, SHOW, "post", "waiting_soundcloud", None, admin).await;
-    sqlx::query("UPDATE shows SET soundcloud_public = 1")
-        .execute(&state.db)
-        .await
-        .unwrap();
-    // The 8th is long gone; on the 10th both slots have passed at 19:00.
-    unlock_waiting_posts(&state, berlin(10, 19)).await.unwrap();
-    assert_eq!(
-        row(&state, post).await.scheduled_at,
-        Some(to_db_time(berlin(11, 18)))
-    );
+    let (status, body) = put_pre(
+        &state,
+        admin,
+        SHOW,
+        json!({ "headline": "Soon", "send_now": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("only for tests"), "{body}");
 }
-
 async fn put_pre(state: &Arc<AppState>, user: i64, show: i64, body: Value) -> (StatusCode, Value) {
     outcome(
         ann::api_put_announcement(
@@ -854,4 +956,130 @@ async fn instagram_off_sends_nothing_and_refuses_new_posts() {
         .unwrap();
     check_due_announcements(&state, berlin(5, 20)).await;
     assert_eq!(row(&state, pre).await.state, "sent");
+}
+
+/// Show 1, public on SoundCloud, with a finalized 20 s recording and its
+/// `snippets` (JSON). `upload: false` leaves the file out of R2.
+async fn with_snippets(state: &Arc<AppState>, r2: &FakeR2, snippets: &str, upload: bool) {
+    let key = "recordings/1/final.mp3";
+    sqlx::query(
+        "INSERT INTO recording_versions (show_id, version, status, final_key, duration_ms) \
+         VALUES (1, 'v1', 'finalized', ?, 20000)",
+    )
+    .bind(key)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    if upload {
+        let mp3 = crate::recording_tests::tone(20, &["-c:a", "libmp3lame"], "mp3").await;
+        r2.insert(state, key, &mp3);
+    }
+    sqlx::query(
+        "INSERT INTO recording_snippets (show_id, source, snippets_json) VALUES (1, 'show', ?)",
+    )
+    .bind(snippets)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_post_with_snippets_goes_out_as_a_carousel() {
+    let (state, _t, tg, ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    let snippets = r#"[{"slot":2,"start":12.0,"length":5.0},{"slot":1,"start":2.0,"length":5.0}]"#;
+    with_snippets(&state, &r2, snippets, true).await;
+    let id = add(&state, SHOW, "post", "scheduled", Some(berlin(8, 18)), host).await;
+    sqlx::query("UPDATE announcements SET user_tags = '[\"label\"]' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    check_due_announcements(&state, berlin(8, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+
+    let posts = media_posts(&ig);
+    assert_eq!(posts.len(), 4, "image, 2 videos, carousel");
+    // The image first: alt text and tagged accounts go on it.
+    let image = &posts[0];
+    assert_eq!(image.param("is_carousel_item"), Some("true"));
+    assert!(image
+        .param("image_url")
+        .unwrap()
+        .contains("shows/1/announcements/post.jpg"));
+    assert_eq!(image.param("alt_text"), Some("Tonight – Late Night Bass"));
+    assert_eq!(
+        image.json("user_tags"),
+        json!([{ "username": "label", "x": 0.5, "y": 0.5 }])
+    );
+    assert_eq!(image.param("caption"), None);
+    // Then the clips in slot order.
+    for (call, slot) in posts[1..3].iter().zip([1, 2]) {
+        assert_eq!(call.param("media_type"), Some("VIDEO"));
+        assert_eq!(call.param("is_carousel_item"), Some("true"));
+        let url = call.param("video_url").unwrap();
+        assert!(url.contains(&format!("post-snippet-{slot}.mp4")), "{url}");
+        let key = format!("shows/1/announcements/post-snippet-{slot}.mp4");
+        assert!(r2.object(&state, &key).is_some(), "{key}");
+    }
+    // The carousel carries caption and collaborators.
+    let carousel = &posts[3];
+    assert_eq!(carousel.param("media_type"), Some("CAROUSEL"));
+    assert_eq!(
+        carousel.param("children"),
+        Some("container-1,container-1,container-1")
+    );
+    assert_eq!(
+        carousel.param("caption"),
+        Some("Deep cuts all night.\n\n#moafunk")
+    );
+    assert_eq!(carousel.json("collaborators"), json!(["nightbass"]));
+    assert_eq!(
+        ig.call("/media_publish").param("creation_id"),
+        Some("container-1")
+    );
+
+    let notes = tg.of("sendmessage");
+    assert_eq!(notes.len(), 1, "only the sent note");
+    assert!(notes[0].text().contains("post announcement sent"));
+}
+
+#[tokio::test]
+async fn failed_snippet_clips_send_the_post_as_one_image_and_tell_the_admin() {
+    let (state, _t, tg, ig, r2) = setup().await;
+    let host = add_user(&state, "host", "host").await;
+    episode(&state, SHOW, host, 5).await;
+    // The recording is missing in R2, so no clip can be made.
+    with_snippets(
+        &state,
+        &r2,
+        r#"[{"slot":1,"start":2.0,"length":5.0}]"#,
+        false,
+    )
+    .await;
+    let id = add(&state, SHOW, "post", "scheduled", Some(berlin(8, 18)), host).await;
+
+    check_due_announcements(&state, berlin(8, 18)).await;
+    assert_eq!(row(&state, id).await.state, "sent");
+    let posts = media_posts(&ig);
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].param("is_carousel_item"), None);
+    assert!(posts[0]
+        .param("image_url")
+        .unwrap()
+        .contains("shows/1/announcements/post.jpg"));
+
+    let notes = tg.of("sendmessage");
+    assert_eq!(notes.len(), 2);
+    assert!(notes[0]
+        .text()
+        .contains("Post-announcement of Bass Episode: the snippet clips failed"));
+    assert!(notes[1].text().contains("post announcement sent"));
+    tg.assert_all_sends_in_topic();
 }

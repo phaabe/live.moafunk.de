@@ -57,15 +57,6 @@
       "release": "R1"
     },
     {
-      "screen": "schedule",
-      "release": "R3",
-      "items": [
-        "h2: Free slots",
-        "row: So 01.11. · 12:00–14:00 | Free",
-        "row: So 15.11. · 12:00–14:00 | Free"
-      ]
-    },
-    {
       "screen": "dashboard",
       "release": "UNHEARD",
       "items": ["nav: Pool"]
@@ -83,92 +74,82 @@
     {
       "screen": "episode",
       "release": "R5",
-      "items": ["button: Create guest link"]
-    },
-    {
-      "screen": "wrapup",
-      "release": "R2",
-      "items": [
-        "h2: SoundCloud",
-        "field: Track title",
-        "check: Upload as private track",
-        "check: Add to playlist “Brunchtime”"
-      ]
-    },
-    {
-      "screen": "wrapup",
-      "release": "R4",
-      "items": [
-        "h2: 3 moments for Instagram",
-        "check: 00:12:30 | Opening track",
-        "check: 00:31:05 | Guest talk",
-        "check: 01:20:44 | Closing set"
-      ]
-    },
-    {
-      "screen": "done",
-      "release": "R2",
-      "items": ["pill: SoundCloud · private track uploaded"]
+      "items": ["button: Add guest"]
     },
     {
       "screen": "studio-onair",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-reconnecting",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-lost",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-noinput",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     },
     {
       "screen": "studio-onair-end",
       "release": "R4",
-      "items": [
-        "h2: Moments",
-        "button: Mark moment",
-        "row: 00:12:30 | Opening track",
-        "row: 00:31:05 | Guest talk"
-      ]
+      "items": ["row: 00:12:30 | Opening track", "row: 00:31:05 | Guest talk"]
     }
   ],
   "allowed": [
     {
-      "screen": "dashboard",
-      "items": ["button: Toggle menu", "button: Close menu"],
-      "why": "The flow note says the nav folds into a menu on phones."
+      "screen": "profile-edit",
+      "items": ["button: Remove Website", "button: Remove Mixtapes"],
+      "why": "Each added line has a remove button (×); the flow note of + Add link describes it (#1117)."
     },
     {
-      "screen": "schedule",
+      "screen": "episode-recording",
+      "items": ["button: Waveform"],
+      "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
+    },
+    {
+      "screen": "episode-recording-file",
+      "items": ["button: Waveform"],
+      "why": "A click on the waveform jumps there; the flow note of the player describes it (#1082)."
+    },
+    {
+      "screen": "episode-recording-instagram",
+      "items": [
+        "button: Waveform",
+        "button: Whole set",
+        "button: Zoom",
+        "button: Select snippet 1",
+        "button: Snippet 1 0.1 seconds earlier",
+        "button: Snippet 1 0.1 seconds later",
+        "button: Snippet 1 1 second shorter",
+        "button: Snippet 1 1 second longer",
+        "button: Play snippet 1",
+        "button: Remove snippet 1",
+        "button: Select snippet 2",
+        "button: Snippet 2 0.1 seconds earlier",
+        "button: Snippet 2 0.1 seconds later",
+        "button: Snippet 2 1 second shorter",
+        "button: Snippet 2 1 second longer",
+        "button: Play snippet 2",
+        "button: Remove snippet 2",
+        "button: Select snippet 3",
+        "button: Snippet 3 0.1 seconds earlier",
+        "button: Snippet 3 0.1 seconds later",
+        "button: Snippet 3 1 second shorter",
+        "button: Snippet 3 1 second longer",
+        "button: Play snippet 3",
+        "button: Remove snippet 3"
+      ],
+      "why": "The flow notes describe the player's waveform, the snippet editor's whole-set and zoom waveforms (both clickable) and each snippet row: pick, −.1 and +.1, the length − and +, Play and Remove (flow rev 39)."
+    },
+    {
+      "screen": "dashboard",
       "items": ["button: Toggle menu", "button: Close menu"],
       "why": "The flow note says the nav folds into a menu on phones."
     },
@@ -178,46 +159,438 @@
       "why": "The flow note says the nav folds into a menu on phones."
     },
     {
-      "screen": "schedule",
-      "items": ["link: On air now | On air · Brunchtime · until 14:00"],
-      "why": "The flow note says the strip opens On Air when the show on air is yours."
+      "screen": "edit-recording",
+      "items": [
+        "button: Whole set",
+        "button: Waveform",
+        "button: Start 0.1 seconds earlier",
+        "button: Start 0.1 seconds later",
+        "button: End 0.1 seconds earlier",
+        "button: End 0.1 seconds later",
+        "button: Whole set 0.5 dB quieter",
+        "button: Whole set 0.5 dB louder"
+      ],
+      "why": "The flow notes describe the whole-set map and the waveform (both clickable), −.1 and +.1 next to Start and End, and − and + for the volume of the whole set."
+    },
+    {
+      "screen": "edit-recording-volume",
+      "items": [
+        "button: Whole set",
+        "button: Waveform",
+        "button: Section 1 0.5 dB quieter",
+        "button: Section 1 0.5 dB louder",
+        "button: Play section 1",
+        "button: Remove section 1",
+        "button: Section 2 0.5 dB quieter",
+        "button: Section 2 0.5 dB louder",
+        "button: Play section 2",
+        "button: Remove section 2"
+      ],
+      "why": "The flow notes describe the whole-set map and the waveform (both clickable) and each section row: − and + volume, Play and Remove."
     }
   ],
   "drift": [
     {
+      "screen": "schedule",
+      "items": [
+        "nav: Admin",
+        "nav: Dashboard",
+        "nav: Schedule",
+        "nav: My Shows",
+        "nav: Profile",
+        "nav: Change Password",
+        "nav: Recovery Email",
+        "nav: Logout"
+      ],
+      "why": "Redesign #1051 (approved in the issue): Schedule is no page of its own any more, so its check runs on the Show page, which has no nav (the nav is checked on Dashboard and My Show). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
       "screen": "studio-onair",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-reconnecting",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | reconnecting…",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-lost",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | lost",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-noinput",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
     },
     {
       "screen": "studio-onair-end",
       "items": [
-        "row: Listeners now | 37"
+        "row: Connection | stable",
+        "h2: Audio",
+        "h2: Connection",
+        "h2: Listeners",
+        "h2: Live chat",
+        "button: Change",
+        "button: Listen",
+        "button: Auto · 128",
+        "button: 320",
+        "button: 192",
+        "button: 128",
+        "button: 96",
+        "button: Send",
+        "field: Input gain",
+        "field: Monitor volume",
+        "field: Reply as host",
+        "row: Upload | 150 kbps",
+        "row: Buffer | 0.2 seconds",
+        "row: Round trip | 48 ms",
+        "row: Chunks | 2531 confirmed · all arrived",
+        "row: Peak | 37"
       ],
-      "why": "Hotfix #1028: On Air no longer shows the listener count. Remove the row from the flow in Flow Lab, then pin the new rev."
+      "why": "Redesign #1053 (approved in the issue): the live panel shows Connection as a card (verdict, upload against the needed line, upload, buffer, round trip, chunks the server confirmed, upload quality Auto · 320 · 192 · 128 · 96) instead of the row, and adds Audio (input with Change, L/R meters, input and stream spectrum with Listen, input gain, monitor volume, silence alarm), the listener peak and a 40-minute line, and the Telegram live chat with Reply as host. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "dashboard",
+      "items": [
+        "nav: Schedule",
+        "nav: My Shows",
+        "link: My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-shows",
+      "items": [
+        "nav: Schedule",
+        "nav: My Shows",
+        "link: My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host nav is Dashboard · My Show; Schedule and My Shows are gone (Schedule moves into the Show page, #1051). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-shows",
+      "items": [
+        "h1: My Shows",
+        "row: Brunchtime | Sundays · 12:00–14:00",
+        "h1: My Show",
+        "h2: Brunchtime",
+        "link: Brunchtime",
+        "button: Book Slot",
+        "button: Edit",
+        "row: Next episode | So 04.01. · 12:00–14:00",
+        "row: Rhythm | Every week · Sundays · 12:00–14:00",
+        "row: Instagram | Not set"
+      ],
+      "why": "Redesign #1050 (approved in the issue, card feedback of 2026-11-21): My Show shows each Show as a card (one card, or a grid of two per row) with its name, the details as plain text in fixed places (Next episode, Rhythm, Instagram), and Book Slot and Edit across the card; the whole card opens the Show page. It replaces the title My Shows and the list row. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": [
+        "h1: So 25.10. · Brunchtime",
+        "pill: Upcoming · Live · 12:00–14:00",
+        "h2: Next step",
+        "h2: Details",
+        "field: Title",
+        "field: Description",
+        "field: Date",
+        "field: Time",
+        "choice: Live",
+        "choice: Pre-recorded",
+        "button: Save",
+        "button: Cancel booking",
+        "h2: Recording",
+        "h1: Brunchtime #31",
+        "pill: Upcoming"
+      ],
+      "why": "Redesign #1052 (approved in the issue): one layout for every phase. The details move into a read-only heading box (title as the heading, date and time, status pill, mode, host) with Edit, which opens the form with Save and Cancel booking; four step icons Set up social media › Soundcheck › Show time › Publish recording, coloured by state (current yellow, done dim yellow, next gray); four status cards in step order Social media, Soundcheck, Show time and Recording & SoundCloud replace Next step, Details, Promotion · Instagram and Recording. Upload to SoundCloud shows once there is a recording. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre",
+      "items": [
+        "h1: So 08.11. · Brunchtime",
+        "pill: Pre-recorded & confirmed · plays at 12:00",
+        "h2: Next step",
+        "h2: Details",
+        "field: Title",
+        "field: Description",
+        "field: Date",
+        "field: Time",
+        "choice: Live",
+        "choice: Pre-recorded",
+        "button: Save",
+        "h1: Brunchtime #31",
+        "h2: Social media",
+        "pill: Upcoming",
+        "button: Edit"
+      ],
+      "why": "Redesign #1052 (approved in the issue): the pre-recorded episode uses the same heading box, step icons and four cards as a live one. The Soundcheck card shows the set with Replace file; Show time reads \"Plays at 12:00\"; Open Wrap-up moves to the Recording & SoundCloud card after the show; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre-nofile",
+      "items": [
+        "h1: So 08.11. · Brunchtime",
+        "pill: Pre-recorded · no file yet · plays at 12:00",
+        "h2: Next step",
+        "h2: Details",
+        "field: Title",
+        "field: Description",
+        "field: Date",
+        "field: Time",
+        "choice: Live",
+        "choice: Pre-recorded",
+        "button: Save",
+        "h1: Brunchtime #32",
+        "h2: Social media",
+        "pill: Upcoming",
+        "button: Edit"
+      ],
+      "why": "Redesign #1052 (approved in the issue): the pre-recorded episode without a file uses the same heading box, step icons and four cards. The Soundcheck card asks for the set with Upload your set; Details move into Edit; the Social media and Recording cards show here too. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-view",
+      "items": [
+        "h1: Di 27.10. · Night Shift",
+        "pill: Upcoming · Live · 20:00–22:00",
+        "h2: Details",
+        "h1: Night Shift",
+        "h2: Social media",
+        "pill: Upcoming"
+      ],
+      "why": "Redesign #1052 (approved in the issue): another host's episode is the same page read-only: the heading box with the host and \"Read only\", the step icons and the four cards with every status and the public links, no Edit and no buttons. The title is the heading; the Details card and its Host row go. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "new-show",
+      "items": [
+        "back: My Shows",
+        "link: < My Show"
+      ],
+      "why": "Redesign #1050 (approved in the issue): the host page is called My Show, so the back link reads < My Show. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre",
+      "items": [
+        "button: Book a time",
+        "button: Set up",
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | So 08.11. · 12:00 · when you go live",
+        "row: Post-announcement | Not set up"
+      ],
+      "why": "Social media tiles (#1091, flow rev 35 on the Episode screen): one tile per slot with its status, a GOES OUT box (Book a time, or the time; the on-air story shows the show start) and one button (Set up, Edit). See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre-nofile",
+      "items": [
+        "button: Book a time",
+        "button: Set up",
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | So 08.11. · 12:00 · when you go live",
+        "row: Post-announcement | Not set up"
+      ],
+      "why": "Social media tiles (#1091, flow rev 35 on the Episode screen): one tile per slot with its status, a GOES OUT box (Book a time, or the time; the on-air story shows the show start) and one button (Set up, Edit). See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-view",
+      "items": [
+        "row: Pre-announcement | Not set up",
+        "row: On-air story | Not set up",
+        "row: Goes out | Di 27.10. · 20:00 · when you go live",
+        "row: Post-announcement | Not set up"
+      ],
+      "why": "Social media tiles (#1091): another host sees the same tiles without buttons, and only the pictures of sent posts. See https://github.com/phaabe/live.moafunk.de/issues/1091. This flow screen still has the old rows: update it in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "book-time",
+      "items": [
+        "back: Episode",
+        "notice: It goes out only if your SoundCloud track is public by then. If not, the time is unset and you book a new one."
+      ],
+      "why": "Book a time is a popup (#1091): Close and Cancel take the host back, so it has no back link. The notice shows only for the post-announcement, as its flow note says; this check is the pre-announcement."
+    },
+    {
+      "screen": "announce",
+      "items": [
+        "h2: People",
+        "button: Invite",
+        "button: Tag",
+        "field: More collaborators",
+        "field: Tag people"
+      ],
+      "why": "Post widget (approved, see https://github.com/phaabe/live.moafunk.de/issues/1052#issuecomment-7070453001): a People group with More collaborators (Invite, up to 3 with the show account) and Tag people (Tag). Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": [
+        "button: 1 · Social media (done)",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 5 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre",
+      "items": [
+        "button: Replace file",
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-pre-nofile",
+      "items": [
+        "button: Upload your set",
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 12:00",
+        "button: 4 · Recording"
+      ],
+      "why": "Episode icon tabs (#1052, icon draft, built on Anton's go 2026-11-22): the step strip goes. Four icon tiles (Social media, Soundcheck, Show time, Recording) act as tabs above one main card, so only the selected step's card shows; the page opens on the current step. The Studio (soundcheck and Go Live) opens inside the page as the Soundcheck tab; the live panel is the Show time tab while live. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-checking",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-ready",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "studio-problem",
+      "items": ["check: Record this show", "button: Go Live"],
+      "why": "Episode page feedback (#1052, Anton 2026-11-22): every show is recorded, so the Studio has no \"Record this show\". Before the start the countdown stands where Go Live was; at the start it turns into Go Live, which blinks until clicked. See https://github.com/phaabe/live.moafunk.de/issues/1052. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": [
+        "button: Open Studio"
+      ],
+      "why": "Studio always open (Anton's go, 2026-11-22): the Studio is open for soundchecks at any time before the end, not only from 30 min before the start. The Soundcheck tab shows the Studio instead of Open Studio. Soundcheck still becomes the current step 30 min before the start; until then its step reads “before 20:00”. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "episode-view",
+      "items": [
+        "button: 1 · Social media",
+        "button: 2 · Soundcheck",
+        "button: 3 · Show time · in 7 days · until 20:00",
+        "button: 4 · Recording"
+      ],
+      "why": "One episode page (Anton, 2026-11-22): another host's episode is the owner's page read-only, with the same four tab tiles above one main card. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-show-edit",
+      "items": ["back: My Shows", "button: New show", "h2: Rhythm"],
+      "why": "My Show (https://github.com/phaabe/live.moafunk.de/issues/1050) is a nav page: it has no back link, New show sits in the page head, and the form has no Rhythm heading (Repeats, Day and Time sit in one row). The flow drew this screen like New show. Update the flow in Flow Lab, then pin the new rev."
+    },
+    {
+      "screen": "my-show-edit",
+      "items": ["row: jonas | Co-host · Remove", "row: jonas | Co-host", "button: Remove jonas"],
+      "why": "Co-hosts (https://github.com/phaabe/live.moafunk.de/issues/1047): Remove is the row's own button, so the row reads jonas | Co-host and the button Remove jonas. Update the flow in Flow Lab (a row plus a button), then pin the new rev."
+    },
+    {
+      "screen": "episode",
+      "items": ["row: Hosts | lena, jonas · mira · DJ Lumen (guest)", "button: Add host"],
+      "why": "Co-hosts (https://github.com/phaabe/live.moafunk.de/issues/1047): the Hosts row and Add host sit in the heading box's Edit form, like Save and Cancel booking. The read-only heading says “Hosts: lena, jonas · mira”. Guests (DJ Lumen) come with https://github.com/phaabe/live.moafunk.de/issues/739."
     }
   ]
 }

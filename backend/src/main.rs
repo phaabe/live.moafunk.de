@@ -9,12 +9,14 @@ mod config;
 mod db;
 mod error;
 mod handlers;
+mod hosts;
 mod image_overlay;
 mod instagram;
 mod metrics;
 mod models;
 mod pdf;
 mod recording;
+mod recording_edit;
 mod recording_finalizer;
 mod recovery;
 mod recovery_mail;
@@ -24,8 +26,11 @@ mod soundcloud;
 mod storage;
 mod stream_bridge;
 mod stream_metrics;
+mod studio_log;
 mod telegram;
 mod telegram_notify;
+mod telegram_onair;
+mod thumbs;
 mod video;
 
 #[cfg(test)]
@@ -42,6 +47,8 @@ mod fake_instagram;
 mod fake_r2;
 #[cfg(test)]
 mod fake_telegram;
+#[cfg(test)]
+mod hosts_tests;
 #[cfg(test)]
 mod recording_tests;
 #[cfg(test)]
@@ -117,6 +124,8 @@ pub struct AppState {
     pub telegram_edit_sessions: TelegramEditSessions,
     /// Live-chat bridge hub: Telegram discussion group ⇄ panel WS (#278)
     pub chat_hub: Arc<chat_bridge::ChatHub>,
+    /// Running and failed waveform jobs of the recording editor, by show.
+    pub peaks_jobs: recording_edit::PeaksJobs,
 }
 
 // Stream handler wrappers that extract stream_state from AppState
@@ -361,6 +370,7 @@ async fn main() -> anyhow::Result<()> {
         pending_show_notifications,
         telegram_edit_sessions,
         chat_hub: Arc::new(chat_bridge::ChatHub::new()),
+        peaks_jobs: Default::default(),
     });
 
     // One-shot admin subcommands: run against the same config/db/R2 as the server,
@@ -603,16 +613,63 @@ async fn main() -> anyhow::Result<()> {
             "/api/series/:slug",
             get(handlers::series::api_get_series).put(handlers::series::api_update_series),
         )
+        // Co-hosts of a Show and of one episode; the host accounts to add
+        .route("/api/hosts", get(handlers::hosts::api_list_hosts))
+        .route(
+            "/api/series/:slug/hosts",
+            post(handlers::hosts::api_add_series_host),
+        )
+        .route(
+            "/api/series/:slug/hosts/:user_id",
+            axum::routing::delete(handlers::hosts::api_remove_series_host),
+        )
+        .route(
+            "/api/shows/:id/hosts",
+            post(handlers::hosts::api_add_episode_host),
+        )
+        .route(
+            "/api/shows/:id/hosts/:user_id",
+            axum::routing::delete(handlers::hosts::api_remove_episode_host),
+        )
         // Host Dashboard: all hosts' upcoming episodes
         .route(
             "/api/upcoming-episodes",
             get(handlers::series::api_upcoming_episodes),
+        )
+        // Host Dashboard: all hosts' past episodes and all Shows
+        .route(
+            "/api/past-episodes",
+            get(handlers::series::api_past_episodes),
+        )
+        .route(
+            "/api/series-overview",
+            get(handlers::series::api_series_overview),
+        )
+        // Host Dashboard: the hosts' and admins' chalkboard
+        .route(
+            "/api/chalkboard",
+            get(handlers::chalkboard::api_list_chalkboard)
+                .post(handlers::chalkboard::api_add_chalkboard_note),
+        )
+        // Profiles (#1117): own profile and photo, other hosts' read-only
+        .route(
+            "/api/profile",
+            get(handlers::profile::api_get_profile).put(handlers::profile::api_save_profile),
+        )
+        .route(
+            "/api/profile/photo",
+            post(handlers::profile::api_upload_photo).delete(handlers::profile::api_remove_photo),
+        )
+        .route(
+            "/api/profiles/:username",
+            get(handlers::profile::api_get_user_profile),
         )
         // Booking: slots, upload-first sets, episodes (owner or admin)
         .route(
             "/api/series/:slug/slots",
             get(handlers::booking::api_series_slots),
         )
+        .route("/api/booked-times", get(handlers::api::api_booked_times))
         .route(
             "/api/series/:slug/episodes",
             post(handlers::booking::api_book_episode),
@@ -661,6 +718,10 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::announcements::api_announcement_meta),
         )
         .route(
+            "/api/shows/:id/announcements/status",
+            get(handlers::announcements::api_announcement_status),
+        )
+        .route(
             "/api/shows/:id/announcements/uploads",
             post(handlers::announcements::api_upload_announcement_image),
         )
@@ -670,13 +731,29 @@ async fn main() -> anyhow::Result<()> {
                 .delete(handlers::announcements::api_cancel_announcement),
         )
         .route(
+            "/api/shows/:id/telegram/onair",
+            get(telegram_onair::api_get_onair_message)
+                .put(telegram_onair::api_put_onair_message)
+                .delete(telegram_onair::api_cancel_onair_message),
+        )
+        .route(
             "/api/shows/:id/image-proxy",
             get(handlers::api::api_show_image_proxy),
+        )
+        .route(
+            "/api/shows/:id/announcements/:slot/time",
+            axum::routing::put(handlers::announcements::api_book_announcement_time),
         )
         .route(
             "/api/shows/:id/announcements/:slot/preview.jpg",
             get(announcement_image::api_announcement_preview),
         )
+        .route(
+            "/api/shows/:id/announcements/:slot/image.jpg",
+            get(announcement_image::api_announcement_image),
+        )
+        // Small copies of stored images (signed links, see thumbs.rs)
+        .route("/api/img", get(thumbs::api_image))
         .route(
             "/api/shows/:id/overlays",
             get(handlers::api::api_list_show_overlays),
@@ -692,6 +769,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id",
             axum::routing::delete(handlers::api::api_delete_show),
+        )
+        .route(
+            "/api/shows/:id/studio-log",
+            axum::routing::put(studio_log::api_save_studio_log),
         )
         .route(
             "/api/shows/:id/active-preset",
@@ -741,6 +822,27 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/shows/:id/recording",
             axum::routing::delete(handlers::api::api_delete_show_recording),
+        )
+        // Recording editor: cut and volume; renders a new mp3
+        .route(
+            "/api/shows/:id/recording/edit",
+            get(recording_edit::api_get_recording_edit).put(recording_edit::api_put_recording_edit),
+        )
+        .route(
+            "/api/shows/:id/recording/snippets",
+            axum::routing::put(recording_edit::api_put_recording_snippets),
+        )
+        .route(
+            "/api/shows/:id/recording/edit/apply",
+            post(recording_edit::api_apply_recording_edit),
+        )
+        .route(
+            "/api/shows/:id/recording/peaks",
+            get(recording_edit::api_get_recording_peaks),
+        )
+        .route(
+            "/api/shows/:id/recording/source",
+            axum::routing::put(recording_edit::api_put_recording_source),
         )
         .route(
             "/api/shows/:id/instagram",
@@ -884,18 +986,10 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             tracing::info!("Running expired user cleanup...");
-            match sqlx::query(
-                "DELETE FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            )
-            .execute(&cleanup_db)
-            .await
-            {
-                Ok(result) => {
-                    if result.rows_affected() > 0 {
-                        tracing::info!(
-                            "Cleaned up {} expired user accounts",
-                            result.rows_affected()
-                        );
+            match db::delete_expired_users(&cleanup_db).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        tracing::info!("Cleaned up {} expired user accounts", deleted);
                     }
                 }
                 Err(e) => tracing::error!("Failed to clean up expired users: {}", e),
@@ -969,7 +1063,8 @@ async fn main() -> anyhow::Result<()> {
     // Spawn the pre-recorded show auto-start scheduler: fires go-live once a
     // confirmed pre-recorded show reaches its scheduled start, so it doesn't
     // depend on an admin having the waiting-room page open (issue #240). Runs
-    // every 30s; self-guards via the `prerecorded_started_at` column.
+    // every 30s; self-guards via the `prerecorded_started_at` column. It also
+    // notes the episode on air, for booking over idle shows.
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -977,6 +1072,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 scheduler::check_prerecorded_show_start(state.clone(), chrono::Utc::now()).await;
+                handlers::api::note_on_air(&state, chrono::Utc::now()).await;
             }
         });
     }
@@ -990,15 +1086,23 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 announcement_send::check_due_announcements(&state, chrono::Utc::now()).await;
+                telegram_onair::tick(&state, chrono::Utc::now()).await;
             }
         });
     }
 
-    // Notice tracks made public on soundcloud.com: the next announcement
-    // tick then sets their post times.
+    // Notice tracks made public on soundcloud.com, so their booked
+    // post-announcements can go out.
     {
         let state = state.clone();
         tokio::spawn(async move {
+            match soundcloud::repair_private_links(&state).await {
+                Ok(fixed) if !fixed.is_empty() => {
+                    tracing::info!(?fixed, "SoundCloud: stored secret links of private tracks")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!("SoundCloud private link repair failed: {e}"),
+            }
             let every = soundcloud::PUBLIC_CHECK_EVERY.to_std().expect("positive");
             let mut interval = tokio::time::interval(every);
             loop {

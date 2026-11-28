@@ -448,7 +448,37 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "shows", "live_recorded", "INTEGER").await?;
     // Length of a pre-recorded set booked through Book Slot (from ffprobe).
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
+    // What the host's browser measured in the Studio and the live panel (JSON).
+    add_column_if_missing(pool, "shows", "studio_log", "TEXT").await?;
+    // Last time the server saw the episode on air (RFC 3339, every 30 s):
+    // Book Slot may book over a show that was not on air for 10 min.
+    add_column_if_missing(pool, "shows", "on_air_at", "TEXT").await?;
+    // The file the host picked for SoundCloud: 'show' (recorded on air) or
+    // 'own' (`recording_key`). NULL: the own file when there is one, else 'show'.
+    add_column_if_missing(pool, "shows", "recording_source", "TEXT").await?;
+    // What the SoundCloud track was made from: the file, the R2 key that was
+    // sent, and whether it was a rendered edit.
+    add_column_if_missing(pool, "shows", "soundcloud_source", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_source_key", "TEXT").await?;
+    add_column_if_missing(pool, "shows", "soundcloud_edited", "INTEGER DEFAULT 0").await?;
+    // Listener counts the server takes while an episode is on air (unix ms).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS show_listener_samples (\
+             show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE, \
+             at INTEGER NOT NULL, \
+             count INTEGER NOT NULL)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_show_listener_samples_show \
+         ON show_listener_samples(show_id, at)",
+    )
+    .execute(pool)
+    .await?;
     crate::series::migrate(pool).await?;
+    // Co-hosts of a Show and of one episode.
+    crate::hosts::migrate(pool).await?;
     // The host's own Instagram account, without '@'.
     add_column_if_missing(pool, "show_templates", "instagram_handle", "TEXT").await?;
     // Announcements of an episode: one per (episode, slot, channel).
@@ -491,6 +521,52 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // The host's time before the backend moved the post (approve, unlock,
     // retry); NULL while the post goes out at the host's time.
     add_column_if_missing(pool, "announcements", "requested_at", "TEXT").await?;
+
+    // The Telegram on-air message of an episode (telegram_onair.rs), apart
+    // from the Instagram announcements.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS telegram_onair_messages (
+            id INTEGER PRIMARY KEY,
+            show_id INTEGER NOT NULL UNIQUE REFERENCES shows(id) ON DELETE CASCADE,
+            state TEXT NOT NULL CHECK (state IN ('scheduled', 'sent', 'failed', 'cancelled')),
+            text TEXT NOT NULL,
+            image_source TEXT NOT NULL DEFAULT 'cover'
+                CHECK (image_source IN ('cover', 'upload', 'none')),
+            image_key TEXT,
+            silent INTEGER NOT NULL DEFAULT 0,
+            pin INTEGER NOT NULL DEFAULT 1,
+            scheduled_at TEXT,
+            sent_at TEXT,
+            chat_id INTEGER,
+            message_id INTEGER,
+            permalink TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            send_claimed_at TEXT,
+            created_by INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    // More collaborators and tagged accounts of a feed post (JSON lists).
+    add_column_if_missing(
+        pool,
+        "announcements",
+        "extra_collaborators",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "announcements",
+        "user_tags",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
     // The host chose "Post now" for the pre post.
     add_column_if_missing(
         pool,
@@ -763,6 +839,128 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Dashboard chalkboard: notes every host and admin can read and write.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chalkboard_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Profiles (#1117): one row per user, links in the order of the edit form.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            display_name TEXT,
+            about TEXT,
+            photo_key TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS user_links (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            value TEXT NOT NULL,
+            label TEXT,
+            PRIMARY KEY (user_id, position)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Recording editor: one edit per show and file (`source`: 'show' or 'own').
+    // `edited_key` is the last good render (default bucket); it stays while a
+    // new render runs or fails. `source_key` is the file it was made from, so a
+    // new recording makes it stale.
+    const RECORDING_EDITS: &str = "(
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            source TEXT NOT NULL DEFAULT 'show',
+            edit_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            error_message TEXT,
+            edited_key TEXT,
+            source_key TEXT,
+            edited_seconds REAL,
+            rendered_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (show_id, source)
+        )";
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS recording_edits {RECORDING_EDITS}"
+    ))
+    .execute(pool)
+    .await?;
+    // A table from before the two files is keyed by show only: rebuild it. An
+    // old edit was of the own file when the show has one (it came first then).
+    let has_source: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('recording_edits') WHERE name = 'source'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_source == 0 {
+        let mut tx = pool.begin().await?;
+        sqlx::query(&format!(
+            "CREATE TABLE recording_edits_new {RECORDING_EDITS}"
+        ))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO recording_edits_new (show_id, source, edit_json, status, error_message, \
+                 edited_key, source_key, edited_seconds, rendered_at, updated_at) \
+             SELECT e.show_id, \
+                 CASE WHEN s.recording_key IS NOT NULL THEN 'own' ELSE 'show' END, \
+                 e.edit_json, e.status, e.error_message, e.edited_key, e.source_key, \
+                 e.edited_seconds, e.rendered_at, e.updated_at \
+             FROM recording_edits e LEFT JOIN shows s ON s.id = e.show_id",
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE recording_edits")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE recording_edits_new RENAME TO recording_edits")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+    }
+    // Snippets for the post-announcement, per file. They used to sit in the
+    // edit; the copy keeps those (once: a row that exists is kept).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS recording_snippets (
+            show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            snippets_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (show_id, source)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO recording_snippets (show_id, source, snippets_json) \
+         SELECT show_id, source, json_extract(edit_json, '$.snippets') FROM recording_edits \
+         WHERE json_valid(edit_json) AND json_array_length(edit_json, '$.snippets') > 0",
+    )
+    .execute(pool)
+    .await?;
+    // A render does not survive a restart; free its lock so Apply works again.
+    sqlx::query(
+        "UPDATE recording_edits SET status = 'failed', \
+             error_message = 'The server restarted during the render. Apply the edit again.' \
+         WHERE status = 'rendering'",
+    )
+    .execute(pool)
+    .await?;
+
     crate::recovery::migrate(pool).await?;
 
     tracing::info!("Database migrations completed");
@@ -810,15 +1008,18 @@ const DEV_PASSWORD: &str = "dev";
 /// backdoor — making the account strictly dev-only.
 pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::Error> {
     if !is_dev {
-        let deleted = sqlx::query("DELETE FROM users WHERE username = ?")
+        let stray: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
             .bind(DEV_USERNAME)
-            .execute(pool)
-            .await?
-            .rows_affected();
-        if deleted > 0 {
-            tracing::warn!(
-                "Removed {deleted} stray '{DEV_USERNAME}' user(s): APP_ENV is not development"
-            );
+            .fetch_optional(pool)
+            .await?;
+        if let Some(id) = stray {
+            // Fail closed: a kept `dev` login would be a backdoor.
+            if let UserDeletion::OwnsSeries(series) = delete_user(pool, id).await? {
+                return Err(sqlx::Error::Protocol(format!(
+                    "stray '{DEV_USERNAME}' user owns the series {series:?}; delete them first"
+                )));
+            }
+            tracing::warn!("Removed stray '{DEV_USERNAME}' user: APP_ENV is not development");
         }
         return Ok(());
     }
@@ -845,6 +1046,74 @@ pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::
         "DEV MODE: '{DEV_USERNAME}' / '{DEV_PASSWORD}' login is enabled (APP_ENV=development)"
     );
     Ok(())
+}
+
+/// What [`delete_user`] did.
+#[derive(Debug, PartialEq)]
+pub enum UserDeletion {
+    Deleted,
+    /// Nothing changed: the user owns these series (names). A series has no
+    /// other owner, so it would go with the user.
+    OwnsSeries(Vec<String>),
+}
+
+/// Delete a user in one transaction. Used by the admin delete, the expired
+/// account cleanup and the stray dev-user removal.
+///
+/// A user who owns a series is kept (see [`UserDeletion::OwnsSeries`]).
+/// Shows, artists and posts stay; the user is cleared from them. The schema's
+/// ON DELETE handles the rest: it removes the user's profile, links,
+/// chalkboard notes, co-host seats, recovery rows and series uploads, and
+/// clears `added_by` and `users.created_by`. The profile photo in R2
+/// (`users/<id>/photo`) stays.
+pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<UserDeletion, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let series: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM show_templates WHERE owner_user_id = ? ORDER BY name")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    if !series.is_empty() {
+        return Ok(UserDeletion::OwnsSeries(series));
+    }
+    for sql in [
+        // Foreign keys without ON DELETE: they block the delete.
+        "UPDATE shows SET host_user_id = NULL WHERE host_user_id = ?",
+        "UPDATE shows SET created_by = NULL WHERE created_by = ?",
+        "UPDATE artists SET user_id = NULL WHERE user_id = ?",
+        // No foreign key, but they name the user.
+        "UPDATE announcements SET created_by = NULL WHERE created_by = ?",
+        "UPDATE telegram_onair_messages SET created_by = NULL WHERE created_by = ?",
+        // Older databases have `sessions.user_id` without a foreign key.
+        "DELETE FROM sessions WHERE user_id = ?",
+        "DELETE FROM users WHERE id = ?",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(UserDeletion::Deleted)
+}
+
+/// Delete every expired account, each in its own transaction, so one user
+/// that fails does not keep the others. A user who owns a series is kept.
+/// Returns how many were deleted.
+pub async fn delete_expired_users(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut deleted = 0;
+    for id in ids {
+        match delete_user(pool, id).await {
+            Ok(UserDeletion::Deleted) => deleted += 1,
+            Ok(UserDeletion::OwnsSeries(series)) => {
+                tracing::warn!("Kept expired user {id}: owns the series {series:?}")
+            }
+            Err(e) => tracing::error!("Failed to delete expired user {id}: {e}"),
+        }
+    }
+    Ok(deleted)
 }
 
 // ============================================================================
@@ -1111,6 +1380,10 @@ pub async fn is_notifications_enabled(pool: &SqlitePool) -> bool {
 /// Admin switches for the outside services (ticket 1012).
 pub const SOUNDCLOUD_ENABLED: &str = "soundcloud_enabled";
 pub const INSTAGRAM_ENABLED: &str = "instagram_enabled";
+/// Admin switch for the Telegram live chat in On Air (ticket 1056).
+pub const TELEGRAM_LIVE_CHAT_ENABLED: &str = "telegram_live_chat_enabled";
+/// Admin switch for the Telegram on-air message (ticket 1056).
+pub const TELEGRAM_ONAIR_ENABLED: &str = "telegram_onair_enabled";
 
 /// Whether the service switch `key` is on. Missing or unreadable means on.
 pub async fn is_service_enabled(pool: &SqlitePool, key: &str) -> bool {
@@ -1439,6 +1712,40 @@ mod tests {
         // Idempotent when already absent.
         seed_dev_user(&pool, false).await.unwrap();
         assert_eq!(count_user(&pool, DEV_USERNAME).await, 0);
+    }
+
+    /// A stray `dev` user who owns a series stops the start instead of
+    /// staying as a login or taking the series with it.
+    #[tokio::test]
+    async fn seed_dev_user_refuses_a_dev_login_that_owns_a_series() {
+        let pool = mem_db().await;
+        let dev = insert_user(&pool, DEV_USERNAME).await;
+        insert_template(&pool, dev, "Late Night").await;
+
+        assert!(seed_dev_user(&pool, false).await.is_err());
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 1);
+    }
+
+    /// A foreign key to `users` without ON DELETE blocks `delete_user` unless
+    /// `delete_user` clears it. A new one must be added there.
+    #[tokio::test]
+    async fn delete_user_clears_every_foreign_key_without_on_delete() {
+        let pool = mem_db().await;
+        let blocking: Vec<(String, String)> = sqlx::query_as(
+            "SELECT m.name, f.\"from\" FROM sqlite_master m, pragma_foreign_key_list(m.name) f \
+             WHERE m.type = 'table' AND f.\"table\" = 'users' AND f.on_delete = 'NO ACTION' \
+             ORDER BY 1, 2",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let cleared = [
+            ("artists", "user_id"),
+            ("shows", "created_by"),
+            ("shows", "host_user_id"),
+        ]
+        .map(|(t, c)| (t.to_string(), c.to_string()));
+        assert_eq!(blocking, cleared);
     }
 
     async fn insert_template(pool: &SqlitePool, owner: i64, name: &str) -> i64 {

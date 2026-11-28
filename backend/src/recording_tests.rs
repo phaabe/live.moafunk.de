@@ -8,6 +8,7 @@ use crate::broadcast_tests::{
     add_user, connect_producer, headers, serve_stream_socket_with, state_with, Producer,
 };
 use crate::fake_r2::FakeR2;
+use crate::recording_finalizer::FINALIZE_GRACE;
 use axum::{
     body::to_bytes, extract::Path as UrlPath, http::StatusCode, routing::get, Json, Router,
 };
@@ -26,7 +27,7 @@ const TRACK_KEY: &str = "artists/1/track1/song.mp3";
 
 /// A 440 Hz tone of `secs` seconds from ffmpeg, encoded with `codec` into
 /// the container `format`.
-async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
+pub(crate) async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
     let output = tokio::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
         .arg(format!(
@@ -47,7 +48,7 @@ async fn tone(secs: u32, codec: &[&str], format: &str) -> Vec<u8> {
 }
 
 /// The length of `data` in seconds, as ffprobe reads it.
-async fn seconds(data: &[u8]) -> f64 {
+pub(crate) async fn seconds(data: &[u8]) -> f64 {
     let file = tempfile::NamedTempFile::new().unwrap();
     tokio::fs::write(file.path(), data).await.unwrap();
     audio::get_duration(file.path()).await.unwrap() as f64 / 1000.0
@@ -212,6 +213,75 @@ async fn a_stopped_live_show_lands_in_r2_and_the_shows_archive() {
     assert!((seconds(&mp3).await - SHOW_SECS as f64).abs() < 1.5);
 
     assert_eq!(leftovers(temp.path()), Vec::<String>::new());
+}
+
+/// The API restarts during a live show (ticket 1098): the old process left
+/// its recorder's segments and the empty file of the session start. Boot
+/// recovery leaves them to the producer, which reconnects and goes on in the
+/// same version. Stop then saves one recording with the audio from before
+/// and after the restart.
+#[tokio::test]
+async fn an_api_restart_mid_show_keeps_one_recording() {
+    const BEFORE_SECS: u32 = 30;
+    let (state, temp, addr, r2, admin) = live_setup(34).await;
+    // What the killed recorder wrote, as it writes it.
+    let artifact = temp.path().join(format!("recording_34_{VERSION}.webm"));
+    let seg_dir = artifact.with_extension("segs");
+    std::fs::create_dir(&seg_dir).unwrap();
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+        .arg(format!(
+            "sine=frequency=440:sample_rate=48000:duration={BEFORE_SECS}"
+        ))
+        .args(["-ac", "2", "-c:a", "aac", "-b:a", "192k"])
+        .args(["-f", "segment", "-segment_time", "10"])
+        .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
+        .arg(seg_dir.join("seg_%05d.ts"))
+        .status()
+        .await
+        .unwrap();
+    assert!(status.success());
+    // The kill can leave the segment it was writing empty.
+    std::fs::write(seg_dir.join("seg_00003.ts"), b"").unwrap();
+    std::fs::write(&artifact, b"").unwrap();
+
+    let counts = recording::recover_once(&state, temp.path(), FINALIZE_GRACE).await;
+    assert_eq!(counts.deferred, 1);
+
+    let mut producer = connect_producer(&state, addr, admin, "show_id=34").await;
+    assert_eq!(
+        session(&state).await.0,
+        VERSION,
+        "the producer goes on in it"
+    );
+    send_audio(&mut producer, SHOW_SECS).await;
+    received(&mut producer).await;
+    stop(producer).await;
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM recording_versions WHERE show_id = 34")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(rows, 1, "one recording");
+    let row = row(&state, 34, VERSION).await.expect("the cut-off version");
+    assert_eq!(row.status, "raw", "{:?}", row.error_message);
+    let total = (BEFORE_SECS + SHOW_SECS) as f64;
+    let mp3 = r2
+        .object_in(
+            &state.config.r2_shows_bucket_name,
+            &row.archive_key.expect("published"),
+        )
+        .unwrap();
+    assert!(
+        (seconds(&mp3).await - total).abs() < 2.0,
+        "the archive has the audio from before and after the restart"
+    );
+    assert_eq!(leftovers(temp.path()), Vec::<String>::new());
+
+    // The pass after the grace finds nothing left to do.
+    let counts = recording::recover_once(&state, temp.path(), Duration::ZERO).await;
+    assert_eq!(counts, Default::default());
 }
 
 /// The join ffmpeg fails at stop (a directory blocks its output file). The

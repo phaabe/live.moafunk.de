@@ -2,7 +2,7 @@
 interface Props {
   open: boolean;
   title?: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
 withDefaults(defineProps<Props>(), {
@@ -79,6 +79,11 @@ function handleBackdropClick(event: MouseEvent) {
 .size-lg {
   width: 100%;
   max-width: 800px;
+}
+
+.size-xl {
+  width: 100%;
+  max-width: 1080px;
 }
 
 .modal-header {

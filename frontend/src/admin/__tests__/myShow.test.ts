@@ -1,0 +1,532 @@
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { createApp, h, nextTick, type App } from 'vue';
+import { createPinia } from 'pinia';
+import { createMemoryHistory, createRouter, RouterView, type Router } from 'vue-router';
+import { useAuthStore } from '../stores/auth';
+import HostMyShowsPage from '../pages/HostMyShowsPage.vue';
+import { coverCountdown, showFacts } from '../components/my-show/showFacts';
+import { getBerlinNowISO } from '../showTime';
+import type { HostAccount, Series, SeriesHost, UpcomingEpisode } from '../api';
+import { expectFlow } from '../flow/expectFlow';
+
+// My Show (#1050): read mode, edit mode, the discard prompt and ?edit=<slug>.
+// The list itself and the flow check are in hostScreens.test.ts.
+
+const BRUNCHTIME: Series = {
+  id: 3,
+  slug: 'brunchtime',
+  name: 'Brunchtime',
+  description: 'Sunday brunch sounds, every week from 12:00.',
+  cover_url: null,
+  rhythm: { repeat_rule: 'weekly', weekday: 7, start_time: '12:00', end_time: '14:00' },
+  rhythm_line: 'Sundays · 12:00–14:00',
+  instagram_handle: 'brunchtime',
+  hosts: [
+    { user_id: 1, username: 'lena', role: 'owner' },
+    { user_id: 2, username: 'jonas', role: 'cohost' },
+  ],
+};
+const UNHEARD: Series = {
+  id: 4,
+  slug: 'unheard',
+  name: 'UNHEARD',
+  description: 'New artists from the UNHEARD pool, once a month.',
+  cover_url: null,
+  rhythm: null,
+  rhythm_line: null,
+  instagram_handle: null,
+};
+
+/** Brunchtime's next episode. */
+const BRUNCH_31: UpcomingEpisode = {
+  id: 31,
+  title: 'Brunchtime #31',
+  date: '2099-01-04',
+  start_time: '12:00',
+  end_time: '14:00',
+  show_name: 'Brunchtime',
+  series_slug: 'brunchtime',
+  host_username: 'lena',
+  mode: 'live',
+  mode_label: 'Live',
+};
+
+let app: App | undefined;
+let root: HTMLDivElement;
+let mySeries: Series[];
+/** GET /api/upcoming-episodes; null answers 500. */
+let upcoming: UpcomingEpisode[] | null;
+/** The body of the last PUT /api/series/:slug. */
+let put: FormData | undefined;
+let putFails: boolean;
+let confirm: Mock<[message?: string], boolean>;
+/** Every host account: whom Add host offers. */
+const ACCOUNTS: HostAccount[] = [
+  { id: 2, username: 'jonas' },
+  { id: 1, username: 'lena' },
+  { id: 3, username: 'mira' },
+];
+/** The host requests: POST and DELETE /api/series/:slug/hosts. */
+let hostCalls: string[];
+
+beforeEach(() => {
+  mySeries = [BRUNCHTIME];
+  upcoming = [BRUNCH_31];
+  put = undefined;
+  putFails = false;
+  hostCalls = [];
+  root = document.createElement('div');
+  document.body.appendChild(root);
+  confirm = vi.fn((_message?: string) => false);
+  vi.stubGlobal('confirm', confirm);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === '/api/series') return Response.json({ series: mySeries });
+      if (url === '/api/upcoming-episodes') {
+        return upcoming
+          ? Response.json({ episodes: upcoming })
+          : Response.json({ error: 'boom' }, { status: 500 });
+      }
+      if (url === '/api/hosts') return Response.json(ACCOUNTS);
+      const hostsOf = url.match(/^\/api\/series\/([^/]+)\/hosts(?:\/(\d+))?$/);
+      if (hostsOf) {
+        const series = mySeries.find((s) => s.slug === hostsOf[1])!;
+        const method = options?.method ?? 'GET';
+        let hosts: SeriesHost[] = series.hosts ?? [];
+        if (method === 'POST') {
+          const id = (JSON.parse(String(options?.body)) as { user_id: number }).user_id;
+          const a = ACCOUNTS.find((x) => x.id === id)!;
+          hosts = [...hosts, { user_id: id, username: a.username, role: 'cohost' }];
+          hostCalls.push(`POST ${id}`);
+        } else if (method === 'DELETE') {
+          hosts = hosts.filter((h) => h.user_id !== Number(hostsOf[2]));
+          hostCalls.push(`DELETE ${hostsOf[2]}`);
+        }
+        mySeries = mySeries.map((s) => (s.slug === series.slug ? { ...s, hosts } : s));
+        return Response.json(hosts);
+      }
+      const slug = url.match(/^\/api\/series\/([^/]+)$/)?.[1];
+      const show = mySeries.find((s) => s.slug === slug);
+      if (show && options?.method === 'PUT') {
+        if (putFails) return Response.json({ error: 'Show name is taken' }, { status: 400 });
+        put = options.body as FormData;
+        const form = Object.fromEntries(put.entries()) as Record<string, string>;
+        return Response.json({
+          ...show,
+          name: form.name,
+          description: form.description,
+          instagram_handle: form.instagram_handle || null,
+        } satisfies Series);
+      }
+      throw new Error(`Unexpected API request: ${options?.method ?? 'GET'} ${url}`);
+    })
+  );
+});
+
+afterEach(() => {
+  app?.unmount();
+  app = undefined;
+  root.remove();
+  vi.unstubAllGlobals();
+});
+
+async function mount(path = '/shows', user = { id: 1, username: 'lena' }): Promise<Router> {
+  const stub = (text: string) => ({ render: () => h('div', text) });
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', redirect: '/shows' },
+      { path: '/shows', component: HostMyShowsPage },
+      { path: '/shows/new', component: stub('New Show screen') },
+      { path: '/shows/:slug', component: stub('Show page') },
+      { path: '/shows/:slug/book', component: stub('Book Slot screen') },
+      { path: '/dashboard', component: stub('Dashboard screen') },
+    ],
+  });
+  const pinia = createPinia();
+  app = createApp({ render: () => h(RouterView) });
+  app.use(pinia).use(router);
+  useAuthStore(pinia).user = { ...user, role: 'host' };
+  await router.push(path);
+  await router.isReady();
+  app.mount(root);
+  await vi.waitFor(() => expect(root.querySelectorAll('.my-show-card').length).toBeGreaterThan(0));
+  await settle();
+  return router;
+}
+
+async function settle() {
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextTick();
+  }
+}
+
+const cards = () => [...root.querySelectorAll('.my-show-card')];
+const card = (name: string) => {
+  const found = cards().find((c) => c.getAttribute('aria-label')?.startsWith(name));
+  if (!found) throw new Error(`No card "${name}"`);
+  return found;
+};
+
+function button(text: string, within: Element = root): HTMLButtonElement {
+  const found = [...within.querySelectorAll('button')].find((b) => b.textContent?.trim() === text);
+  if (!found) throw new Error(`No button "${text}"`);
+  return found;
+}
+
+const hasButton = (text: string, within: Element = root) =>
+  [...within.querySelectorAll('button')].some((b) => b.textContent?.trim() === text);
+
+/** A form field by its label text, inside one card. */
+function field(within: Element, label: string): HTMLInputElement | HTMLSelectElement {
+  for (const box of within.querySelectorAll('.form-input, .field')) {
+    const text = box.querySelector('.label')?.textContent?.trim();
+    const control = box.querySelector('input, select, textarea');
+    if (text === label && control) return control as HTMLInputElement;
+  }
+  throw new Error(`No field "${label}"`);
+}
+
+/** The host rows of the Hosts block: "name | role". */
+const rows = (within: Element) =>
+  [...within.querySelectorAll('.hosts-field li')].map((li) =>
+    [...li.querySelectorAll('.name, .role')].map((e) => e.textContent?.trim()).join(' | ')
+  );
+/** The picks of a select, without its placeholder. */
+const options = (select: HTMLInputElement | HTMLSelectElement) =>
+  [...(select as HTMLSelectElement).options].filter((o) => o.value).map((o) => o.text);
+
+async function type(el: HTMLInputElement | HTMLSelectElement, value: string) {
+  el.value = value;
+  el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? 'change' : 'input'));
+  await nextTick();
+}
+
+const facts = (within: Element) =>
+  [...within.querySelectorAll('dl > div')].map(
+    (d) => `${d.querySelector('dt')?.textContent} | ${d.querySelector('dd')?.textContent}`
+  );
+
+describe('My Show read mode', () => {
+  it('opens Book Slot for the Show', async () => {
+    const router = await mount();
+    button('Book Slot').click();
+    await vi.waitFor(() =>
+      expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime/book')
+    );
+  });
+
+  it('opens the Show page from the name', async () => {
+    const router = await mount();
+    (root.querySelector('.name-link') as HTMLAnchorElement).click();
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows/brunchtime'));
+  });
+
+  it('has one link, the name, which CSS stretches over the whole card', async () => {
+    await mount();
+    const links = [...card('Brunchtime').querySelectorAll('a')];
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/shows/brunchtime']);
+  });
+
+  it("shows each Show's next episode, or that none is booked", async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    await mount();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | So 04.01. · 12:00–14:00');
+    expect(facts(card('UNHEARD'))[0]).toBe('Next episode | None booked');
+  });
+
+  it('puts "in n days" on the cover when the next episode is a week away or less', async () => {
+    const today = getBerlinNowISO().slice(0, 10);
+    const inDays = (n: number) =>
+      new Date(Date.parse(today) + n * 86_400_000).toISOString().slice(0, 10);
+    mySeries = [BRUNCHTIME, UNHEARD, { ...UNHEARD, id: 5, slug: 'later', name: 'Later' }];
+    upcoming = [
+      { ...BRUNCH_31, date: inDays(3) },
+      { ...BRUNCH_31, id: 40, series_slug: 'later', date: inDays(8) },
+    ];
+    await mount();
+    expect(card('Brunchtime').querySelector('.cover .soon')?.textContent).toBe('in 3 days');
+    expect(card('UNHEARD').querySelector('.soon')).toBeNull();
+    expect(card('Later').querySelector('.soon')).toBeNull();
+  });
+
+  it('still shows the cards when the episodes cannot load', async () => {
+    upcoming = null;
+    await mount();
+    expect(root.querySelector('[role="alert"]')).toBeNull();
+    expect(facts(card('Brunchtime'))[0]).toBe('Next episode | Could not load');
+  });
+});
+
+describe('My Show edit mode', () => {
+  it('turns the card into the form, with a bar and without Book Slot', async () => {
+    const router = await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(root.querySelector('.my-show-card.editing')).not.toBeNull());
+    expect(router.currentRoute.value.fullPath).toBe('/shows?edit=brunchtime');
+    const c = card('Brunchtime');
+    expect(c.querySelector('.edit-title')?.textContent?.trim()).toBe('Editing show details');
+    expect(hasButton('Book Slot')).toBe(false);
+    expect(hasButton('Edit')).toBe(false);
+    expect(hasButton('Cancel')).toBe(true);
+    expect(hasButton('Save')).toBe(true);
+    expect(c.querySelector('.read-only')).toBeNull();
+    expect((field(c, 'Name') as HTMLInputElement).value).toBe('Brunchtime');
+    expect(field(c, 'Description').value).toBe('Sunday brunch sounds, every week from 12:00.');
+    expect(field(c, 'Repeats').value).toBe('weekly');
+    expect(field(c, 'Day').value).toBe('7');
+    expect(field(c, 'Instagram handle').value).toBe('@brunchtime');
+    expect(rows(c)).toEqual(['lena | Owner', 'jonas | Co-host']);
+    await vi.waitFor(() => expect(options(field(c, 'Add host'))).toEqual(['mira']));
+  });
+
+  it('leaves edit mode on Cancel without asking when nothing changed', async () => {
+    const router = await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Cancel')).toBe(true));
+    button('Cancel').click();
+    await vi.waitFor(() => expect(hasButton('Book Slot')).toBe(true));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(router.currentRoute.value.fullPath).toBe('/shows');
+  });
+
+  it('asks once before Cancel drops changes', async () => {
+    await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Cancel')).toBe(true));
+    await type(field(card('Brunchtime'), 'Name'), 'Brunch Club');
+
+    button('Cancel').click();
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith('Discard changes?');
+    // Declined: still editing, the change is kept.
+    expect((field(card('Brunchtime'), 'Name') as HTMLInputElement).value).toBe('Brunch Club');
+
+    confirm.mockReturnValue(true);
+    button('Cancel').click();
+    await vi.waitFor(() => expect(hasButton('Book Slot')).toBe(true));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(card('Brunchtime').querySelector('h2')?.textContent?.trim()).toBe('Brunchtime');
+    expect(put).toBeUndefined();
+  });
+
+  it('saves the form and shows the saved details in read mode', async () => {
+    const router = await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Save')).toBe(true));
+    const c = card('Brunchtime');
+    await type(field(c, 'Name'), 'Brunch Club');
+    await type(field(c, 'Instagram handle'), '@brunch.club');
+    button('Save').click();
+
+    await vi.waitFor(() => expect(hasButton('Book Slot')).toBe(true));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(router.currentRoute.value.fullPath).toBe('/shows');
+    expect(Object.fromEntries(put!.entries())).toEqual({
+      name: 'Brunch Club',
+      description: 'Sunday brunch sounds, every week from 12:00.',
+      repeat_rule: 'weekly',
+      weekday: '7',
+      start_time: '12:00',
+      end_time: '14:00',
+      instagram_handle: 'brunch.club',
+    });
+    const saved = card('Brunch Club');
+    expect(saved.querySelector('h2')?.textContent?.trim()).toBe('Brunch Club');
+    expect(facts(saved)).toContain('Instagram | @brunch.club');
+  });
+
+  it('keeps the form open and says why when Save fails', async () => {
+    putFails = true;
+    await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Save')).toBe(true));
+    await type(field(card('Brunchtime'), 'Name'), 'Brunch Club');
+    button('Save').click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('[role="alert"]')?.textContent).toBe('Show name is taken')
+    );
+    expect(root.querySelector('.my-show-card.editing')).not.toBeNull();
+  });
+
+  it('cannot save a bad Instagram handle or an empty name', async () => {
+    await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Save')).toBe(true));
+    const c = card('Brunchtime');
+    await type(field(c, 'Instagram handle'), '@not a handle');
+    expect(button('Save').disabled).toBe(true);
+    expect(c.textContent).toContain('Use up to 30 letters, numbers, dots or underscores.');
+    await type(field(c, 'Instagram handle'), '@brunchtime');
+    expect(button('Save').disabled).toBe(false);
+    await type(field(c, 'Name'), ' ');
+    expect(button('Save').disabled).toBe(true);
+  });
+
+  it('asks before leaving the page with unsaved changes', async () => {
+    const router = await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Save')).toBe(true));
+    await type(field(card('Brunchtime'), 'Description'), 'Brunch, but later.');
+    await router.push('/dashboard');
+    expect(confirm).toHaveBeenCalledWith('Discard changes?');
+    expect(router.currentRoute.value.fullPath).toBe('/shows?edit=brunchtime');
+  });
+
+  it('does not count an edit back to the saved text as a change', async () => {
+    await mount();
+    button('Edit').click();
+    await vi.waitFor(() => expect(hasButton('Cancel')).toBe(true));
+    const name = field(card('Brunchtime'), 'Name');
+    await type(name, 'Brunch Club');
+    await type(name, 'Brunchtime');
+    button('Cancel').click();
+    await vi.waitFor(() => expect(hasButton('Book Slot')).toBe(true));
+    expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('My Show ?edit=<slug>', () => {
+  it('opens that Show’s card in edit mode', async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    await mount('/shows?edit=unheard');
+    await vi.waitFor(() => expect(root.querySelector('.my-show-card.editing')).not.toBeNull());
+    expect(card('UNHEARD').classList.contains('editing')).toBe(true);
+    expect(card('Brunchtime').classList.contains('editing')).toBe(false);
+    expect(field(card('UNHEARD'), 'Repeats').value).toBe('none');
+  });
+
+  it('drops an edit link to a Show that is not the host’s', async () => {
+    const router = await mount('/shows?edit=night-shift');
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/shows'));
+    expect(root.querySelector('.my-show-card.editing')).toBeNull();
+  });
+});
+
+describe('My Show grid', () => {
+  it('edits only one card; the others stay in read mode', async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    await mount();
+    expect(cards()).toHaveLength(2);
+    button('Edit', card('UNHEARD')).click();
+    await vi.waitFor(() => expect(card('UNHEARD').classList.contains('editing')).toBe(true));
+    const other = card('Brunchtime');
+    expect(other.classList.contains('editing')).toBe(false);
+    expect(hasButton('Book Slot', other)).toBe(true);
+    expect(other.querySelectorAll('input, select, textarea')).toHaveLength(0);
+  });
+
+  it('asks before switching to another card with unsaved changes', async () => {
+    mySeries = [BRUNCHTIME, UNHEARD];
+    const router = await mount();
+    button('Edit', card('UNHEARD')).click();
+    await vi.waitFor(() => expect(card('UNHEARD').classList.contains('editing')).toBe(true));
+    await type(field(card('UNHEARD'), 'Name'), 'UNHEARD live');
+
+    button('Edit', card('Brunchtime')).click();
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(router.currentRoute.value.fullPath).toBe('/shows?edit=unheard');
+
+    confirm.mockReturnValue(true);
+    button('Edit', card('Brunchtime')).click();
+    await vi.waitFor(() => expect(card('Brunchtime').classList.contains('editing')).toBe(true));
+    expect(card('UNHEARD').classList.contains('editing')).toBe(false);
+    expect(card('UNHEARD').querySelector('h2')?.textContent?.trim()).toBe('UNHEARD');
+  });
+});
+
+describe('showFacts', () => {
+  it('keeps the same three facts in the same order for every Show', () => {
+    expect(showFacts(BRUNCHTIME, BRUNCH_31)).toEqual([
+      { label: 'Next episode', value: 'So 04.01. · 12:00–14:00', tone: 'accent' },
+      { label: 'Rhythm', value: 'Every week · Sundays · 12:00–14:00' },
+      { label: 'Instagram', value: '@brunchtime' },
+    ]);
+    expect(showFacts(UNHEARD, null)).toEqual([
+      { label: 'Next episode', value: 'None booked', tone: 'muted' },
+      { label: 'Rhythm', value: 'No fixed rhythm' },
+      { label: 'Instagram', value: 'Not set', tone: 'muted' },
+    ]);
+  });
+
+  it('says so when the episodes could not load', () => {
+    expect(showFacts(BRUNCHTIME, undefined)[0]).toEqual({
+      label: 'Next episode',
+      value: 'Could not load',
+      tone: 'muted',
+    });
+  });
+});
+
+describe('coverCountdown', () => {
+  const on = (date: string) => ({ ...BRUNCH_31, date });
+
+  it('counts calendar days up to a week, with Today and Tomorrow', () => {
+    expect(coverCountdown(on('2026-11-22'), '2026-11-22')).toBe('Today');
+    expect(coverCountdown(on('2026-11-23'), '2026-11-22')).toBe('Tomorrow');
+    expect(coverCountdown(on('2026-11-25'), '2026-11-22')).toBe('in 3 days');
+    expect(coverCountdown(on('2026-11-29'), '2026-11-22')).toBe('in 7 days');
+    // Across the switch to winter time and the turn of the year.
+    expect(coverCountdown(on('2026-10-27'), '2026-10-24')).toBe('in 3 days');
+    expect(coverCountdown(on('2027-01-02'), '2026-12-30')).toBe('in 3 days');
+  });
+
+  it('has no label beyond a week, in the past or without an episode', () => {
+    expect(coverCountdown(on('2026-11-30'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(on('2026-11-21'), '2026-11-22')).toBeNull();
+    expect(coverCountdown(null, '2026-11-22')).toBeNull();
+    expect(coverCountdown(undefined, '2026-11-22')).toBeNull();
+  });
+});
+
+describe('My Show co-hosts (#1047)', () => {
+  it('lets the owner add a host at once and remove a co-host after asking', async () => {
+    await mount('/shows?edit=brunchtime');
+    const c = card('Brunchtime');
+    await vi.waitFor(() => expect(options(field(c, 'Add host'))).toEqual(['mira']));
+    await type(field(c, 'Add host'), '3');
+    await vi.waitFor(() =>
+      expect(rows(c)).toEqual(['lena | Owner', 'jonas | Co-host', 'mira | Co-host'])
+    );
+    expect(hostCalls).toEqual(['POST 3']);
+    expect(put).toBeUndefined();
+
+    button('Remove', c).click();
+    expect(confirm).toHaveBeenCalledWith('Remove jonas as co-host?');
+    await settle();
+    expect(hostCalls).toEqual(['POST 3']);
+    confirm.mockReturnValue(true);
+    button('Remove', c).click();
+    await vi.waitFor(() => expect(rows(c)).toEqual(['lena | Owner', 'mira | Co-host']));
+    expect(hostCalls).toEqual(['POST 3', 'DELETE 2']);
+  });
+
+  it('shows a co-host the hosts as text and Leave show, which drops the Show', async () => {
+    await mount('/shows?edit=brunchtime', { id: 2, username: 'jonas' });
+    const c = card('Brunchtime');
+    expect(c.querySelector('.hosts-field .names')?.textContent).toBe('lena, jonas');
+    expect(rows(c)).toEqual([]);
+    expect(() => field(c, 'Add host')).toThrow();
+    expect(hasButton('Remove', c)).toBe(false);
+
+    confirm.mockReturnValue(true);
+    button('Leave show', c).click();
+    expect(confirm).toHaveBeenCalledWith('Leave this show?');
+    await vi.waitFor(() => expect(cards()).toHaveLength(0));
+    expect(hostCalls).toEqual(['DELETE 2']);
+  });
+});
+
+describe('flow', () => {
+  it('My Show · editing matches the flow', async () => {
+    await mount('/shows?edit=brunchtime');
+    await vi.waitFor(() =>
+      expect(options(field(card('Brunchtime'), 'Add host'))).toEqual(['mira'])
+    );
+    await expectFlow('my-show-edit', root);
+  });
+});

@@ -36,7 +36,7 @@ async function createShow() {
 
 <template>
   <div class="new-show-page">
-    <router-link to="/shows" class="back-link">&lt; My Shows</router-link>
+    <router-link to="/shows" class="back-link">&lt; My Show</router-link>
     <h1 class="page-title">New Show</h1>
     <p class="intro">A show is your series. You book its episodes after this.</p>
 

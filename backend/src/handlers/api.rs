@@ -3,7 +3,7 @@
 //! These endpoints mirror the functionality of the template-based handlers
 //! but return JSON responses for the Vue 3 admin panel.
 
-use crate::{ai, auth, models, storage, telegram_notify, video, AppError, AppState, Result};
+use crate::{ai, auth, hosts, models, storage, telegram_notify, video, AppError, AppState, Result};
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
@@ -45,6 +45,8 @@ pub struct UserResponse {
     artist_name: Option<String>,
     has_show: bool,
     must_change_password: bool,
+    /// The profile photo for the nav bar (#1117), see `thumbs::srcset`.
+    photo_srcset: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,8 +135,10 @@ pub async fn api_login(
         60 * 60 * 24 * 7 // 7 days
     );
 
+    let photo_srcset = super::profile::photo_srcset(&state, user.id).await?;
     let response = LoginResponse {
         user: UserResponse {
+            photo_srcset,
             id: user.id,
             username: user.username,
             role: user.role,
@@ -198,6 +202,7 @@ pub async fn api_me(
             };
 
             Ok(Json(UserResponse {
+                photo_srcset: super::profile::photo_srcset(&state, u.id).await?,
                 id: u.id,
                 username: u.username,
                 role: u.role,
@@ -424,6 +429,8 @@ pub struct ShowBrief {
     title: String,
     date: String,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     cover_generated_at: Option<String>,
 }
 
@@ -498,6 +505,7 @@ pub async fn api_artist_detail(
     if let Some(key) = pic_key {
         if let Ok(url) = storage::get_presigned_url(&state, key, 3600).await {
             file_urls.insert("pic".to_string(), url);
+            file_urls.insert("pic_srcset".to_string(), crate::thumbs::srcset(&state, key));
         }
     }
     // Expose the untouched original image separately (for overlay editor)
@@ -602,19 +610,23 @@ pub async fn api_artist_detail(
         shows: {
             let mut show_briefs = Vec::new();
             for s in shows {
+                let cover_key = format!("shows/{}/cover.png", s.id);
                 let cover_url = if s.cover_generated_at.is_some() {
-                    let cover_key = format!("shows/{}/cover.png", s.id);
                     storage::get_presigned_url(&state, &cover_key, 3600)
                         .await
                         .ok()
                 } else {
                     None
                 };
+                let cover_srcset = cover_url
+                    .as_ref()
+                    .map(|_| crate::thumbs::srcset(&state, &cover_key));
                 show_briefs.push(ShowBrief {
                     id: s.id,
                     title: s.title,
                     date: s.date,
                     cover_url,
+                    cover_srcset,
                     cover_generated_at: s.cover_generated_at,
                 });
             }
@@ -1994,6 +2006,8 @@ pub struct ShowDetailResponse {
     available_artists: Vec<ArtistWithPronouns>,
     artists_left: i32,
     cover_url: Option<String>,
+    /// Small copies of the cover, see `thumbs::srcset`.
+    cover_srcset: Option<String>,
     collage_url: Option<String>,
     cover_generated_at: Option<String>,
     active_overlay_preset_id: Option<i64>,
@@ -2020,9 +2034,19 @@ pub struct ShowDetailResponse {
     stream_mode: Option<String>,
     /// The user who created the show (may differ from the assigned host).
     created_by: Option<i64>,
+    /// Who hosts this episode: the Show's owner and co-hosts, then the
+    /// episode's own co-hosts.
+    hosts: Vec<hosts::Host>,
+    /// The viewer may edit this episode and go live with it (one of its hosts
+    /// or an admin).
+    can_edit: bool,
+    /// The viewer may also cancel it and change who hosts it (not an episode
+    /// co-host).
+    can_manage: bool,
     /// The most recent live-stream recording (from `recording_versions`), distinct
     /// from the manual `recording_*`/`prerecorded_*` uploads above. `None` when the
-    /// show was never recorded. See [`LatestRecordingInfo`].
+    /// show was never recorded. See [`LatestRecordingInfo`]. With several parts,
+    /// its length and download are those of the joined file.
     latest_recording: Option<LatestRecordingInfo>,
     /// The Show (series) this episode belongs to, if linked.
     series_slug: Option<String>,
@@ -2030,6 +2054,7 @@ pub struct ShowDetailResponse {
     /// The Show's description and cover, for hosts who view another host's episode.
     series_description: Option<String>,
     series_cover_url: Option<String>,
+    series_cover_srcset: Option<String>,
     /// "upcoming" | "wrapup_open" | "finished", the same rule as the Show page.
     episode_status: crate::series::EpisodeStatus,
     /// "Upcoming" | "Finished · wrap-up open" | "Finished"
@@ -2046,6 +2071,34 @@ pub struct ShowDetailResponse {
     /// Whether the live broadcast the host ended with End Episode was
     /// recorded. None until one ended.
     live_recorded: Option<bool>,
+    /// What the host's browser saved in the Studio (`soundcheck`, at Go Live)
+    /// and the live panel (`on_air`, every 15 s while on air). See `studio_log`.
+    studio_log: Option<serde_json::Value>,
+    /// Listener counts the server took while this episode was on air, oldest first.
+    listener_samples: Vec<crate::studio_log::ListenerSample>,
+    /// Recording editor: `draft` | `rendering` | `done` | `failed`; None without an edit.
+    recording_edit_status: Option<String>,
+    /// When the current edited file was rendered.
+    recording_edited_at: Option<String>,
+    /// Presigned edited file, what "Upload to SoundCloud" sends.
+    edited_recording_url: Option<String>,
+    /// Length of the current edited file in seconds (end − start of its edit).
+    recording_edited_seconds: Option<f64>,
+    /// The file picked for SoundCloud: "show" (recorded on air) or "own".
+    /// The edit fields above describe this file.
+    recording_source: crate::recording_edit::Source,
+    /// The picked file as SoundCloud gets it (its current edit, else the
+    /// file), as a 24 h download link.
+    recording_download_url: Option<String>,
+    /// The picked file without its edit; only set when a current edit exists.
+    recording_original_download_url: Option<String>,
+    /// The file the SoundCloud track was made from: "show" | "own".
+    soundcloud_source: Option<String>,
+    /// Whether the SoundCloud track was a rendered edit.
+    soundcloud_edited: bool,
+    /// Whether the SoundCloud track is what an upload would send now. None
+    /// without a track, or when the sent file is not known.
+    soundcloud_current: Option<bool>,
 }
 
 /// The most recent live-stream recording for a show, surfaced on the detail page so
@@ -2097,6 +2150,8 @@ pub struct AssignedArtistInfo {
     name: String,
     pronouns: String,
     pic_url: Option<String>,
+    /// Small copies of the picture, see `thumbs::srcset`.
+    pic_srcset: Option<String>,
     voice_url: Option<String>,
     track1_url: Option<String>,
     track2_url: Option<String>,
@@ -2616,6 +2671,8 @@ pub async fn api_show_detail(
         .await?;
 
     let show = show.ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+    let access = hosts::episode_access(&state.db, &viewer, &show).await?;
+    let episode_hosts = hosts::episode_hosts(&state.db, &show).await?;
 
     // Get assigned artists with file keys for URL generation and audio availability
     let assigned_artists_raw: Vec<ArtistWithFileKeys> = sqlx::query_as(
@@ -2645,6 +2702,7 @@ pub async fn api_show_detail(
         } else {
             None
         };
+        let pic_srcset = pic_key.map(|key| crate::thumbs::srcset(&state, key));
         let voice_url = if let Some(key) = &a.voice_message_key {
             storage::get_presigned_url(&state, key, 3600).await.ok()
         } else {
@@ -2691,6 +2749,7 @@ pub async fn api_show_detail(
             pronouns: a.pronouns,
             has_pic: pic_key.is_some(),
             pic_url,
+            pic_srcset,
             voice_url,
             track1_url,
             track2_url,
@@ -2769,14 +2828,17 @@ pub async fn api_show_detail(
     };
 
     // Only return cover URL if cover was actually generated
+    let cover_key = format!("shows/{}/cover.png", id);
     let cover_url = if show.cover_generated_at.is_some() {
-        let cover_key = format!("shows/{}/cover.png", id);
         storage::get_presigned_url(&state, &cover_key, 3600)
             .await
             .ok()
     } else {
         None
     };
+    let cover_srcset = cover_url
+        .as_ref()
+        .map(|_| crate::thumbs::srcset(&state, &cover_key));
 
     // Presigned URL for the plain collage (may not exist for legacy shows)
     let collage_url = if show.cover_generated_at.is_some() {
@@ -2819,7 +2881,7 @@ pub async fn api_show_detail(
     // above): surfaced so the show page can show capture status and a download. The
     // download comes from the finalized mp3 when present, else the auto-published
     // archive mp3 (a different bucket). A load failure must not break the page.
-    let latest_recording = match crate::db::get_latest_recording_version(&state.db, id).await {
+    let mut latest_recording = match crate::db::get_latest_recording_version(&state.db, id).await {
         Ok(Some(v)) => {
             let download_url = match recording_download(&v) {
                 Some((RecordingBucket::Default, key)) => {
@@ -2853,13 +2915,71 @@ pub async fn api_show_detail(
             None
         }
     };
+    // Several parts: the show recording is their joined file, so its length
+    // and download replace the latest part's.
+    if let Some(info) = latest_recording.as_mut() {
+        match crate::recording_edit::joined_show_file(&state, id).await {
+            Ok(Some(joined)) => {
+                info.duration_ms = joined.duration_ms;
+                info.download_url = storage::get_presigned_url(&state, &joined.key, 3600 * 24)
+                    .await
+                    .ok();
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!("Failed to load the joined recording for show {id}: {e}"),
+        }
+    }
+
+    // The recording editor's state. A load failure must not break the page.
+    let edit = match crate::recording_edit::view(&state, &show).await {
+        Ok(edit) if edit.status != "none" => Some(edit),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::error!("Failed to load the recording edit for show {}: {e}", id);
+            None
+        }
+    };
+
+    // The picked file as SoundCloud gets it. A failure must not break the page.
+    let recording_source = crate::recording_edit::picked_source(&show);
+    let upload = match crate::recording_edit::upload_source(&state, &show).await {
+        Ok(upload) => Some(upload),
+        Err(e) => {
+            tracing::error!("Failed to load the upload file for show {}: {e}", id);
+            None
+        }
+    };
+    let soundcloud_current = match (&show.soundcloud_track_id, &show.soundcloud_source_key) {
+        (Some(_), Some(sent)) => upload
+            .as_ref()
+            .map(|now| now.as_ref().is_some_and(|u| &u.file.key == sent)),
+        _ => None,
+    };
+    let (mut recording_download_url, mut recording_original_download_url) = (None, None);
+    if let Some(Some(upload)) = &upload {
+        let file = &upload.file;
+        recording_download_url =
+            storage::get_download_url(&state, &file.bucket, &file.key, &file.filename, 3600 * 24)
+                .await
+                .ok();
+        if upload.edited {
+            if let Ok(Some(f)) =
+                crate::recording_edit::resolve_file(&state, &show, upload.source).await
+            {
+                recording_original_download_url =
+                    storage::get_download_url(&state, &f.bucket, &f.key, &f.filename, 3600 * 24)
+                        .await
+                        .ok();
+            }
+        }
+    }
 
     // Episode view of the host flow: its Show, status and set length.
     let view: EpisodeViewRow = sqlx::query_as(
         "SELECT t.slug AS series_slug, t.name AS series_name, t.end_time AS rhythm_end, \
                 t.description AS series_description, t.cover_key AS series_cover_key, \
                 s.wrapup_published_at, s.prerecorded_duration_secs, s.live_ended_at, \
-                s.live_recorded \
+                s.live_recorded, s.studio_log \
          FROM shows s LEFT JOIN show_templates t ON t.id = s.template_id WHERE s.id = ?",
     )
     .bind(id)
@@ -2885,6 +3005,10 @@ pub async fn api_show_detail(
         Some(key) => storage::get_presigned_url(&state, key, 3600).await.ok(),
         None => None,
     };
+    let series_cover_srcset = view
+        .series_cover_key
+        .as_deref()
+        .map(|key| crate::thumbs::srcset(&state, key));
 
     Ok(Json(ShowDetailResponse {
         id: show.id,
@@ -2902,6 +3026,7 @@ pub async fn api_show_detail(
         available_artists,
         artists_left,
         cover_url,
+        cover_srcset,
         collage_url,
         cover_generated_at: show.cover_generated_at,
         active_overlay_preset_id: show.active_overlay_preset_id,
@@ -2924,17 +3049,33 @@ pub async fn api_show_detail(
         available_hosts,
         stream_mode: show.stream_mode,
         created_by: show.created_by,
+        hosts: episode_hosts,
+        can_edit: access.is_some(),
+        can_manage: access == Some(hosts::EpisodeAccess::Manage),
         latest_recording,
         series_slug: view.series_slug,
         series_name: view.series_name,
         series_description: view.series_description,
         series_cover_url,
+        series_cover_srcset,
         episode_status,
         episode_status_label: episode_status.label(),
         on_air,
         prerecorded_duration_secs: view.prerecorded_duration_secs,
         live_ended_at: view.live_ended_at,
         live_recorded: view.live_recorded,
+        studio_log: crate::studio_log::parse(view.studio_log.as_deref()),
+        listener_samples: crate::studio_log::listener_samples(&state.db, id).await?,
+        recording_edited_at: edit.as_ref().and_then(|e| e.rendered_at.clone()),
+        edited_recording_url: edit.as_ref().and_then(|e| e.edited_url.clone()),
+        recording_edited_seconds: edit.as_ref().and_then(|e| e.edited_seconds),
+        recording_edit_status: edit.map(|e| e.status),
+        recording_source,
+        recording_download_url,
+        recording_original_download_url,
+        soundcloud_source: show.soundcloud_source,
+        soundcloud_edited: show.soundcloud_edited.unwrap_or(false),
+        soundcloud_current,
     }))
 }
 
@@ -2950,27 +3091,175 @@ struct EpisodeViewRow {
     prerecorded_duration_secs: Option<i64>,
     live_ended_at: Option<String>,
     live_recorded: Option<bool>,
+    studio_log: Option<String>,
 }
 
-/// Whether two same-day time windows clash. Times are zero-padded "HH:MM", so
-/// lexical comparison matches chronological order. A missing end is treated as a
-/// zero-length point at its start; identical starts always clash (catches the
-/// "two shows booked at the same time" case even when end times are absent).
-pub(crate) fn time_windows_overlap(
-    start_a: &str,
-    end_a: Option<&str>,
-    start_b: &str,
-    end_b: Option<&str>,
+/// A show's time window in local (Berlin) wall-clock time. An end at or
+/// before the start is on the next day, as the scheduler reads it; a missing
+/// end makes the window a point at its start. `None` for a bad date or time.
+pub(crate) fn show_window(
+    date: &str,
+    start_time: &str,
+    end_time: Option<&str>,
+) -> Option<(chrono::NaiveDateTime, chrono::NaiveDateTime)> {
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    let start = crate::series::parse_hhmm(start_time)?;
+    let from = day.and_time(start);
+    let to = match end_time.and_then(crate::series::parse_hhmm) {
+        Some(end) if end > start => day.and_time(end),
+        Some(end) => day.succ_opt()?.and_time(end),
+        None => from,
+    };
+    Some((from, to))
+}
+
+/// Whether two show windows clash: half-open overlap, and equal starts always
+/// clash (two shows booked at the same time, also without end times).
+pub(crate) fn windows_overlap(
+    a: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    b: (chrono::NaiveDateTime, chrono::NaiveDateTime),
 ) -> bool {
-    let end_a = end_a.unwrap_or(start_a);
-    let end_b = end_b.unwrap_or(start_b);
-    // Half-open overlap [start, end), plus an explicit equal-start collision.
-    (start_a < end_b && start_b < end_a) || start_a == start_b
+    (a.0 < b.1 && b.0 < a.1) || a.0 == b.0
 }
 
-/// Reject if the proposed window overlaps another show on the same date.
-/// `exclude_id` skips the show being edited (so it never clashes with itself).
-/// No start time → nothing to check (the window is undefined).
+/// The shortest and the longest show a host can book or set as a rhythm.
+pub(crate) const MIN_SHOW_MINUTES: i64 = 15;
+pub(crate) const MAX_SHOW_HOURS: i64 = 12;
+
+/// Start and end as "HH:MM". An end at or before the start is on the next
+/// day, so a show can pass midnight. It runs 15 minutes to 12 hours.
+pub(crate) fn check_show_times(start_time: &str, end_time: &str) -> Result<()> {
+    let (Some(start), Some(end)) = (
+        crate::series::parse_hhmm(start_time),
+        crate::series::parse_hhmm(end_time),
+    ) else {
+        return Err(AppError::BadRequest(
+            "Start and end time must be HH:MM".to_string(),
+        ));
+    };
+    let mut length = end - start;
+    if length <= chrono::Duration::zero() {
+        length += chrono::Duration::days(1);
+    }
+    if length < chrono::Duration::minutes(MIN_SHOW_MINUTES) {
+        return Err(AppError::BadRequest(
+            "The end must be at least 15 minutes after the start".to_string(),
+        ));
+    }
+    if length > chrono::Duration::hours(MAX_SHOW_HOURS) {
+        return Err(AppError::BadRequest(
+            "A show can be 12 h at most".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// A booked show with a start time, as the clash checks read it.
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct BookedShow {
+    pub id: i64,
+    pub title: String,
+    pub date: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+}
+
+/// Every other show whose window clashes with `window`. It looks at the day
+/// before (an overnight show reaches into `date`), `date` and the day after
+/// (this window may pass midnight). `exclude_id` skips the show being edited.
+pub(crate) async fn clashing_shows(
+    state: &AppState,
+    date: chrono::NaiveDate,
+    window: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    exclude_id: Option<i64>,
+) -> Result<Vec<BookedShow>> {
+    let day = |d: Option<chrono::NaiveDate>| d.unwrap_or(date).format("%Y-%m-%d").to_string();
+    let others: Vec<BookedShow> = sqlx::query_as(
+        "SELECT id, title, date, start_time, end_time FROM shows \
+         WHERE date BETWEEN ? AND ? AND id != ? AND start_time IS NOT NULL",
+    )
+    .bind(day(date.pred_opt()))
+    .bind(day(date.succ_opt()))
+    .bind(exclude_id.unwrap_or(-1))
+    .fetch_all(&state.db)
+    .await?;
+    Ok(others
+        .into_iter()
+        .filter(|other| {
+            show_window(&other.date, &other.start_time, other.end_time.as_deref())
+                .is_some_and(|w| windows_overlap(window, w))
+        })
+        .collect())
+}
+
+/// The first other show whose window clashes with `window` (title, date).
+/// See [`clashing_shows`].
+pub(crate) async fn clashing_show(
+    state: &AppState,
+    date: chrono::NaiveDate,
+    window: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    exclude_id: Option<i64>,
+) -> Result<Option<(String, String)>> {
+    Ok(clashing_shows(state, date, window, exclude_id)
+        .await?
+        .into_iter()
+        .next()
+        .map(|show| (show.title, show.date)))
+}
+
+/// Book Slot may book over a show that started at least this long ago and
+/// has not been on air for this long: it was booked, but nobody came.
+pub(crate) const TAKE_OVER_IDLE_MINUTES: i64 = 10;
+
+/// The scheduler loop (every 30 s): note the episode on air in
+/// `shows.on_air_at`, so [`can_take_over`] knows when it was last on air,
+/// with or without listeners.
+pub(crate) async fn note_on_air(state: &AppState, now: chrono::DateTime<chrono::Utc>) {
+    let Some(show_id) = super::series::on_air_show_id(state).await else {
+        return;
+    };
+    let result = sqlx::query("UPDATE shows SET on_air_at = ? WHERE id = ?")
+        .bind(now.to_rfc3339())
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+    if let Err(e) = result {
+        tracing::warn!("Could not note show {show_id} as on air: {e}");
+    }
+}
+
+/// Whether another host may book over this show: it started at least
+/// [`TAKE_OVER_IDLE_MINUTES`] ago, it is not on air (a dropped stream counts
+/// as on air for the reconnect grace), and it was not on air in that time
+/// (`on_air_at`, see [`note_on_air`]).
+pub(crate) async fn can_take_over(
+    state: &AppState,
+    show_id: i64,
+    date: &str,
+    start_time: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    let idle_since = now - chrono::Duration::minutes(TAKE_OVER_IDLE_MINUTES);
+    if crate::scheduler::show_start_utc(date, start_time).is_none_or(|start| start > idle_since) {
+        return Ok(false);
+    }
+    if super::series::on_air_show_id(state).await == Some(show_id) {
+        return Ok(false);
+    }
+    let on_air_at: Option<String> = sqlx::query_scalar("SELECT on_air_at FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
+    let on_air_lately = on_air_at
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok())
+        .is_some_and(|at| at > idle_since);
+    Ok(!on_air_lately)
+}
+
+/// Reject if the proposed window overlaps another show, also one that passes
+/// midnight. `exclude_id` skips the show being edited (so it never clashes
+/// with itself). No start time or a bad date → nothing to check.
 pub(crate) async fn ensure_no_show_conflict(
     state: &AppState,
     date: &str,
@@ -2981,25 +3270,69 @@ pub(crate) async fn ensure_no_show_conflict(
     let Some(start) = start_time else {
         return Ok(());
     };
-
-    let others: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT title, start_time, end_time FROM shows \
-         WHERE date = ? AND id != ? AND start_time IS NOT NULL",
-    )
-    .bind(date)
-    .bind(exclude_id.unwrap_or(-1))
-    .fetch_all(&state.db)
-    .await?;
-
-    for (title, other_start, other_end) in others {
-        if time_windows_overlap(start, end_time, &other_start, other_end.as_deref()) {
-            return Err(AppError::Conflict(format!(
-                "This time overlaps an existing show \"{}\" on {}",
-                title, date
-            )));
-        }
+    let (Ok(day), Some(window)) = (
+        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+        show_window(date, start, end_time),
+    ) else {
+        return Ok(());
+    };
+    if let Some((title, other_date)) = clashing_show(state, day, window, exclude_id).await? {
+        return Err(AppError::Conflict(format!(
+            "This time overlaps an existing show \"{}\" on {}",
+            title, other_date
+        )));
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BookedTimesQuery {
+    from: String,
+    to: String,
+}
+
+/// The longest range `GET /api/booked-times` answers.
+const BOOKED_TIMES_MAX_DAYS: i64 = 62;
+
+/// GET /api/booked-times?from=YYYY-MM-DD&to=YYYY-MM-DD — the date, start and
+/// end of every booked show from the day before `from` (an overnight show
+/// reaches into `from`) to `to`, so Book Slot can mark taken times. Times
+/// only, no names. `take_over` marks a show another host may book over
+/// ([`can_take_over`]). Hosts and admins.
+pub async fn api_booked_times(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<BookedTimesQuery>,
+) -> Result<impl IntoResponse> {
+    require_show_creator(&state, &headers).await?;
+    let parse = |v: &str| {
+        chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d")
+            .map_err(|_| AppError::BadRequest("from and to must be YYYY-MM-DD".to_string()))
+    };
+    let (from, to) = (parse(&query.from)?, parse(&query.to)?);
+    if to < from || (to - from).num_days() > BOOKED_TIMES_MAX_DAYS {
+        return Err(AppError::BadRequest(format!(
+            "to must be after from, at most {BOOKED_TIMES_MAX_DAYS} days"
+        )));
+    }
+    let first = from.pred_opt().unwrap_or(from);
+    let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, date, start_time, end_time FROM shows \
+         WHERE date BETWEEN ? AND ? AND start_time IS NOT NULL ORDER BY date, start_time",
+    )
+    .bind(first.format("%Y-%m-%d").to_string())
+    .bind(to.format("%Y-%m-%d").to_string())
+    .fetch_all(&state.db)
+    .await?;
+    let now = chrono::Utc::now();
+    let mut times = Vec::with_capacity(rows.len());
+    for (id, date, start_time, end_time) in rows {
+        let take_over = can_take_over(&state, id, &date, &start_time, now).await?;
+        times.push(serde_json::json!({
+            "date": date, "start_time": start_time, "end_time": end_time, "take_over": take_over,
+        }));
+    }
+    Ok(Json(serde_json::json!({ "times": times })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -3470,8 +3803,9 @@ pub async fn api_delete_show(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    // Admins (any show), or the host/creator of this show, may delete it.
-    require_show_editor(&state, &headers, id).await?;
+    // Admins (any show), or the host/creator of this show, may delete it;
+    // an episode co-host may not.
+    require_show_manager(&state, &headers, id).await?;
 
     // Delete the show from database
     sqlx::query("DELETE FROM shows WHERE id = ?")
@@ -3657,6 +3991,10 @@ pub async fn api_show_assign_artist(
         name: artist.name,
         pronouns: artist.pronouns,
         pic_url,
+        pic_srcset: artist
+            .pic_cropped_key
+            .as_deref()
+            .map(|key| crate::thumbs::srcset(&state, key)),
         voice_url,
         track1_url,
         track2_url,
@@ -3727,7 +4065,7 @@ pub async fn api_show_assign_host(
     Json(req): Json<AssignHostRequest>,
 ) -> Result<impl IntoResponse> {
     // Admins, or the show's creator, may (re)assign the host.
-    let (editor, show) = require_show_editor(&state, &headers, show_id).await?;
+    let (editor, show) = require_show_manager(&state, &headers, show_id).await?;
     let editor_is_admin = editor.role_enum().can_access_admin();
 
     if show.show_type == "unheard" {
@@ -3782,7 +4120,7 @@ pub async fn api_show_unassign_host(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     // Admins or the show's creator may clear the host.
-    require_show_editor(&state, &headers, show_id).await?;
+    require_show_manager(&state, &headers, show_id).await?;
 
     sqlx::query("UPDATE shows SET host_user_id = NULL, updated_at = datetime('now') WHERE id = ?")
         .bind(show_id)
@@ -4047,10 +4385,18 @@ pub async fn api_delete_user(
         }
     }
 
-    sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    if let crate::db::UserDeletion::OwnsSeries(series) =
+        crate::db::delete_user(&state.db, id).await?
+    {
+        let names = series
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AppError::Conflict(format!(
+            "This user owns the series {names}. Delete the series first."
+        )));
+    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -4248,6 +4594,7 @@ pub async fn api_upload_show_recording(
 ) -> Result<impl IntoResponse> {
     // The show's host (or its creator, or an admin) may upload its recording.
     let (user, show) = require_show_editor(&state, &headers, id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::RecordingUpload);
 
     // Process uploaded file
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
@@ -4321,13 +4668,16 @@ pub async fn api_upload_show_recording(
         tracing::debug!("Uploaded recording peaks at {}", peaks_key);
     }
 
-    // Save recording_key and original filename in the database
-    sqlx::query("UPDATE shows SET recording_key = ?, recording_filename = ? WHERE id = ?")
-        .bind(&key)
-        .bind(&filename)
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    // Save recording_key and original filename; uploading picks the own file.
+    sqlx::query(
+        "UPDATE shows SET recording_key = ?, recording_filename = ?, recording_source = 'own' \
+         WHERE id = ?",
+    )
+    .bind(&key)
+    .bind(&filename)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     // Auto-upload to SoundCloud in background (fire-and-forget). Only for an
     // admin upload: the host page has its own Upload to SoundCloud button, and
@@ -4444,11 +4794,14 @@ pub async fn api_delete_show_recording(
         .send()
         .await;
 
-    // Clear recording_key and recording_filename in the database
-    sqlx::query("UPDATE shows SET recording_key = NULL, recording_filename = NULL WHERE id = ?")
-        .bind(id)
-        .execute(&state.db)
-        .await?;
+    // Clear the own file; the show recording is picked again.
+    sqlx::query(
+        "UPDATE shows SET recording_key = NULL, recording_filename = NULL, \
+             recording_source = NULL WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await?;
 
     tracing::info!("Deleted recording for show {}: {}", id, recording_key);
 
@@ -4595,6 +4948,8 @@ pub struct RecordingArtistInfo {
     pub name: String,
     pub pronouns: String,
     pub pic_url: Option<String>,
+    /// Small copies of the picture, see `thumbs::srcset`.
+    pub pic_srcset: Option<String>,
     pub voice_url: Option<String>,
     pub voice_key: Option<String>,
     pub track1_url: Option<String>,
@@ -4669,6 +5024,10 @@ pub async fn api_show_with_artists(
         } else {
             None
         };
+        let pic_srcset = a
+            .pic_key
+            .as_deref()
+            .map(|key| crate::thumbs::srcset(&state, key));
         let voice_url = if let Some(key) = &a.voice_message_key {
             storage::get_presigned_url(&state, key, 3600).await.ok()
         } else {
@@ -4689,6 +5048,7 @@ pub async fn api_show_with_artists(
             name: a.name,
             pronouns: a.pronouns,
             pic_url,
+            pic_srcset,
             voice_url,
             voice_key: a.voice_message_key.clone(),
             track1_url,
@@ -5074,6 +5434,7 @@ pub async fn api_my_show_upload(
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
 
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
 
@@ -5293,6 +5654,7 @@ pub async fn api_my_show_upload_finalize(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
 
     tracing::info!(
         "Prerecorded upload finalize for session_id={}, show_id={}",
@@ -5613,9 +5975,10 @@ pub async fn start_prerecorded_show_stream(
         return Err(e);
     }
 
-    // The episode's on-air story, if its host left it on.
+    // The episode's Telegram on-air message and on-air story, if set up.
     let (state, show_id) = (state.clone(), show.id);
     tokio::spawn(async move {
+        crate::telegram_onair::on_air(&state, show_id, chrono::Utc::now()).await;
         crate::announcement_send::announce_on_air(&state, show_id, chrono::Utc::now()).await
     });
 
@@ -5867,15 +6230,13 @@ pub async fn require_show_creator(
     Ok(user)
 }
 
-/// Require a user allowed to EDIT a specific show: admins/superadmins (any show),
-/// the host assigned to this show, or the user who created it. The creator is
-/// included so a host who hands the show to a guest keeps control of it.
-/// Returns the authenticated user and the loaded show so the caller can reuse it.
-pub async fn require_show_editor(
+/// The signed-in user, the show and what the user may do on it
+/// (`hosts::episode_access`). 403 when they do not host it.
+pub(super) async fn require_episode_access(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     show_id: i64,
-) -> Result<(models::User, models::Show)> {
+) -> Result<(models::User, models::Show, hosts::EpisodeAccess)> {
     let token = auth::get_session_from_headers(headers);
     let user = auth::get_current_user(state, token.as_deref())
         .await
@@ -5887,22 +6248,48 @@ pub async fn require_show_editor(
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    let is_admin = user.role_enum().can_access_admin();
-    let is_host = show.host_user_id == Some(user.id);
-    let is_creator = show.created_by == Some(user.id);
-    if !is_admin && !is_host && !is_creator {
+    let access = hosts::episode_access(&state.db, &user, &show)
+        .await?
+        .ok_or_else(|| {
+            AppError::Forbidden("You can only edit shows you host or created".to_string())
+        })?;
+    Ok((user, show, access))
+}
+
+/// Require a user allowed to EDIT a specific show: admins/superadmins (any
+/// show), its hosts (the assigned host, the Show's owner and co-hosts, episode
+/// co-hosts), or the creator of a show without a Show. Returns the
+/// authenticated user and the loaded show so the caller can reuse it.
+pub async fn require_show_editor(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    show_id: i64,
+) -> Result<(models::User, models::Show)> {
+    let (user, show, _) = require_episode_access(state, headers, show_id).await?;
+    Ok((user, show))
+}
+
+/// Like [`require_show_editor`], but for cancelling or deleting the show and
+/// changing who hosts it: an episode co-host gets 403.
+pub async fn require_show_manager(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    show_id: i64,
+) -> Result<(models::User, models::Show)> {
+    let (user, show, access) = require_episode_access(state, headers, show_id).await?;
+    if access != hosts::EpisodeAccess::Manage {
         return Err(AppError::Forbidden(
-            "You can only edit shows you host or created".to_string(),
+            "Only the Show's owner and co-hosts can do this".to_string(),
         ));
     }
-
     Ok((user, show))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_prerecorded_start, occurrence_outcome, time_windows_overlap, OccurrenceOutcome,
+        check_show_times, claim_prerecorded_start, occurrence_outcome, show_window,
+        windows_overlap, OccurrenceOutcome,
     };
     use crate::AppError;
 
@@ -5960,59 +6347,91 @@ mod tests {
         assert!(!claim_prerecorded_start(&pool, 999).await.unwrap());
     }
 
+    /// Two windows on one date, as the old same-day check compared them.
+    fn same_day(start_a: &str, end_a: Option<&str>, start_b: &str, end_b: Option<&str>) -> bool {
+        let window = |start, end| show_window("2026-11-28", start, end).unwrap();
+        windows_overlap(window(start_a, end_a), window(start_b, end_b))
+    }
+
     #[test]
     fn distinct_windows_do_not_overlap() {
         // 20:00–22:00 vs 22:00–23:00: touch at the boundary, half-open → no clash.
-        assert!(!time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "22:00",
-            Some("23:00")
-        ));
+        assert!(!same_day("20:00", Some("22:00"), "22:00", Some("23:00")));
         // Fully separate.
-        assert!(!time_windows_overlap(
-            "18:00",
-            Some("19:00"),
-            "20:00",
-            Some("21:00")
-        ));
+        assert!(!same_day("18:00", Some("19:00"), "20:00", Some("21:00")));
     }
 
     #[test]
     fn partially_overlapping_windows_clash() {
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "21:00",
-            Some("23:00")
-        ));
+        assert!(same_day("20:00", Some("22:00"), "21:00", Some("23:00")));
         // Containment.
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("23:00"),
-            "21:00",
-            Some("22:00")
-        ));
+        assert!(same_day("20:00", Some("23:00"), "21:00", Some("22:00")));
     }
 
     #[test]
     fn identical_start_always_clashes() {
         // Same start, even with no end times recorded.
-        assert!(time_windows_overlap("20:00", None, "20:00", None));
-        assert!(time_windows_overlap(
-            "20:00",
-            Some("22:00"),
-            "20:00",
-            Some("21:00")
-        ));
+        assert!(same_day("20:00", None, "20:00", None));
+        assert!(same_day("20:00", Some("22:00"), "20:00", Some("21:00")));
     }
 
     #[test]
     fn missing_end_is_a_point_inside_another_window() {
         // A start-only show at 21:00 falls inside 20:00–22:00.
-        assert!(time_windows_overlap("21:00", None, "20:00", Some("22:00")));
+        assert!(same_day("21:00", None, "20:00", Some("22:00")));
         // ...but a point at 22:00 is outside the half-open [20:00, 22:00).
-        assert!(!time_windows_overlap("22:00", None, "20:00", Some("22:00")));
+        assert!(!same_day("22:00", None, "20:00", Some("22:00")));
+    }
+
+    #[test]
+    fn an_end_before_the_start_is_on_the_next_day() {
+        let (from, to) = show_window("2026-11-28", "23:00", Some("01:00")).unwrap();
+        assert_eq!(from.to_string(), "2026-11-28 23:00:00");
+        assert_eq!(to.to_string(), "2026-11-29 01:00:00");
+        // Over the year end too.
+        let (_, to) = show_window("2026-12-31", "22:00", Some("00:30")).unwrap();
+        assert_eq!(to.to_string(), "2027-01-01 00:30:00");
+        assert!(show_window("2026-11-28", "8:00", Some("10:00")).is_none());
+        assert!(show_window("soon", "20:00", Some("22:00")).is_none());
+    }
+
+    #[test]
+    fn overnight_windows_clash_with_the_next_day() {
+        let sat = show_window("2026-11-28", "23:00", Some("01:00")).unwrap();
+        // Sunday 00:30–02:00 starts inside Saturday's show.
+        let sun = show_window("2026-11-29", "00:30", Some("02:00")).unwrap();
+        assert!(windows_overlap(sat, sun));
+        assert!(windows_overlap(sun, sat));
+        // Sunday 01:00 starts when Saturday's show ends: no clash.
+        let after = show_window("2026-11-29", "01:00", Some("03:00")).unwrap();
+        assert!(!windows_overlap(sat, after));
+        // Saturday 21:00–23:00 ends when the overnight show starts.
+        let before = show_window("2026-11-28", "21:00", Some("23:00")).unwrap();
+        assert!(!windows_overlap(sat, before));
+    }
+
+    #[test]
+    fn show_times_pass_midnight_and_run_15_minutes_to_12_hours() {
+        for (start, end) in [
+            ("20:00", "22:00"),
+            ("23:00", "01:00"),
+            ("22:13", "00:13"),
+            ("18:00", "06:00"),
+        ] {
+            assert!(check_show_times(start, end).is_ok(), "{start}–{end}");
+        }
+        let message = |start, end| match check_show_times(start, end) {
+            Err(AppError::BadRequest(m)) => m,
+            other => panic!("{start}–{end}: {other:?}"),
+        };
+        assert_eq!(
+            message("20:00", "20:10"),
+            "The end must be at least 15 minutes after the start"
+        );
+        assert_eq!(message("18:00", "06:15"), "A show can be 12 h at most");
+        // Same start and end = 24 h.
+        assert_eq!(message("20:00", "20:00"), "A show can be 12 h at most");
+        assert_eq!(message("8:00", "10:00"), "Start and end time must be HH:MM");
     }
 
     fn recording_version(

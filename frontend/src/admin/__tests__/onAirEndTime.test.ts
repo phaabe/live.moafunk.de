@@ -12,11 +12,19 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-for (const path of ['@admin/components/LiveChatCard.vue', '@admin/components/DbMeter.vue']) {
+for (const path of [
+  '@admin/components/LiveChatCard.vue',
+  '@admin/components/DbMeter.vue',
+  '@admin/components/live-panel/LiveAudioCard.vue',
+  '@admin/components/live-panel/LiveConnectionCard.vue',
+  '@admin/components/live-panel/LiveListenersCard.vue',
+  '@admin/components/live-panel/LiveMomentsCard.vue',
+]) {
   vi.doMock(path, () => ({ default: { render: () => null } }));
 }
 
 vi.mock('@admin/api', () => ({
+  showsApi: { saveStudioLog: vi.fn(() => Promise.resolve()) },
   streamApi: {
     stop: mocks.streamStop,
     metrics: vi.fn(() => Promise.resolve({ online: true, total_listeners: 3, mounts: [] })),
@@ -49,6 +57,11 @@ vi.mock('@admin/composables', () => ({
     mocks.capture = {
       mediaStream: ref(null),
       processedStream: ref(null),
+      analyserNode: ref(null),
+      devices: ref([]),
+      selectedDeviceId: ref(''),
+      inputVolume: ref(1),
+      setInputVolume: vi.fn(),
       streamBitsPerSecond: ref(128000),
       setOnError: vi.fn(),
       stopCapture: vi.fn(),
@@ -60,8 +73,20 @@ vi.mock('@admin/composables', () => ({
     mocks.socket = { state: ref('live'), audioDropped: ref(false), stopStream: vi.fn() };
     return mocks.socket;
   },
-  useUploadHealth: () => ({ bufferSeconds: ref(0), ticks: ref(0), verdict: ref('good') }),
+  useUploadHealth: () => ({
+    uploadKbps: ref(150),
+    bufferSeconds: ref(0),
+    rttMs: ref(40),
+    history: ref([]),
+    ticks: ref(0),
+    verdict: ref('good'),
+  }),
   useAutoBitrate: vi.fn(),
+  // The live session (#1063) takes the callbacks and checks the stream's show.
+  ownStreamCallbacks: vi.fn(),
+  ownCaptureCallbacks: vi.fn(),
+  streamShowId: () => 7,
+  DEVICE_ENDED_MESSAGE: 'Audio device is no longer active. Re-select your device.',
 }));
 
 let app: App | null = null;
@@ -104,6 +129,27 @@ describe('On Air at the end time', () => {
     expect(mocks.capture?.stopCapture).not.toHaveBeenCalled();
     expect(root.textContent).toContain('On air · 00:10:10 · REC');
     expect(root.textContent).toContain('End Episode');
+    // The bar says the slot is over, not that the stream stops.
+    expect(root.querySelector('.bar-alert')!.textContent).toContain('Over by 10:00');
+    expect(root.textContent).toContain('The stream goes on until you end the episode.');
+  });
+
+  it('warns a live show in the last 5 minutes of its slot', async () => {
+    vi.setSystemTime(new Date('2026-11-15T13:54:50Z'));
+    const { default: StudioOnAir } = await import('../pages/flow/StudioOnAir.vue');
+    await mountPage(StudioOnAir);
+    const bar = root.querySelector('.bar')!;
+    expect(bar.textContent).toContain('ends in 5:10');
+    expect(bar.classList).not.toContain('warn');
+    expect(root.querySelector('.bar-alert')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(bar.classList).toContain('warn');
+    const alert = root.querySelector('.bar-alert')!;
+    expect(alert.getAttribute('role')).toBe('status');
+    expect(alert.textContent).toContain('Ends in 4:50');
+    expect(alert.textContent).toContain('Your slot ends at 14:00. Say goodbye to your listeners.');
+    expect(mocks.socket?.stopStream).not.toHaveBeenCalled();
   });
 
   it('keeps a prerecorded show on air past its end time', async () => {

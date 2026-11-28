@@ -65,7 +65,7 @@ const uploadProgress = ref<UploadProgress | null>(null);
 // Live-specific state
 const liveTestPassed = ref(false);
 const showStarted = ref(false);
-// "Record this show" in the Studio: on unless the host unticks it.
+// Every show is recorded (the Studio has no "Record this show" any more).
 const recordStream = ref(true);
 
 // ─────────────────────────────────────────────────────────────────────────────

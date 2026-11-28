@@ -1285,22 +1285,130 @@ async fn me_reads_the_session() {
     );
 }
 
+/// The show and the artist stay, with the user cleared.
 #[tokio::test]
-#[ignore = "https://github.com/phaabe/live.moafunk.de/issues/926"]
 async fn deleting_a_user_who_hosts_a_show_is_no_database_error() {
     let (state, _temp) = state().await;
     let p = people(&state).await;
     add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    add_artist(&state, 1, Some(p.host)).await;
     let delete = api::api_delete_user(
         State(state.clone()),
         Path(p.host),
         headers(&state, p.admin).await,
     );
-    assert_ne!(status(delete.await), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status(delete.await), OK);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!((show.host_user_id, show.created_by), (None, None));
+    assert_eq!(artist_user(&state, 1).await, None);
+}
+
+/// An expired guest who hosts a show does not keep the other expired user.
+#[tokio::test]
+async fn the_cleanup_deletes_expired_users_who_host_a_show() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.guest), Some(p.host)).await;
+    headers(&state, p.guest).await;
+    sqlx::query("UPDATE users SET expires_at = '2020-01-01' WHERE id IN (?, ?)")
+        .bind(p.guest)
+        .bind(p.other_host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    assert_eq!(db::delete_expired_users(&state.db).await.unwrap(), 2);
+    let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM users ORDER BY id")
+        .fetch_all(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(left, [p.host, p.admin, p.superadmin]);
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
+        .bind(p.guest)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!((show.host_user_id, show.created_by), (None, Some(p.host)));
+}
+
+async fn add_series(state: &Arc<AppState>, owner: i64, name: &str) {
+    sqlx::query("INSERT INTO show_templates (owner_user_id, name) VALUES (?, ?)")
+        .bind(owner)
+        .bind(name)
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+async fn user_ids(state: &Arc<AppState>) -> Vec<i64> {
+    sqlx::query_scalar("SELECT id FROM users ORDER BY id")
+        .fetch_all(&state.db)
+        .await
+        .unwrap()
+}
+
+async fn series_count(state: &Arc<AppState>) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM show_templates")
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+/// A series has no other owner, so its owner is kept and nothing changes.
+#[tokio::test]
+async fn deleting_a_series_owner_is_refused() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_series(&state, p.host, "Late Night").await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    let users = user_ids(&state).await;
+    let delete = api::api_delete_user(
+        State(state.clone()),
+        Path(p.host),
+        headers(&state, p.admin).await,
+    );
+    let (code, body) = reply(delete.await).await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(
+        body["error"],
+        "This user owns the series \"Late Night\". Delete the series first."
+    );
+    assert_eq!(user_ids(&state).await, users);
+    assert_eq!(series_count(&state).await, 1);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!(
+        (show.host_user_id, show.created_by),
+        (Some(p.host), Some(p.host))
+    );
+}
+
+/// The cleanup keeps an expired series owner and deletes the other user.
+#[tokio::test]
+async fn the_cleanup_keeps_an_expired_series_owner() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_series(&state, p.host, "Late Night").await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    sqlx::query("UPDATE users SET expires_at = '2020-01-01' WHERE id IN (?, ?)")
+        .bind(p.host)
+        .bind(p.other_host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    assert_eq!(db::delete_expired_users(&state.db).await.unwrap(), 1);
+    assert_eq!(
+        user_ids(&state).await,
+        [p.guest, p.host, p.admin, p.superadmin]
+    );
+    assert_eq!(series_count(&state).await, 1);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!(show.host_user_id, Some(p.host));
 }
 
 #[tokio::test]
-#[ignore = "https://github.com/phaabe/live.moafunk.de/issues/927"]
 async fn the_session_of_an_expired_account_is_refused() {
     let (state, _temp) = state().await;
     let p = people(&state).await;
@@ -1318,6 +1426,48 @@ async fn the_session_of_an_expired_account_is_refused() {
     assert_eq!(
         status(api::api_my_show(State(state), session).await),
         NOBODY
+    );
+}
+
+/// A guest's session ends with the guest account: the show day's 23:59:59
+/// UTC, as `api_create_guest` writes it. A live account keeps its session.
+#[tokio::test]
+async fn a_session_lasts_until_the_account_ends() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    let day = |days: i64| (chrono::Utc::now() + chrono::Duration::days(days)).format("%Y-%m-%d");
+    let guest = |name: &'static str, login_date: String| {
+        let state = state.clone();
+        async move {
+            let id = add_user(&state, name, "guest").await;
+            sqlx::query(
+                "UPDATE users SET login_date = ?1, expires_at = ?1 || 'T23:59:59' WHERE id = ?2",
+            )
+            .bind(login_date)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+            headers(&state, id).await
+        }
+    };
+    let after_show_day = guest("yesterday", day(-1).to_string()).await;
+    let on_show_day = guest("today", day(0).to_string()).await;
+    sqlx::query("UPDATE users SET expires_at = '2099-12-31' WHERE id = ?")
+        .bind(p.host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let host = headers(&state, p.host).await;
+
+    let me = |session: HeaderMap| api::api_me(State(state.clone()), session);
+    assert_eq!(status(me(after_show_day).await), NOBODY);
+    assert_eq!(status(me(on_show_day).await), OK);
+    assert_eq!(status(me(host.clone()).await), OK);
+    assert_eq!(
+        status(api::api_my_show(State(state.clone()), host).await),
+        OK
     );
 }
 
@@ -1519,6 +1669,8 @@ async fn a_host_uploads_a_recording_only_to_their_own_episode() {
     let row = show_row(&state, 1).await.unwrap();
     assert_eq!(row.recording_key.as_deref(), Some(key.as_str()));
     assert_eq!(row.recording_filename.as_deref(), Some("mine.mp3"));
+    // Uploading picks the own file.
+    assert_eq!(row.recording_source.as_deref(), Some("own"));
     assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
     for (caller, want) in [
         (None, NOBODY),
@@ -1544,13 +1696,16 @@ async fn a_host_uploads_a_recording_only_to_their_own_episode() {
             .0,
         DENIED
     );
+    sqlx::query("UPDATE shows SET recording_source = 'show' WHERE id = 1")
+        .execute(&state.db)
+        .await
+        .unwrap();
     let (code, done) = recording_finalize(&state, p.host, 1, &session).await;
     assert_eq!(code, OK);
     let key = done["key"].as_str().unwrap().to_string();
-    assert_eq!(
-        show_row(&state, 1).await.unwrap().recording_key.as_deref(),
-        Some(key.as_str())
-    );
+    let row = show_row(&state, 1).await.unwrap();
+    assert_eq!(row.recording_key.as_deref(), Some(key.as_str()));
+    assert_eq!(row.recording_source.as_deref(), Some("own"));
     assert_eq!(soundcloud_reads(&state, &r2, &key).await, 0);
     assert_eq!(recording_init(&state, p.host, 2).await.0, DENIED);
     assert_eq!(recording_init(&state, p.guest, 1).await.0, DENIED);
@@ -1604,4 +1759,106 @@ async fn service_switches_read_by_all_set_by_admins() {
         (OK, off.clone())
     );
     assert_eq!(get(Some(p.host)).await, (OK, off));
+}
+
+/// Moafunkbot switches: admins only, and a PUT changes only the fields it has.
+#[tokio::test]
+async fn moafunkbot_switches_change_one_at_a_time() {
+    use handlers::settings::{get_notifications, set_notifications};
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    let get = |user| {
+        let state = state.clone();
+        async move {
+            reply(get_notifications(State(state.clone()), login(&state, user).await).await).await
+        }
+    };
+    let set = |user, body: Value| {
+        let state = state.clone();
+        async move {
+            let headers = login(&state, user).await;
+            reply(set_notifications(State(state.clone()), headers, req(body)).await).await
+        }
+    };
+    let all = |enabled: bool, live_chat: bool, onair_message: bool| json!({ "enabled": enabled, "live_chat": live_chat, "onair_message": onair_message });
+
+    assert_eq!(get(Some(p.admin)).await, (OK, all(true, true, true)));
+    assert_eq!(get(Some(p.host)).await.0, DENIED);
+    assert_eq!(
+        set(Some(p.host), json!({ "live_chat": false })).await.0,
+        DENIED
+    );
+
+    assert_eq!(
+        set(Some(p.admin), json!({ "live_chat": false })).await,
+        (OK, all(true, false, true))
+    );
+    assert_eq!(
+        set(Some(p.admin), json!({ "enabled": false })).await,
+        (OK, all(false, false, true))
+    );
+    assert_eq!(
+        set(Some(p.admin), json!({ "onair_message": false })).await,
+        (OK, all(false, false, false))
+    );
+    assert_eq!(get(Some(p.admin)).await, (OK, all(false, false, false)));
+}
+
+// ── Studio log ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn the_host_saves_the_studio_log_and_every_login_reads_it() {
+    use crate::studio_log::{api_save_studio_log, record_listeners};
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.host), Some(p.admin)).await;
+    let s = &state;
+    const SAVED: StatusCode = StatusCode::NO_CONTENT;
+
+    let callers = [
+        None,
+        Some(p.guest),
+        Some(p.other_host),
+        Some(p.host),
+        Some(p.admin),
+    ];
+    let got = statuses(s, &callers, |h| {
+        api_save_studio_log(
+            State(s.clone()),
+            Path(1),
+            h,
+            req(json!({"soundcheck": {"input": "USB"}})),
+        )
+    })
+    .await;
+    assert_eq!(got, vec![NOBODY, DENIED, DENIED, SAVED, SAVED]);
+
+    // A panel save keeps the soundcheck; an unknown part is refused.
+    let host = headers(s, p.host).await;
+    let panel = api_save_studio_log(
+        State(s.clone()),
+        Path(1),
+        host.clone(),
+        req(json!({"on_air": {"gain": 1.2}})),
+    );
+    assert_eq!(status(panel.await), SAVED);
+    let bad = api_save_studio_log(State(s.clone()), Path(1), host, req(json!({"x": {}})));
+    assert_eq!(status(bad.await), StatusCode::BAD_REQUEST);
+
+    // The server keeps one listener count per 10 s.
+    record_listeners(&s.db, 1, 7, 1_000).await.unwrap();
+    record_listeners(&s.db, 1, 9, 5_000).await.unwrap();
+    record_listeners(&s.db, 1, 12, 20_000).await.unwrap();
+
+    let detail = api::api_show_detail(State(s.clone()), Path(1), headers(s, p.other_host).await);
+    let (code, body) = reply(detail.await).await;
+    assert_eq!(code, OK);
+    assert_eq!(
+        body["studio_log"],
+        json!({"soundcheck": {"input": "USB"}, "on_air": {"gain": 1.2}})
+    );
+    assert_eq!(
+        body["listener_samples"],
+        json!([{"at": 1000, "count": 7}, {"at": 20000, "count": 12}])
+    );
 }

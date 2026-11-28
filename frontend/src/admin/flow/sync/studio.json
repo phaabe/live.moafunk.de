@@ -1,8 +1,11 @@
 {
   "screen": "studio",
-  "hash": "5e94b0cd",
-  "status": "ok",
+  "hash": "c4c59017",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
+  "missing": [
+    "check: Record this show",
+    "button: Go Live"
+  ],
   "extra": []
 }

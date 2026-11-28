@@ -1,193 +1,158 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, onUnmounted, provide, ref, useId, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { BaseButton } from '@shared/components';
+import { BaseButton, BaseModal } from '@shared/components';
 import {
   announcementsApi,
   seriesApi,
   showsApi,
+  streamApi,
   type Announcement,
+  type AnnouncementSlot,
+  type AnnouncementStatus,
   type ServiceSettings,
   type ShowDetail,
 } from '../api';
 import { useAuthStore } from '../stores/auth';
-import { useHostFlow } from '../composables';
-import AudioPlayer from '../components/AudioPlayer.vue';
-import EpisodeDetailsCard from '../components/EpisodeDetailsCard.vue';
+import { liveStreamShowId, useHostFlow, type SoundcheckStep } from '../composables';
+import AnnounceComposer from '../components/AnnounceComposer.vue';
 import EpisodeRecordingCard from '../components/EpisodeRecordingCard.vue';
 import PromotionCard from '../components/PromotionCard.vue';
-import HostEpisodeView from './HostEpisodeView.vue';
 import BoardIcon from '../components/BoardIcon.vue';
-import { episodeDay, setLength } from '../episodeRow';
-import { openReplaceFile } from '../replaceFile';
-import { berlinToUtcDate, isShowEnded } from '../showTime';
+import EpisodeHeading from '../components/episode/EpisodeHeading.vue';
+import EpisodeTabs from '../components/episode/EpisodeTabs.vue';
+import OnAirView from '../components/episode/OnAirView.vue';
+import ShowTimeCard from '../components/episode/ShowTimeCard.vue';
+import SoundcheckCard from '../components/episode/SoundcheckCard.vue';
+import StudioView from '../components/episode/StudioView.vue';
+import EpisodeIcon from '../components/episode/EpisodeIcon.vue';
+import { episodeTimes } from '../components/episode/phase';
 import {
-  defaultPostTime,
-  editable,
-  inSlot,
-  INSTAGRAM_OFF_NOTE,
-  postTime,
-  slotState,
-} from '../promotion';
+  EPISODE_TABS,
+  recordingItems,
+  showClock,
+  socialItems,
+  soundcheckItems,
+} from '../components/episode/tabs';
+import { useEpisode } from '../components/episode/useEpisode';
+import { openReplaceFile } from '../replaceFile';
+import { useLiveSession } from '../liveSession';
+import { SLOT_NAMES } from '../promotion';
 
-// Flow screens `episode`, `episode-pre`, `wrapup` and `done` on one path
-// (/shows/<id>) for the host's own episodes. Another host's episode gets the
-// read-only `episode-view`.
+// The one episode page (/shows/<id>), #1052: a heading box, then the four
+// steps as tab tiles (Social media, Soundcheck, Show time, Recording) above one
+// main card, in one layout for upcoming, on air and ended episodes. The Studio
+// (soundcheck and Go Live) opens inside the page as the Soundcheck tab. Show
+// time has no soundcheck: it starts the show with the Studio's Go Live, or
+// warns and leads to Soundcheck, then shows the live panel. After the show the
+// Recording card holds what the Wrap-up had (Publish episode). Another host's
+// episode is the same page read-only: no Edit, no Studio, no card buttons.
+// A live episode's Soundcheck and Show time tabs always show the Studio card
+// and the live panel: working in the host's own tab, else read-only with what
+// the host's browser saved (StudioView, OnAirView).
 
-/** The Studio opens this long before the start. */
-const STUDIO_OPENS_MS = 30 * 60 * 1000;
-/** How long after the end a missing recording still counts as processing
- * (the backend's own "no recording" alert waits as long). */
-const RECORDING_GRACE_MS = 15 * 60 * 1000;
+const FlowLive = defineAsyncComponent(() => import('./flow/FlowLive.vue'));
+const StudioOnAir = defineAsyncComponent(() => import('./flow/StudioOnAir.vue'));
+provide(EPISODE_TABS, true);
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 const hostFlow = useHostFlow();
+const { ended: liveEnded } = useLiveSession();
 
 const show = ref<ShowDetail | null>(null);
-const view = ref<'episode' | 'wrapup' | 'done'>('episode');
 const error = ref<string | null>(null);
 const busy = ref(false);
-const announcements = ref<Announcement[]>([]);
+/** The host's own announcements; for another host only where each slot is. */
+const announcements = ref<(Announcement | AnnouncementStatus)[]>([]);
 const paused = ref(false);
 /** Admin switches; off reads "temporarily not available". */
 const services = ref<ServiceSettings>({ soundcloud: true, instagram: true });
-/** The Show's Instagram handle (collaborator), without "@". */
-const handle = ref<string | null>(null);
-const now = ref(Date.now());
-const clock = setInterval(() => (now.value = Date.now()), 15000);
+/** The slot whose post widget is open in the popup. */
+const composing = ref<AnnouncementSlot | null>(null);
 let poll: ReturnType<typeof setTimeout> | null = null;
 
 const id = computed(() => Number(route.params.id));
-const isMine = computed(
+/** One of the episode's hosts (#1047): owner, co-host or episode co-host. */
+const isMine = computed(() => !!show.value?.can_edit);
+/** Who sends the stream while the episode is on air; null when the server cannot say. */
+const onAirUser = ref<string | null>(null);
+/** This host went live with the episode (maybe in another tab); a co-host who did not gets Listen live. */
+const mineOnAir = computed(
   () =>
-    !!show.value &&
-    (show.value.host_user_id === auth.user?.id || show.value.created_by === auth.user?.id)
+    isMine.value &&
+    !!show.value?.on_air &&
+    (onAirUser.value === null || onAirUser.value === auth.user?.username)
 );
-const isPrerecorded = computed(() => show.value?.stream_mode === 'prerecorded');
+
+async function loadOnAirUser() {
+  try {
+    const status = await streamApi.status();
+    onAirUser.value = status.active ? (status.user ?? null) : null;
+  } catch {
+    onAirUser.value = null;
+  }
+}
 const showName = computed(() => show.value?.series_name ?? show.value?.title ?? '');
 const backTo = computed(() =>
   show.value?.series_slug ? `/shows/${show.value.series_slug}` : '/shows'
 );
-const heading = computed(() =>
-  show.value ? `${episodeDay(show.value.date)} · ${showName.value}` : ''
+/** The Studio soundcheck passed in this tab for this episode (the Studio does not save it). */
+const tested = computed(
+  () => !!show.value && hostFlow.showId.value === show.value.id && hostFlow.liveTestPassed.value
 );
-const slot = computed(() =>
-  show.value?.start_time && show.value.end_time
-    ? `${show.value.start_time}–${show.value.end_time}`
-    : (show.value?.start_time ?? '')
-);
+const { now, phase, recording, segments, step } = useEpisode(show, announcements, tested);
 
-const startMs = computed(() =>
-  show.value?.start_time ? berlinToUtcDate(show.value.date, show.value.start_time).getTime() : null
-);
-const studioOpen = computed(
-  () =>
-    !!show.value?.on_air || (startMs.value !== null && now.value >= startMs.value - STUDIO_OPENS_MS)
-);
-const ended = computed(() => {
-  void now.value; // re-evaluate on the clock tick
-  return (
-    !!show.value &&
-    !show.value.on_air &&
-    (show.value.episode_status !== 'upcoming' || isShowEnded(show.value))
-  );
-});
-
-/** The booked set as the flow writes it: "brunchtime-0811.mp3 · 1:58:40". */
-const setFile = computed(() => {
-  const name = show.value?.prerecorded_filename;
-  const length = show.value?.prerecorded_duration_secs;
-  if (!name) return '';
-  return length ? `${name} · ${setLength(length)}` : name;
-});
-
-type Pill = { state: 'ok' | 'processing' | 'failed'; text: string };
-const pill = computed<Pill>(() => {
-  const s = show.value;
-  if (!s) return { state: 'processing', text: 'Recording processing…' };
-  if (isPrerecorded.value) {
-    const length = s.prerecorded_duration_secs;
-    return {
-      state: 'ok',
-      text: length ? `Recording ready · ${setLength(length)}` : 'Recording ready',
-    };
-  }
-  // While on air (or still saving) an older version is not the final one, and
-  // the server refuses Publish.
-  if (s.on_air) return { state: 'processing', text: 'Recording processing…' };
-  const r = s.latest_recording;
-  if (r?.status === 'failed') {
-    return {
-      state: 'failed',
-      text: `No usable recording · ${r.error_message || 'The recording failed.'}`,
-    };
-  }
-  if (r?.download_url) {
-    return {
-      state: 'ok',
-      text: r.duration_ms
-        ? `Recording ready · ${setLength(r.duration_ms / 1000)}`
-        : 'Recording ready',
-    };
-  }
-  if (r) return { state: 'processing', text: 'Recording processing…' };
-  if (s.live_recorded === false) {
-    return { state: 'failed', text: 'No usable recording · Record this show was off.' };
-  }
-  // An End Episode before the scheduled end starts the wait at that moment.
-  const ends = [
-    s.end_time ? berlinToUtcDate(s.date, s.end_time).getTime() : NaN,
-    s.live_ended_at ? Date.parse(s.live_ended_at) : NaN,
-  ].filter((ms) => !Number.isNaN(ms));
-  const endMs = ends.length ? Math.min(...ends) : null;
-  if (endMs !== null && now.value < endMs + RECORDING_GRACE_MS) {
-    return { state: 'processing', text: 'Recording processing…' };
-  }
-  return { state: 'failed', text: 'No usable recording · Nothing was recorded.' };
-});
-
-/** End Episode on On Air opens the Wrap-up, also while the recording is
- * still being saved (the episode can be on air for a moment). */
+/** End Episode on On Air opens the Recording tab, also while the recording
+ * is still being saved (the episode can be on air for a moment). */
 function endedOnAir(): boolean {
   const state = router.options.history.state as { episodeEnded?: number } | null;
   return state?.episodeEnded === id.value;
 }
-
-function defaultView(s: ShowDetail): typeof view.value {
-  if (s.episode_status === 'finished') return 'done';
-  if (endedOnAir()) return 'wrapup';
-  if (s.on_air) return 'episode';
-  if (s.episode_status === 'wrapup_open') return 'wrapup';
-  if (s.stream_mode !== 'prerecorded' && s.latest_recording) return 'wrapup';
-  return 'episode';
+/** Start show now on Book Slot opens the new episode on its Social media tab. */
+function bookedNow(): boolean {
+  const state = router.options.history.state as { episodeSocial?: number } | null;
+  return state?.episodeSocial === id.value;
 }
+/** The episode ended in this tab: Recording shows and the page waits for the file. */
+const ended = ref(false);
 
-async function load(resetView: boolean) {
+async function load(reset: boolean) {
   error.value = null;
   try {
-    const loaded = await showsApi.get(id.value);
-    show.value = loaded;
-    if (resetView) view.value = defaultView(loaded);
+    show.value = await showsApi.get(id.value);
+    if (show.value.on_air) await loadOnAirUser();
+    if (reset) {
+      ended.value = endedOnAir();
+      picked.value = ended.value ? 3 : bookedNow() ? 0 : null;
+    }
     if (isMine.value) await loadPromotion();
+    else await loadSlots();
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not load the episode';
   }
   schedulePoll();
 }
 
+/** Another host's episode: where each slot is; no text, image or error. */
+async function loadSlots() {
+  try {
+    announcements.value = await announcementsApi.status(id.value);
+  } catch {
+    // The Social media card then reads "Not set up"; the rest still shows.
+    announcements.value = [];
+  }
+}
+
 async function loadPromotion() {
-  const slug = show.value?.series_slug;
-  const [list, meta, series] = await Promise.all([
+  const [list, meta] = await Promise.all([
     announcementsApi.list(id.value),
     announcementsApi.meta(id.value),
-    slug ? seriesApi.get(slug) : null,
   ]);
   announcements.value = list;
   paused.value = meta.paused;
   services.value = meta.services;
-  handle.value = series?.instagram_handle || null;
 }
 
 async function reloadPromotion() {
@@ -199,77 +164,189 @@ async function reloadPromotion() {
 }
 
 const trackPublic = computed(() => !!show.value?.soundcloud_public);
-const post = computed(() => inSlot(announcements.value, 'post'));
-/** Wrap-up row of the post slot; it is sent only when the SoundCloud track is public. */
-const postReading = computed(() => {
-  if (post.value) return slotState(announcements.value, 'post', trackPublic.value);
-  if (trackPublic.value) return 'Not set up';
-  return show.value ? `${defaultPostTime(show.value.date)} · waits for the public track` : '';
-});
-const instagramPill = computed(() => {
-  const p = post.value;
-  if (!p || p.state === 'draft') return 'Instagram · no post-announcement';
-  if (p.state === 'sent') return 'Instagram · post-announcement sent';
-  if (!trackPublic.value) return 'Instagram · waits for the public SoundCloud track';
-  return p.scheduled_at
-    ? `Instagram · post-announcement ${postTime(p.scheduled_at)}`
-    : 'Instagram · post-announcement';
-});
 
-const openComposer = (slot: 'pre' | 'post') => router.push(`/shows/${id.value}/announce/${slot}`);
+const openComposer = (slot: AnnouncementSlot) => (composing.value = slot);
 
-async function cancelPost() {
-  if (!window.confirm('Cancel the post-announcement?')) return;
-  busy.value = true;
-  error.value = null;
-  try {
-    await announcementsApi.cancel(id.value, 'post');
-    await loadPromotion();
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not cancel the announcement';
-  } finally {
-    busy.value = false;
-  }
+/** The post widget saved: close it and show the new state. */
+async function composed() {
+  composing.value = null;
+  await reloadPromotion();
 }
 
-/** While the recording is processing, look again every 10 s. */
+// ─── Tabs ───────────────────────────────────────────────────────────────────
+const panelId = useId();
+/** The tab the host picked (0–3); null follows the current step. */
+const picked = ref<number | null>(null);
+
+/** While the recording is processing after the show, look again every 10 s.
+ * While another tab sends the episode (or it may start), every 15 s: the
+ * read-only live panel shows what the host's browser saved. */
 function schedulePoll() {
   if (poll) clearTimeout(poll);
   poll = null;
-  if (view.value === 'wrapup' && pill.value.state === 'processing') {
+  const waiting = ended.value || phase.value === 'post';
+  if (waiting && recording.value.state === 'processing') {
     poll = setTimeout(() => load(false), 10000);
+  } else if ((show.value?.on_air || phase.value === 'live') && !liveHere.value) {
+    poll = setTimeout(() => load(false), 15000);
   }
 }
 
 watch(id, () => load(true), { immediate: true });
-watch(view, schedulePoll);
 onUnmounted(() => {
-  clearInterval(clock);
   if (poll) clearTimeout(poll);
 });
 
-/** Open Studio; while on air, "Back to On Air" opens On Air (its gate falls back to the Studio). */
-async function openStudio(path: '/stream/live' | '/stream/on-air' = '/stream/live') {
-  if (!show.value || !studioOpen.value) return;
-  busy.value = true;
+/** This browser tab sends this episode's stream. `now` makes it look again every second. */
+const liveHere = computed(() => {
+  void now.value;
+  return !!show.value && liveStreamShowId() === show.value.id;
+});
+/** This browser tab is live with another episode: its Studio stays as it is. */
+const otherLive = computed(() => {
+  void now.value;
+  const live = liveStreamShowId();
+  return live !== null && live !== show.value?.id;
+});
+const onAirNow = computed(() => !!show.value?.on_air || liveHere.value);
+
+const tab = computed(() => {
+  if (picked.value !== null) return picked.value;
+  if (liveHere.value) return 2;
+  const i = segments.value.findIndex((s) => s.state === 'now');
+  // A finished episode has every step done: open its last one, Recording.
+  return i < 0 ? segments.value.length - 1 : i;
+});
+
+/** The Studio may open on this page: the rules of its own route gate. */
+const studioAllowed = computed(() => {
+  const s = show.value;
+  return (
+    !!s &&
+    isMine.value &&
+    s.stream_mode !== 'prerecorded' &&
+    !s.prerecorded_confirmed_at &&
+    phase.value !== 'post' &&
+    !liveHere.value &&
+    !otherLive.value
+  );
+});
+/** The Studio (soundcheck, input, Go Live) is the Soundcheck tab's page, also after the start.
+ * Show time shows only the live panel; until then its card leads here. */
+const studioTab = computed(() => studioAllowed.value && tab.value === 1);
+/** The live panel is the Show time page while this browser tab is live. */
+const onAirHere = computed(() => liveHere.value && hostFlow.showId.value === show.value?.id);
+
+/** Mounted on first open, then kept: the checks and the audio input survive a tab switch. */
+const studioMounted = ref(false);
+const studio = ref<{
+  checks: SoundcheckStep[] | null;
+  canGoLive: boolean;
+  goingLive: boolean;
+  goLiveError: string | null;
+  goLive: () => Promise<void>;
+} | null>(null);
+watch(
+  studioTab,
+  async (want) => {
+    if (want && !studioMounted.value && (await selectForStudio())) studioMounted.value = true;
+  },
+  { immediate: true }
+);
+// Gone live, ended or closed: the Studio goes, as it did when On Air opened.
+watch(studioAllowed, (ok) => {
+  if (!ok) studioMounted.value = false;
+});
+
+const tabSocial = computed(() => socialItems(announcements.value, trackPublic.value));
+const tabSoundcheck = computed(() =>
+  show.value
+    ? soundcheckItems(
+        show.value,
+        phase.value,
+        tested.value,
+        studio.value?.checks ?? show.value.studio_log?.soundcheck?.checks ?? null
+      )
+    : []
+);
+
+/** Another host's episode on air: the public stream. */
+const LISTEN = 'https://live.moafunk.de';
+
+// ─── Go Live on the Show time tab (the host's own live episode) ─────────────
+const prerecorded = computed(() => show.value?.stream_mode === 'prerecorded');
+/** Go Live in the live panel's bar: own live episode, not on air, not over. */
+const showGoLive = computed(
+  () => isMine.value && !prerecorded.value && !show.value?.on_air && phase.value !== 'post'
+);
+/** From 30 min before the start, Go Live warns about a missing soundcheck or input. */
+const studioOpenNow = computed(() => {
+  const openMs = show.value ? episodeTimes(show.value).openMs : null;
+  return openMs !== null && now.value >= openMs;
+});
+const goLiveWarn = computed(() => {
+  if (!showGoLive.value || !studioOpenNow.value) return '';
+  if (studio.value?.canGoLive || studio.value?.goingLive) return '';
+  if (!tested.value) return 'No soundcheck in this browser yet. Do it before you go live.';
+  if (phase.value === 'live') return 'Your audio input is off. Pick it in the Soundcheck tab.';
+  return '';
+});
+const showTimeAlert = computed(() => {
+  const failed = showGoLive.value ? studio.value?.goLiveError : null;
+  if (failed) return { chip: 'Go Live failed', text: failed };
+  return goLiveWarn.value ? { chip: 'Soundcheck', text: goLiveWarn.value } : null;
+});
+const tabClock = computed(() =>
+  show.value
+    ? showClock(show.value, phase.value, now.value, onAirNow.value)
+    : { kind: 'pre' as const, clock: '', sub: '' }
+);
+const tabRecording = computed(() =>
+  show.value
+    ? recordingItems(
+        show.value,
+        phase.value,
+        recording.value,
+        onAirNow.value,
+        !services.value.soundcloud
+      )
+    : []
+);
+
+/** Select this episode for the Studio, so it uses it even when the host has several. */
+async function selectForStudio(): Promise<boolean> {
+  if (!show.value) return false;
   try {
-    // Select this episode, so the Studio uses it even when the host has several.
     let mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     if (!mine) {
       await hostFlow.fetchMyShow();
       mine = hostFlow.shows.value.find((s) => s.id === show.value?.id);
     }
     if (!mine) throw new Error('This episode is not assigned to you');
-    if (hostFlow.showId.value !== mine.id) hostFlow.setLiveTestPassed(false);
     hostFlow.selectShow(mine);
     hostFlow.selectMode('live');
-    await router.push({ path, query: { show: String(mine.id) } });
+    return true;
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not open the Studio';
-  } finally {
-    busy.value = false;
+    return false;
   }
 }
+
+/** Go Live worked (Studio or Show time tab): Show time shows the live panel. */
+function wentLive() {
+  picked.value = null;
+  void load(false);
+}
+
+/** End Episode in the live panel or the on-air bar: Recording, also while the recording is still saved. */
+async function endedHere() {
+  ended.value = true;
+  picked.value = 3;
+  await load(false);
+}
+watch(liveEnded, (e) => {
+  if (e && e.showId === show.value?.id) void endedHere();
+});
 
 async function cancelBooking() {
   if (!show.value || !window.confirm('Cancel this booking?')) return;
@@ -294,306 +371,228 @@ function replaceFile() {
     end_time: s.end_time,
   });
 }
-
-async function publish() {
-  if (!show.value || pill.value.state === 'processing') return;
-  busy.value = true;
-  error.value = null;
-  try {
-    await seriesApi.publish(show.value.id);
-    view.value = 'done';
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not publish the episode';
-  } finally {
-    busy.value = false;
-  }
-}
 </script>
 
 <template>
-  <HostEpisodeView v-if="show && !isMine" :show="show" />
-  <div v-else-if="show" class="episode-page host-page">
-    <!-- Done -->
-    <template v-if="view === 'done'">
-      <h1 class="page-title">Episode published</h1>
-      <p class="pill status-banner ok">
-        <span class="dot" aria-hidden="true"></span>{{ instagramPill }}
-      </p>
-      <div>
-        <BaseButton @click="router.push('/schedule')">Back to Schedule</BaseButton>
-      </div>
-    </template>
-
-    <!-- Wrap-up -->
-    <template v-else-if="view === 'wrapup'">
-      <button type="button" class="back-link" @click="view = 'episode'">
-        <BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>Episode
-      </button>
-      <h1 class="page-title">Wrap-up</h1>
-      <p :class="['pill', 'status-banner', pill.state]">
-        <span class="dot" aria-hidden="true"></span>{{ pill.text }}
-      </p>
-      <section class="board-card post-announcement">
-        <div class="board-card-head">
-          <h2 class="board-card-title"><BoardIcon name="image" />Post-announcement</h2>
-        </div>
-        <div class="board-card-body">
-          <ul class="post-slot">
-            <li>
-              <span class="slot-name">Post · feed post 4:5</span>
-              <span class="slot-state">{{ postReading }}</span>
-            </li>
-          </ul>
-          <p class="hint">
-            Sent at its time only when the track is public. Publish does not need it.
-          </p>
-          <p v-if="!services.instagram" class="notice">{{ INSTAGRAM_OFF_NOTE }}</p>
-          <div class="actions">
-            <template v-if="editable(post)">
-              <BaseButton
-                variant="secondary"
-                :disabled="busy || !services.instagram"
-                @click="openComposer('post')"
-                >Edit post-announcement</BaseButton
-              >
-              <BaseButton variant="secondary" :disabled="busy" @click="cancelPost"
-                >Cancel post-announcement</BaseButton
-              >
-            </template>
-            <BaseButton
-              v-else-if="post?.state !== 'sent'"
-              variant="secondary"
-              :disabled="busy || !services.instagram"
-              @click="openComposer('post')"
-              >Set up post-announcement</BaseButton
-            >
-          </div>
-        </div>
-      </section>
-      <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      <div>
-        <BaseButton
-          class="xl"
-          :disabled="pill.state === 'processing'"
-          :loading="busy"
-          @click="publish"
-        >
-          Publish
+  <div v-if="show" class="episode-page host-page">
+    <!-- Heading box, the four step tabs and one main card -->
+    <router-link :to="backTo" class="back-link"
+      ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span>{{ showName }}</router-link
+    >
+    <EpisodeHeading
+      :show="show"
+      :phase="phase"
+      :can-edit="isMine"
+      @saved="load(true)"
+      @hosts="show.hosts = $event"
+      @left="router.push('/dashboard')"
+    >
+      <template v-if="show.can_manage" #danger>
+        <BaseButton variant="danger" class="quiet-danger" :disabled="busy" @click="cancelBooking">
+          <BoardIcon name="close" :size="16" />Cancel booking
         </BaseButton>
-      </div>
-    </template>
-
-    <template v-else>
-      <router-link :to="backTo" class="back-link"
-        ><BoardIcon name="back" :size="16" /><span class="sep">&lt; </span
-        >{{ showName }}</router-link
+      </template>
+    </EpisodeHeading>
+    <p v-if="error" class="field-error" role="alert">{{ error }}</p>
+    <EpisodeTabs
+      :segments="segments"
+      :selected="tab"
+      :social="tabSocial"
+      :soundcheck="tabSoundcheck"
+      :clock="tabClock"
+      :recording="tabRecording"
+      :panel-id="panelId"
+      @select="picked = $event"
+    />
+    <div :id="panelId" class="ep-main" role="tabpanel" :aria-labelledby="`${panelId}-tab-${tab}`">
+      <PromotionCard
+        v-show="tab === 0"
+        :show="show"
+        :phase="phase"
+        :state="step(0)"
+        :announcements="announcements"
+        :paused="paused"
+        :instagram-off="!services.instagram"
+        :read-only="!isMine"
+        @changed="reloadPromotion"
+        @compose="openComposer"
+      />
+      <SoundcheckCard
+        v-if="prerecorded"
+        v-show="tab === 1"
+        :show="show"
+        :phase="phase"
+        :state="step(1)"
+        :busy="busy"
+        :read-only="!isMine"
+        @replace-file="replaceFile"
+      />
+      <ShowTimeCard
+        v-if="prerecorded"
+        v-show="tab === 2"
+        :show="show"
+        :phase="phase"
+        :state="step(2)"
+        :now="now"
+        :read-only="!isMine"
+      />
+      <EpisodeRecordingCard
+        v-show="tab === 3"
+        :show="show"
+        :phase="phase"
+        :state="step(3)"
+        :recording="recording"
+        :soundcloud-off="!services.soundcloud"
+        :read-only="!isMine"
+        :announcements="announcements"
+        @uploaded="load(false)"
+        @changed="load(false)"
+        @social="picked = 0"
+      />
+      <section
+        v-if="studioMounted"
+        v-show="studioTab"
+        :class="['ep-embed', step(tab)]"
+        aria-label="Studio"
       >
-      <h1 class="page-title">{{ heading }}</h1>
-
-      <!-- Episode · Pre-recorded, no file yet -->
-      <template v-if="isPrerecorded && !show.prerecorded_filename">
-        <p class="pill status-banner warn">
-          <span class="dot" aria-hidden="true"></span>Pre-recorded · no file yet · plays at
-          {{ show.start_time }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step needs-file main">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
+        <FlowLive ref="studio" embedded @live="wentLive" />
+      </section>
+      <section v-if="onAirHere" v-show="tab === 2" class="ep-embed now" aria-label="Live Panel">
+        <StudioOnAir embedded :shown="tab === 2" />
+      </section>
+      <section
+        v-if="!prerecorded && !studioAllowed"
+        v-show="tab === 1"
+        :class="['ep-embed', step(1)]"
+        aria-label="Studio"
+      >
+        <StudioView :show="show" :phase="phase" />
+      </section>
+      <section
+        v-if="!prerecorded && !onAirHere"
+        v-show="tab === 2"
+        :class="['ep-embed', step(2)]"
+        aria-label="Live Panel"
+      >
+        <OnAirView :show="show" :phase="phase" :now="now" :alert="showTimeAlert">
+          <template v-if="show.on_air && !mineOnAir" #end>
+            <div class="end">
+              <a class="listen" :href="LISTEN" target="_blank" rel="noopener"
+                >Listen live<EpisodeIcon name="external"
+              /></a>
             </div>
-            <div class="board-card-body">
-              <div class="lead">
-                <span class="lead-icon"><BoardIcon name="music" :size="20" /></span>
-                <p class="text">Upload your set before air time. Without a file nothing plays.</p>
-              </div>
-              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-              <BaseButton class="block xl" :disabled="!show.series_slug" @click="replaceFile">
-                <BoardIcon name="upload" />Upload your set
-              </BaseButton>
-            </div>
-          </section>
-          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
-        </div>
-      </template>
-
-      <!-- Episode · Pre-recorded -->
-      <template v-else-if="isPrerecorded">
-        <p class="pill status-banner ok">
-          <span class="dot" aria-hidden="true"></span>Pre-recorded &amp; confirmed · plays at
-          {{ show.start_time }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step main">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-            </div>
-            <div class="board-card-body">
-              <p class="lead-text">
-                Nothing to do. The set plays at air time. Wrap-up opens after {{ show.end_time }}.
-              </p>
-              <!-- The player shows no file name, and 0:00 until its first Play. -->
-              <div v-if="setFile || show.prerecorded_url" class="set">
-                <p v-if="setFile" class="set-file">
-                  <BoardIcon name="music" :size="16" />{{ setFile }}
-                </p>
-                <AudioPlayer v-if="show.prerecorded_url" :src="show.prerecorded_url" />
-              </div>
-              <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-              <div class="actions">
-                <BaseButton variant="secondary" :disabled="!show.series_slug" @click="replaceFile">
-                  <BoardIcon name="upload" :size="16" />Replace file
-                </BaseButton>
-                <BaseButton :disabled="!ended" @click="view = 'wrapup'">Open Wrap-up</BaseButton>
-              </div>
-            </div>
-          </section>
-          <EpisodeDetailsCard class="side" :show="show" @saved="load(true)" />
-        </div>
-      </template>
-
-      <!-- Episode (live) -->
-      <template v-else>
-        <p v-if="show.on_air" class="pill status-banner live">
-          <span class="dot" aria-hidden="true"></span>On air · until {{ show.end_time }}
-        </p>
-        <p v-else class="pill status-banner">
-          <span class="dot" aria-hidden="true"></span>Upcoming · Live · {{ slot }}
-        </p>
-        <div class="cols">
-          <section class="board-card next-step side">
-            <div class="board-card-head">
-              <h2 class="board-card-title"><BoardIcon name="next" />Next step</h2>
-            </div>
-            <div class="board-card-body">
-              <div class="lead">
-                <span class="lead-icon"><BoardIcon name="headphones" :size="20" /></span>
-                <p class="text">
-                  Test your audio before air time. The Studio opens 30 min before the start.
-                </p>
-              </div>
-              <BaseButton
-                v-if="show.on_air"
-                class="block xl"
-                :loading="busy"
-                @click="openStudio('/stream/on-air')"
-              >
+          </template>
+          <template v-else-if="isMine && (show.on_air || showGoLive)" #end>
+            <div class="end">
+              <BaseButton v-if="show.on_air" class="xl" :loading="busy" @click="picked = 1">
                 <BoardIcon name="broadcast" />Back to On Air
               </BaseButton>
+              <BaseButton v-else-if="goLiveWarn" variant="secondary" class="xl" @click="picked = 1">
+                <BoardIcon name="mic" />Go to Soundcheck
+              </BaseButton>
+              <!-- At the start it blinks until clicked. -->
+              <!-- Yellow only while Show time is the current step. -->
               <BaseButton
                 v-else
-                class="block xl"
-                :disabled="!studioOpen"
-                :loading="busy"
-                @click="openStudio()"
+                :variant="step(2) === 'now' ? 'primary' : 'secondary'"
+                :class="['xl', { blink: studio?.canGoLive && !studio?.goingLive }]"
+                :disabled="!studio?.canGoLive"
+                :loading="!!studio?.goingLive"
+                @click="studio?.goLive()"
               >
-                Open Studio<BoardIcon name="next" />
+                <BoardIcon name="broadcast" />Go Live
               </BaseButton>
             </div>
-          </section>
-          <EpisodeDetailsCard class="main" :show="show" @saved="load(true)">
-            <BaseButton
-              variant="danger"
-              class="quiet-danger"
-              :disabled="busy"
-              @click="cancelBooking"
-            >
-              <BoardIcon name="close" :size="16" />Cancel booking
-            </BaseButton>
-          </EpisodeDetailsCard>
-          <PromotionCard
-            class="main"
-            :show="show"
-            :announcements="announcements"
-            :handle="handle"
-            :paused="paused"
-            :instagram-off="!services.instagram"
-            @changed="reloadPromotion"
-          />
-          <EpisodeRecordingCard
-            class="side"
-            :show="show"
-            :soundcloud-off="!services.soundcloud"
-            @uploaded="load(false)"
-            @changed="load(false)"
-          />
-        </div>
-        <p v-if="error" class="field-error" role="alert">{{ error }}</p>
-      </template>
-    </template>
+          </template>
+        </OnAirView>
+      </section>
+    </div>
+    <BaseModal
+      :open="!!composing"
+      :title="composing ? SLOT_NAMES[composing] : ''"
+      size="xl"
+      @close="composing = null"
+    >
+      <div v-if="composing" class="host-page">
+        <AnnounceComposer
+          :show-id="show.id"
+          :slot="composing"
+          @done="composed"
+          @cancel="composing = null"
+        />
+      </div>
+    </BaseModal>
   </div>
   <p v-else-if="error" class="field-error" role="alert">{{ error }}</p>
 </template>
 
 <style scoped>
 .episode-page {
-  max-width: 1120px;
+  max-width: 1180px;
 }
 
-.lead-text {
-  margin: 0;
-  color: #dcdce6;
-  line-height: 1.5;
-}
-
-.set {
+.ep-main {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border: 1px solid #2a2a42;
-  border-radius: var(--radius-lg);
-  background: #07071a;
 }
 
-.set-file {
-  display: flex;
+/* The Studio and the live panel in the main card, framed in their step's colour. */
+.ep-embed {
+  padding: var(--spacing-lg);
+  border: 2px solid #34344c;
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+}
+
+.ep-embed.done {
+  border-color: #8f8536;
+}
+
+.ep-embed.now {
+  border-color: var(--color-primary);
+}
+
+/* Listen live: another host's episode on air. */
+.listen {
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  margin: 0;
-  overflow-wrap: anywhere;
-  font: 700 var(--font-size-sm) var(--font-family);
-}
-
-.set-file svg {
-  flex: none;
-  color: var(--color-primary);
-}
-
-.post-slot {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.post-slot li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-}
-
-.slot-name {
-  font-weight: 700;
-}
-
-.slot-state,
-.hint {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.notice {
-  margin: 0;
-  padding: 12px 14px;
-  border: 1px solid #6b5a1e;
+  min-height: 52px;
+  padding: 0 24px;
+  border: 1px solid #4a4a60;
   border-radius: var(--radius-lg);
-  color: #f3d77a;
+  color: #eee;
+  font: 700 15px/1 var(--font-family);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--spacing-md);
+.listen:hover {
+  border-color: #fff;
+}
+
+/* Go Live in the live panel's bar blinks until clicked. */
+.blink {
+  animation: go-live-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes go-live-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blink {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .ep-embed {
+    padding: var(--spacing-sm);
+  }
 }
 </style>

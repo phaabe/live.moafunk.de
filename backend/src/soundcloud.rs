@@ -47,6 +47,21 @@ struct OAuthTokenResponse {
 pub struct SoundCloudTrack {
     pub id: i64,
     pub permalink_url: Option<String>,
+    pub sharing: Option<String>,
+    /// Part of the secret link of a private track (`s-…`).
+    pub secret_token: Option<String>,
+}
+
+impl SoundCloudTrack {
+    /// The link that opens the track. A private track opens only with its
+    /// secret token; the plain permalink shows "track not found".
+    fn link(&self) -> Option<String> {
+        let url = self.permalink_url.as_deref()?.trim_end_matches('/');
+        Some(match self.secret_token.as_deref() {
+            Some(token) if self.sharing.as_deref() != Some("public") => format!("{url}/{token}"),
+            _ => url.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +374,7 @@ pub async fn build_title(state: &Arc<AppState>, show: &models::Show) -> Result<S
 /// Sets title, description, artwork from the show's cover image.
 /// Stores the resulting track_id and URL in the database.
 pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCloudUploadResult> {
+    let _busy = crate::metrics::busy(crate::metrics::Work::SoundcloudUpload);
     ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 
@@ -369,49 +385,17 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .await?
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
-    // Resolve the audio source, in priority order:
-    //   1. a manually attached recording (pre-recorded / UNHEARD shows),
-    //   2. the latest *finalized* live recording (final.mp3, default bucket),
-    //   3. the latest streamed *archive* MP3 (shows bucket) — streamed shows stay
-    //      `raw` with only an archive_key, so this is the auto-upload source (#251).
-    let (recording_bucket, recording_key, source_filename) = match show.recording_key.as_ref() {
-        Some(key) => (
-            state.config.r2_bucket_name.clone(),
-            key.clone(),
-            show.recording_filename
-                .clone()
-                .unwrap_or_else(|| "recording.mp3".to_string()),
-        ),
-        None => {
-            if let Some(version) =
-                crate::db::get_latest_finalized_recording_version(&state.db, show_id).await?
-            {
-                let final_key = version.final_key.clone().ok_or_else(|| {
-                    AppError::BadRequest("Finalized recording has no file to upload".to_string())
-                })?;
-                (
-                    state.config.r2_bucket_name.clone(),
-                    final_key,
-                    format!("{}.mp3", version.version),
-                )
-            } else if let Some(version) =
-                crate::db::get_latest_archived_recording_version(&state.db, show_id).await?
-            {
-                let archive_key = version.archive_key.clone().ok_or_else(|| {
-                    AppError::BadRequest("Archived recording has no file to upload".to_string())
-                })?;
-                (
-                    state.config.r2_shows_bucket_name.clone(),
-                    archive_key,
-                    format!("{}.mp3", version.version),
-                )
-            } else {
-                return Err(AppError::BadRequest(
-                    "Show has no recording to upload".to_string(),
-                ));
-            }
-        }
-    };
+    // The picked file: its rendered edit when there is one, else the file (see
+    // `recording_edit::upload_source`). Several parts are joined first.
+    let upload = crate::recording_edit::prepare_upload(state, &show)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
+    let crate::recording_edit::RecordingSource {
+        bucket: recording_bucket,
+        key: recording_key,
+        filename: source_filename,
+        ..
+    } = upload.file;
 
     tracing::info!(
         show_id = show_id,
@@ -543,7 +527,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     let track_numeric_id = track.id;
     let track_id = track.id.to_string();
     let track_url = track
-        .permalink_url
+        .link()
         .unwrap_or_else(|| format!("https://soundcloud.com/radio-moafunk/{}", track.id));
 
     tracing::info!(
@@ -553,12 +537,16 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         "Successfully uploaded to SoundCloud"
     );
 
-    // Store in database
+    // Store in database, with the file the track was made from.
     sqlx::query(
-        "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_uploaded_at = datetime('now'), soundcloud_public = 0 WHERE id = ?"
+        "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_uploaded_at = datetime('now'), soundcloud_public = 0, \
+             soundcloud_source = ?, soundcloud_source_key = ?, soundcloud_edited = ? WHERE id = ?"
     )
     .bind(&track_id)
     .bind(&track_url)
+    .bind(upload.source.as_str())
+    .bind(&recording_key)
+    .bind(upload.edited)
     .bind(show_id)
     .execute(&state.db)
     .await?;
@@ -818,10 +806,10 @@ pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
 /// Best-effort automatic SoundCloud upload, fired when a recording finishes
 /// finalizing (streamed shows via `upload_session`, UNHEARD via
 /// `handle_finalize_socket`). Uploads as a private track with the show's title +
-/// description via [`upload_track`] — which, if the show already has a track,
-/// replaces that track's audio in place so a re-recording updates the same
-/// SoundCloud track. Never returns an error: every failure is logged and swallowed
-/// so it can run detached. No-ops when disabled or unconfigured.
+/// description via [`upload_track`]. A show that already has a track keeps it:
+/// nothing deletes a track by itself, only the host's "Upload again" replaces
+/// it. Never returns an error: every failure is logged and swallowed so it can
+/// run detached. No-ops when disabled or unconfigured.
 pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
     if !should_auto_upload(state.config.soundcloud_auto_upload, is_configured(state)) {
         tracing::debug!(
@@ -856,14 +844,23 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
         }
     };
 
+    // A new take changes only the show recording; the host's own file stays.
+    if crate::recording_edit::picked_source(&show) == crate::recording_edit::Source::Own {
+        tracing::info!(
+            show_id,
+            "Skipping SoundCloud auto-upload (the own file is picked)"
+        );
+        return;
+    }
+    // A new part must not cost the track an earlier part made.
     if show.soundcloud_track_id.is_some() {
         tracing::info!(
             show_id,
-            "Auto-upload: superseding show's SoundCloud track (delete + re-upload)"
+            "Skipping SoundCloud auto-upload (the show already has a track)"
         );
-    } else {
-        tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
+        return;
     }
+    tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
     match upload_track(state, show_id).await {
         Ok(result) if result.success => {
             if let Some(ref url) = result.track_url {
@@ -1094,14 +1091,15 @@ async fn create_playlist(
 pub const PUBLIC_CHECK_EVERY: chrono::Duration = chrono::Duration::minutes(15);
 
 /// A track made public on soundcloud.com, not in the app, never set
-/// `soundcloud_public`. For every episode whose post-announcement waits for
-/// SoundCloud and whose track is private here, ask SoundCloud for the
-/// track's sharing and mark the public ones. Returns the shows marked public.
+/// `soundcloud_public`. For every episode with a post-announcement not sent
+/// yet and whose track is private here, ask SoundCloud for the track's
+/// sharing and mark the public ones. Returns the shows marked public.
 pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
     let rows: Vec<(i64, String)> = sqlx::query_as(
         "SELECT DISTINCT s.id, s.soundcloud_track_id FROM shows s \
          JOIN announcements a ON a.show_id = s.id \
-         WHERE a.slot = 'post' AND a.state = 'waiting_soundcloud' \
+         WHERE a.slot = 'post' \
+           AND a.state IN ('draft', 'waiting_soundcloud', 'scheduled', 'pending_approval') \
            AND s.soundcloud_track_id IS NOT NULL AND COALESCE(s.soundcloud_public, 0) = 0 \
          ORDER BY s.id",
     )
@@ -1112,34 +1110,20 @@ pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
     }
     let access_token = get_access_token(state).await?;
 
-    #[derive(Deserialize)]
-    struct Sharing {
-        sharing: Option<String>,
-    }
     let client = reqwest::Client::new();
     let mut marked = Vec::new();
     for (show_id, track_id) in rows {
-        let resp = client
-            .get(format!("{}/tracks/{}", api_base(), track_id))
-            .header("Authorization", format!("OAuth {}", access_token))
-            .send()
-            .await;
-        let track = match resp {
-            Ok(r) if r.status().is_success() => r.json::<Sharing>().await.ok(),
-            Ok(r) => {
-                tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
-                None
-            }
-            Err(e) => {
-                tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
-                None
-            }
+        let Some(track) = fetch_track(&client, &access_token, show_id, &track_id).await else {
+            continue;
         };
-        if track.and_then(|t| t.sharing).as_deref() == Some("public") {
-            sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = ?")
-                .bind(show_id)
-                .execute(&state.db)
-                .await?;
+        if track.sharing.as_deref() == Some("public") {
+            sqlx::query(
+                "UPDATE shows SET soundcloud_public = 1, soundcloud_url = COALESCE(?, soundcloud_url) WHERE id = ?",
+            )
+            .bind(track.link())
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
             tracing::info!(
                 show_id,
                 track_id,
@@ -1149,6 +1133,66 @@ pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
         }
     }
     Ok(marked)
+}
+
+/// `GET /tracks/:id`; a refusal or an error is logged and gives `None`.
+async fn fetch_track(
+    client: &reqwest::Client,
+    access_token: &str,
+    show_id: i64,
+    track_id: &str,
+) -> Option<SoundCloudTrack> {
+    let resp = client
+        .get(format!("{}/tracks/{}", api_base(), track_id))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => r.json().await.ok(),
+        Ok(r) => {
+            tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
+            None
+        }
+    }
+}
+
+/// Private tracks stored before secret links have a link that shows "track
+/// not found". Ask SoundCloud once for each and store the secret link.
+/// Returns the shows fixed.
+pub async fn repair_private_links(state: &Arc<AppState>) -> Result<Vec<i64>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, soundcloud_track_id FROM shows \
+         WHERE soundcloud_track_id IS NOT NULL AND COALESCE(soundcloud_public, 0) = 0 \
+           AND (soundcloud_url IS NULL OR soundcloud_url NOT LIKE '%/s-%') \
+         ORDER BY id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() || !is_configured(state) || !has_token(state).await {
+        return Ok(Vec::new());
+    }
+    let access_token = get_access_token(state).await?;
+    let client = reqwest::Client::new();
+    let mut fixed = Vec::new();
+    for (show_id, track_id) in rows {
+        let Some(link) = fetch_track(&client, &access_token, show_id, &track_id)
+            .await
+            .and_then(|t| t.link())
+        else {
+            continue;
+        };
+        sqlx::query("UPDATE shows SET soundcloud_url = ? WHERE id = ?")
+            .bind(&link)
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
+        fixed.push(show_id);
+    }
+    Ok(fixed)
 }
 
 pub async fn set_track_privacy(
@@ -1211,9 +1255,16 @@ pub async fn set_track_privacy(
         });
     }
 
-    // Update DB
-    sqlx::query("UPDATE shows SET soundcloud_public = ? WHERE id = ?")
+    // The link changes with the sharing: a private track needs its secret link.
+    let link = resp
+        .json::<SoundCloudTrack>()
+        .await
+        .ok()
+        .and_then(|t| t.link())
+        .or_else(|| show.soundcloud_url.clone());
+    sqlx::query("UPDATE shows SET soundcloud_public = ?, soundcloud_url = ? WHERE id = ?")
         .bind(public as i32)
+        .bind(&link)
         .bind(show_id)
         .execute(&state.db)
         .await?;
@@ -1224,32 +1275,13 @@ pub async fn set_track_privacy(
         public = public,
         "SoundCloud track privacy updated"
     );
-    // Back to private: a post not sent yet must not link to a private track,
-    // so it waits again; going public sets its time anew.
-    if !public {
-        sqlx::query(
-            "UPDATE announcements SET state = 'waiting_soundcloud', scheduled_at = NULL, \
-               updated_at = CURRENT_TIMESTAMP \
-             WHERE show_id = ? AND slot = 'post' AND state IN ('scheduled', 'pending_approval') \
-               AND send_claimed_at IS NULL",
-        )
-        .bind(show_id)
-        .execute(&state.db)
-        .await?;
-    }
-    // A public track unlocks the episode's post announcement.
-    if public {
-        if let Err(e) =
-            crate::announcement_send::unlock_waiting_posts(state, chrono::Utc::now()).await
-        {
-            tracing::error!("Announcements: post unlock failed: {e}");
-        }
-    }
+    // The post-announcement keeps its booked time either way: the
+    // announcement tick unsets it if the track is still private then.
 
     Ok(SoundCloudUploadResult {
         success: true,
         track_id: Some(track_id.clone()),
-        track_url: show.soundcloud_url.clone(),
+        track_url: link,
         error: None,
     })
 }

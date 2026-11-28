@@ -382,12 +382,25 @@ const WAVE_REST: [u32; 25] = [
     18, 32, 12, 26, 38, 20, 8, 30, 16, 34, 22, 10, 28, 18, 36, 14, 24, 8, 32, 20, 12, 26, 16, 8, 20,
 ];
 
+/// Text sizes and spacing of the post template.
+const POST_PX: (f32, f32, f32) = (116.0, 56.0, 30.0);
+const POST_GAP: u32 = 36;
+
+/// Where the post image draws its waveform strip: `(x, y, width, height)`.
+/// The snippet clips of the post play a moving waveform in the same place.
+pub fn post_wave_box() -> (u32, u32, u32, u32) {
+    let (title_px, name_px, line_px) = POST_PX;
+    let text_h = line_h(title_px, 0.92) + 12 + line_h(name_px, 1.15) + 12 + line_h(line_px, 1.2);
+    let wave_h = 88;
+    let y = FEED_H - 64 - text_h - POST_GAP - wave_h;
+    (PAD_X, y, W - 2 * PAD_X, wave_h)
+}
+
 fn post(input: &AnnouncementRender, f: &Fonts, logo: &RgbaImage) -> RgbaImage {
     let mut c = RgbaImage::from_pixel(W, FEED_H, BLACK);
     let content_w = W - 2 * PAD_X;
-    let (title_px, name_px, line_px, gap) = (116.0, 56.0, 30.0, 36);
-    let text_h = line_h(title_px, 0.92) + 12 + line_h(name_px, 1.15) + 12 + line_h(line_px, 1.2);
-    let wave_h = 88;
+    let ((title_px, name_px, line_px), gap) = (POST_PX, POST_GAP);
+    let (_, wave_y, _, wave_h) = post_wave_box();
 
     // Header: badge left, episode label right.
     let mut y = 56;
@@ -408,7 +421,7 @@ fn post(input: &AnnouncementRender, f: &Fonts, logo: &RgbaImage) -> RgbaImage {
     );
     y += LOGO + gap;
 
-    let image_h = FEED_H - 64 - text_h - gap - wave_h - gap - y;
+    let image_h = wave_y - gap - y;
     imageops::overlay(
         &mut c,
         &station_image(&input.image, content_w, image_h),
@@ -518,6 +531,134 @@ pub async fn api_announcement_preview(
         ],
         jpeg,
     ))
+}
+
+/// Width of the Social media card's small picture: sharp at 48 px on a 3×
+/// screen.
+const THUMB_W: u32 = 160;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ImageQuery {
+    /// "thumb" for the card's small picture.
+    pub size: Option<String>,
+}
+
+/// The picture of a set-up slot, for the Social media card.
+/// GET /api/shows/:id/announcements/:slot/image.jpg?size=thumb
+///
+/// The episode's hosts see every set-up slot; other signed-in users only a
+/// sent post, like its link in `/status`. A sent post is the stored JPEG;
+/// otherwise the saved row is rendered. Sent through the backend, never as a
+/// presigned R2 link.
+pub async fn api_announcement_image(
+    State(state): State<Arc<AppState>>,
+    Path((id, slot)): Path<(i64, String)>,
+    Query(query): Query<ImageQuery>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse> {
+    let token = crate::auth::get_session_from_headers(&headers);
+    crate::auth::get_current_user(&state, token.as_deref())
+        .await
+        .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
+    let kind = AnnouncementKind::from_slot(&slot)
+        .ok_or_else(|| AppError::BadRequest(format!("Unknown announcement slot: {slot}")))?;
+    let row: Option<crate::announcements::Announcement> = sqlx::query_as(
+        "SELECT * FROM announcements WHERE show_id = ? AND slot = ? AND channel = 'instagram'",
+    )
+    .bind(id)
+    .bind(kind.slot())
+    .fetch_optional(&state.db)
+    .await?;
+    let row = row
+        .filter(|r| !matches!(r.state.as_str(), "draft" | "cancelled" | "rejected"))
+        .ok_or_else(|| AppError::NotFound("This slot has no post".to_string()))?;
+
+    let stored = if row.state == "sent" {
+        let key = format!("shows/{id}/announcements/{}.jpg", kind.slot());
+        storage::download_file(&state, &key)
+            .await
+            .ok()
+            .map(|(d, _)| d)
+    } else {
+        // Not sent yet: only the episode's hosts may see it.
+        require_show_editor(&state, &headers, id).await?;
+        None
+    };
+    let jpeg = match stored {
+        Some(jpeg) => jpeg,
+        None => {
+            let show: models::Show = sqlx::query_as("SELECT * FROM shows WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
+            render_jpeg(row_render_input(&state, &show, &row).await?).await?
+        }
+    };
+    let jpeg = if query.size.as_deref() == Some("thumb") {
+        tokio::task::spawn_blocking(move || thumb_jpeg(&jpeg))
+            .await
+            .map_err(|e| AppError::Internal(format!("Resize task failed: {e}")))?
+            .map_err(|e| AppError::Internal(format!("Resize failed: {e:#}")))?
+    } else {
+        jpeg
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/jpeg"),
+            // The card asks with ?v=<image_version>, so an edit gets a new URL.
+            (header::CACHE_CONTROL, "private, max-age=3600"),
+        ],
+        jpeg,
+    ))
+}
+
+/// A small copy of a JPEG, [`THUMB_W`] wide.
+fn thumb_jpeg(jpeg: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let image = image::load_from_memory(jpeg).context("read announcement JPEG")?;
+    let small = image
+        .resize(THUMB_W, THUMB_W * 4, FilterType::Triangle)
+        .to_rgb8();
+    let mut out = Vec::new();
+    JpegEncoder::new_with_quality(&mut out, 80)
+        .encode_image(&small)
+        .context("encode thumbnail")?;
+    Ok(out)
+}
+
+/// The render input of a saved announcement: its photo (the upload, else the
+/// current cover), headline and layout.
+pub async fn row_render_input(
+    state: &Arc<AppState>,
+    show: &models::Show,
+    row: &crate::announcements::Announcement,
+) -> Result<AnnouncementRender> {
+    let kind = AnnouncementKind::from_slot(&row.slot)
+        .ok_or_else(|| AppError::Internal(format!("Unknown slot {}", row.slot)))?;
+    let image_key = row
+        .image_key
+        .as_deref()
+        .filter(|_| row.image_source != "cover");
+    let image = load_announcement_image(state, row.show_id, image_key).await?;
+    let layout = if row.layout == "split" {
+        AnnouncementLayout::Split
+    } else {
+        AnnouncementLayout::Band
+    };
+    let query = PreviewQuery {
+        headline: row.headline.clone().unwrap_or_default(),
+        layout,
+    };
+    announcement_for_show(state, show, kind, query, image).await
+}
+
+/// Render off the async runtime.
+pub async fn render_jpeg(input: AnnouncementRender) -> Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || render_announcement_jpeg(&input))
+        .await
+        .map_err(|e| AppError::Internal(format!("Render task failed: {e}")))?
+        .map_err(|e| AppError::Internal(format!("Render failed: {e:#}")))
 }
 
 /// The photo of an announcement: the uploaded `image_key`, else the episode
@@ -698,6 +839,20 @@ mod tests {
         }
         // The image is inside the safe area.
         assert!(c.pixels().any(|p| p[0] > 200 && p[1] > 200 && p[2] > 200));
+    }
+
+    #[test]
+    fn the_post_wave_box_holds_the_waveform_strip() {
+        let c = render_canvas(&input(AnnouncementKind::Post, AnnouncementLayout::Band)).unwrap();
+        let (x, y, w, h) = post_wave_box();
+        assert_eq!((x, w), (PAD_X, W - 2 * PAD_X));
+        // The first bar (yellow) sits in the middle of the box; the rows just
+        // above and below the box are black.
+        assert_eq!(*c.get_pixel(x + 5, y + h / 2), YELLOW);
+        for x in 0..W {
+            assert_eq!(*c.get_pixel(x, y - 1), BLACK, "ink above at {x}");
+            assert_eq!(*c.get_pixel(x, y + h), BLACK, "ink below at {x}");
+        }
     }
 
     #[test]

@@ -67,18 +67,19 @@ async fn create_session_in_db(pool: &sqlx::SqlitePool, user_id: i64) -> Result<S
     Ok(token)
 }
 
-/// Admins may broadcast any show. Other users need a host or artist assignment.
+/// Admins may broadcast any show. Other users need to host it (see
+/// `hosts::HOSTS_EPISODE_SQL`) or an artist assignment.
 pub async fn broadcast_shows(
     pool: &sqlx::SqlitePool,
     user: &models::User,
 ) -> Result<Vec<models::Show>> {
-    Ok(sqlx::query_as(
-        "SELECT s.* FROM shows s WHERE ? OR s.host_user_id = ? OR EXISTS (\
+    Ok(sqlx::query_as(&format!(
+        "SELECT s.* FROM shows s WHERE ?1 OR {} OR EXISTS (\
          SELECT 1 FROM artist_show_assignments asa JOIN artists a ON a.id = asa.artist_id \
-         WHERE asa.show_id = s.id AND a.user_id = ?) ORDER BY s.date DESC, s.id DESC",
-    )
+         WHERE asa.show_id = s.id AND a.user_id = ?2) ORDER BY s.date DESC, s.id DESC",
+        crate::hosts::HOSTS_EPISODE_SQL
+    ))
     .bind(user.role_enum().can_access_admin())
-    .bind(user.id)
     .bind(user.id)
     .fetch_all(pool)
     .await?)
@@ -134,7 +135,10 @@ pub async fn get_current_user(state: &Arc<AppState>, token: Option<&str>) -> Opt
     .await
     .ok()?;
 
-    user
+    // The account end ends the session too, by the same rule as login. Not the
+    // guest's `login_date`: that day is in Berlin time, and a show may run past
+    // midnight. The guest account ends later, at the show day's 23:59:59 UTC.
+    user.filter(|user| !user.is_expired())
 }
 
 pub fn get_session_from_cookies<B>(request: &Request<B>) -> Option<String> {

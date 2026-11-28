@@ -1,9 +1,10 @@
 //! Booking API for host episodes: Book Slot, the upload-first pre-recorded
 //! set, Replace file, Cancel booking and Publish.
 //!
-//! Series routes take the slug and allow the series owner or an admin.
-//! Episode routes take the show id and allow an admin, the host or the
-//! creator (`require_show_editor`). Everyone else gets 403.
+//! Series routes take the slug and allow the series owner, its co-hosts or
+//! an admin. Episode routes take the show id and allow its hosts or an admin
+//! (`require_show_editor`). Cancel booking also refuses an episode
+//! co-host (`require_show_manager`). Everyone else gets 403.
 
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::api::{self, require_show_creator, require_show_editor};
-use super::series::{load_series_for_editor, SeriesRow};
+use super::series::{load_series_by_slug, load_series_for_editor, SeriesRow};
 use crate::series::{self as model, EpisodeStatus};
 use crate::{audio, scheduler, storage, AppError, AppState, Result};
 
@@ -71,35 +72,39 @@ async fn rhythm_slots(
     )
 }
 
-/// True when any show on the slot's date overlaps it (the same rule as
-/// `ensure_no_show_conflict`).
+/// True when another show overlaps the slot (the same rule as
+/// `ensure_no_show_conflict`, also across midnight).
 async fn is_taken(state: &AppState, slot: &Slot) -> Result<bool> {
-    let others: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT start_time, end_time FROM shows WHERE date = ? AND start_time IS NOT NULL",
-    )
-    .bind(&slot.date)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(others.iter().any(|(start, end)| {
-        api::time_windows_overlap(
-            &slot.start_time,
-            Some(&slot.end_time),
-            start,
-            end.as_deref(),
-        )
-    }))
+    let (Ok(day), Some(window)) = (
+        NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d"),
+        api::show_window(&slot.date, &slot.start_time, Some(&slot.end_time)),
+    ) else {
+        return Ok(false);
+    };
+    Ok(api::clashing_show(state, day, window, None)
+        .await?
+        .is_some())
 }
 
 /// GET /api/series/:slug/slots — free slots of the rhythm for the next
 /// 12 weeks. Empty for a series without a rhythm: it books a free date and
-/// time instead.
+/// time instead. An episode co-host sees them too: they may move their episode.
 pub async fn api_series_slots(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
-    let series = load_series_for_editor(&state, &user, &slug).await?;
+    let series = match load_series_for_editor(&state, &user, &slug).await {
+        Err(AppError::Forbidden(message)) => {
+            let series = load_series_by_slug(&state, &slug).await?;
+            if !crate::hosts::cohosts_an_episode_of(&state.db, series.id, user.id).await? {
+                return Err(AppError::Forbidden(message));
+            }
+            series
+        }
+        other => other?,
+    };
     let mut free = Vec::new();
     for slot in rhythm_slots(&state, &series, Utc::now()).await? {
         if !is_taken(&state, &slot).await? {
@@ -122,6 +127,9 @@ pub struct BookRequest {
     mode: String,
     /// A finished upload of this series; required for "prerecorded".
     upload_id: Option<String>,
+    /// The host confirmed to book over idle shows (`api::can_take_over`).
+    #[serde(default)]
+    take_over: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -158,39 +166,69 @@ async fn finished_upload(
     })
 }
 
-/// A date and time for a series without a rhythm: "YYYY-MM-DD", "HH:MM",
-/// the end after the start, and the start still ahead.
+/// "Start show now" sends the current minute: a start up to this far back
+/// still counts as now.
+const NOW_GRACE_MINUTES: i64 = 5;
+
+/// A date and time to book: "YYYY-MM-DD", "HH:MM" start and end (an end at
+/// or before the start is on the next day, 15 minutes to 12 hours), and a
+/// start that is still ahead or at most `NOW_GRACE_MINUTES` back.
 fn check_free_choice(slot: &Slot, now: DateTime<Utc>) -> Result<()> {
     if NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d").is_err() {
         return Err(AppError::BadRequest("Pick a date".to_string()));
     }
-    match (
-        model::parse_hhmm(&slot.start_time),
-        model::parse_hhmm(&slot.end_time),
-    ) {
-        (Some(start), Some(end)) if start < end => {}
-        (Some(_), Some(_)) => {
-            return Err(AppError::BadRequest(
-                "The end time must be after the start time".to_string(),
-            ))
-        }
-        _ => {
-            return Err(AppError::BadRequest(
-                "Start and end time must be HH:MM".to_string(),
-            ))
-        }
+    api::check_show_times(&slot.start_time, &slot.end_time)?;
+    match scheduler::show_start_utc(&slot.date, &slot.start_time) {
+        None => Err(AppError::BadRequest(
+            "This time does not exist that day: the clocks change. Pick another time.".to_string(),
+        )),
+        Some(start) if start <= now - chrono::Duration::minutes(NOW_GRACE_MINUTES) => Err(
+            AppError::BadRequest("Pick a date and time that is still ahead".to_string()),
+        ),
+        Some(_) => Ok(()),
     }
-    if scheduler::show_start_utc(&slot.date, &slot.start_time).is_none_or(|start| start <= now) {
-        return Err(AppError::BadRequest(
-            "Pick a date and time that is still ahead".to_string(),
-        ));
-    }
-    Ok(())
 }
 
-/// POST /api/series/:slug/episodes — book a free slot as a live or a
-/// pre-recorded episode. Returns the new episode. A series with a rhythm
-/// takes one of its slots; one without takes any free date and time ahead.
+/// The shows this booking books over. A clash with a show that is not idle
+/// is a 409, as before. A clash with idle shows only (`api::can_take_over`)
+/// is a 409 too, unless the host confirmed `take_over`.
+async fn shows_to_take_over(
+    state: &AppState,
+    slot: &Slot,
+    take_over: bool,
+    now: DateTime<Utc>,
+) -> Result<Vec<api::BookedShow>> {
+    let (Ok(day), Some(window)) = (
+        NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d"),
+        api::show_window(&slot.date, &slot.start_time, Some(&slot.end_time)),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let clashes = api::clashing_shows(state, day, window, None).await?;
+    for show in &clashes {
+        if !api::can_take_over(state, show.id, &show.date, &show.start_time, now).await? {
+            return Err(AppError::Conflict(format!(
+                "This time overlaps an existing show \"{}\" on {}",
+                show.title, show.date
+            )));
+        }
+    }
+    if let (Some(show), false) = (clashes.first(), take_over) {
+        return Err(AppError::Conflict(format!(
+            "The show booked on {} at {} has not been on air for {} min. Confirm to book over it.",
+            show.date,
+            show.start_time,
+            api::TAKE_OVER_IDLE_MINUTES
+        )));
+    }
+    Ok(clashes)
+}
+
+/// POST /api/series/:slug/episodes — book a free date and time as a live or
+/// a pre-recorded episode. Returns the new episode. Any free time ahead
+/// works, also for a series with a rhythm (its slots are only the preset),
+/// and also one that starts now or passes midnight. With `take_over` it may
+/// book over idle shows: each one then ends where the new episode starts.
 pub async fn api_book_episode(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -205,25 +243,11 @@ pub async fn api_book_episode(
         start_time: req.start_time,
         end_time: req.end_time,
     };
-    if series.rhythm().is_none() {
-        check_free_choice(&slot, Utc::now())?;
-    } else if !rhythm_slots(&state, &series, Utc::now())
-        .await?
-        .contains(&slot)
-    {
-        return Err(AppError::BadRequest(
-            "Pick a date and time from this show's slots".to_string(),
-        ));
-    }
-    // Someone may have taken the slot since the list was loaded: 409.
-    api::ensure_no_show_conflict(
-        &state,
-        &slot.date,
-        Some(&slot.start_time),
-        Some(&slot.end_time),
-        None,
-    )
-    .await?;
+    let now = Utc::now();
+    check_free_choice(&slot, now)?;
+    // Someone may have taken the time since the page loaded, or an idle show
+    // came on air: 409.
+    let idle = shows_to_take_over(&state, &slot, req.take_over, now).await?;
     let prerecorded = match req.mode.as_str() {
         "live" => false,
         "prerecorded" => true,
@@ -240,6 +264,22 @@ pub async fn api_book_episode(
     } else {
         None
     };
+    // An idle show started earlier, so it now ends where this one starts
+    // (an end at or before its start reads as the next day).
+    for show in &idle {
+        sqlx::query("UPDATE shows SET end_time = ? WHERE id = ?")
+            .bind(&slot.start_time)
+            .bind(show.id)
+            .execute(&mut *tx)
+            .await?;
+        tracing::info!(
+            "Booking over idle show {} ({} {}): it now ends at {}",
+            show.id,
+            show.date,
+            show.start_time,
+            slot.start_time
+        );
+    }
     let number: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shows WHERE template_id = ?")
         .bind(series.id)
         .fetch_one(&mut *tx)
@@ -272,8 +312,7 @@ pub async fn api_book_episode(
     .execute(&mut *tx)
     .await?
     .last_insert_rowid();
-    // The on-air story is on by default.
-    crate::announcements::arm_onair(&mut tx, id, &slot.date, &slot.start_time, user.id).await?;
+    // No announcement is set up at booking: every slot waits for the host.
     if let Some(upload) = &upload {
         // One file plays in one episode.
         sqlx::query("DELETE FROM series_uploads WHERE session_id = ?")
@@ -539,6 +578,7 @@ pub async fn api_series_upload_finalize(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
     let series = load_series_for_editor(&state, &user, &slug).await?;
     let upload = open_upload(&state, series.id, &session_id).await?;
     if upload.file_key.is_some() {
@@ -701,7 +741,7 @@ pub async fn api_cancel_booking(
     Path(id): Path<i64>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
-    let (_user, show) = require_show_editor(&state, &headers, id).await?;
+    let (_user, show) = api::require_show_manager(&state, &headers, id).await?;
     let start = show
         .start_time
         .as_deref()

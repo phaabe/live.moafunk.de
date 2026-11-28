@@ -1,8 +1,36 @@
 {
   "screen": "episode-pre",
-  "hash": "2867c7b5",
-  "status": "ok",
+  "hash": "71f40e7b",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
-  "extra": []
+  "missing": [
+    "h1: So 08.11. · Brunchtime",
+    "pill: Pre-recorded & confirmed · plays at 12:00",
+    "h2: Next step",
+    "button: Replace file",
+    "h2: Details",
+    "field: Title",
+    "field: Description",
+    "field: Date",
+    "field: Time",
+    "choice: Live",
+    "choice: Pre-recorded",
+    "button: Save"
+  ],
+  "extra": [
+    "h1: Brunchtime #31",
+    "h2: Social media",
+    "pill: Upcoming",
+    "button: Edit",
+    "button: 1 · Social media",
+    "button: 2 · Soundcheck",
+    "button: 3 · Show time · in 7 days · until 12:00",
+    "button: 4 · Recording",
+    "button: Book a time",
+    "button: Set up",
+    "row: Pre-announcement | Not set up",
+    "row: On-air story | Not set up",
+    "row: Goes out | So 08.11. · 12:00 · when you go live",
+    "row: Post-announcement | Not set up"
+  ]
 }

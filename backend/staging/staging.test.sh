@@ -70,7 +70,10 @@ SOUNDCLOUD_ACCOUNT=moafunk-test
 SOUNDCLOUD_REDIRECT_URI=https://admin.live.moafunk.de/api/soundcloud/callback
 SOUNDCLOUD_AUTO_UPLOAD=true
 SOUNDCLOUD_KEEP_TRACKS=10
-TELEGRAM_ENABLED=false
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=8880403786:AAtest-token_x
+TELEGRAM_LIVE_CHAT_ID=-1005857809589
+TELEGRAM_ANNOUNCE_CHAT_ID=-1005857809589
 INSTAGRAM_ACCOUNT=dev
 INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
 INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
@@ -154,14 +157,20 @@ case_env "SoundCloud cleanup unset" "SOUNDCLOUD_KEEP_TRACKS must be '10'" SOUNDC
 case_env "SoundCloud station account" "SOUNDCLOUD_ACCOUNT must not be the station account radio-moafunk" SOUNDCLOUD_ACCOUNT radio-moafunk
 case_env "SoundCloud test account unset" "SOUNDCLOUD_ACCOUNT must be set" SOUNDCLOUD_ACCOUNT -
 case_env "SoundCloud app secret unset" "SOUNDCLOUD_CLIENT_SECRET must be set" SOUNDCLOUD_CLIENT_SECRET -
-case_env "Telegram switched on" "TELEGRAM_ENABLED must be 'false'" TELEGRAM_ENABLED true
+case_env "Telegram switched off" "TELEGRAM_ENABLED must be 'true'" TELEGRAM_ENABLED false
+case_env "production live chat group" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -1006079057775
+case_env "live chat group unset" "TELEGRAM_LIVE_CHAT_ID must be '-1005857809589'" TELEGRAM_LIVE_CHAT_ID -
+case_env "on-air message to the Moafunk channel" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -1001899120046
+case_env "on-air message chat unset" "TELEGRAM_ANNOUNCE_CHAT_ID must be '-1005857809589'" TELEGRAM_ANNOUNCE_CHAT_ID -
+case_env "production bot token" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN 123:abc
+case_env "bot token unset" "TELEGRAM_BOT_TOKEN must be the test bot's token" TELEGRAM_BOT_TOKEN -
+case_env "admin chat set (technical alerts)" "TELEGRAM_ADMIN_CHAT_ID must not be set" TELEGRAM_ADMIN_CHAT_ID -1003507800985
 case_env "production admin URL" "ADMIN_BASE_URL must be" ADMIN_BASE_URL https://admin.live.moafunk.de
 case_env "production app env" "APP_ENV must be 'staging'" APP_ENV production
 case_env "producer pushes to the production box" "ICECAST_URL must be" ICECAST_URL "icecast://source:$LIVE_PW@178.104.160.103:8005/live"
 case_env "test stream goes to the live mount" "ICECAST_TEST_URL must be" ICECAST_TEST_URL "icecast://source:$TEST_PW@host.docker.internal:8005/live"
 case_env "status from the production Icecast" "ICECAST_STATUS_URL must be" ICECAST_STATUS_URL "https://admin.live.moafunk.de/status-json.xsl"
 case_env "GitHub dispatch token set" "GITHUB_DISPATCH_TOKEN must not be set" GITHUB_DISPATCH_TOKEN ghp_x
-case_env "Telegram bot token set" "TELEGRAM_BOT_TOKEN must not be set" TELEGRAM_BOT_TOKEN 123:abc
 case_env "Telegram setting added later" "TELEGRAM_NEW_SETTING must not be set" TELEGRAM_NEW_SETTING x
 case_env "SoundCloud static token set" "SOUNDCLOUD_ACCESS_TOKEN must not be set" SOUNDCLOUD_ACCESS_TOKEN x
 case_env "SoundCloud setting added later" "SOUNDCLOUD_NEW_SETTING must not be set" SOUNDCLOUD_NEW_SETTING x
@@ -216,6 +225,7 @@ STAGING_ICECAST_ADMIN_PASSWORD=adminadminadminadminadmin1
 STAGING_ICECAST_RELAY_PASSWORD=relayrelayrelayrelayrelay1
 STAGING_SOUNDCLOUD_CLIENT_ID=stagingclientid
 STAGING_SOUNDCLOUD_CLIENT_SECRET=stagingclientsecret
+STAGING_TELEGRAM_BOT_TOKEN=8880403786:AAtest-token_x
 STAGING_INSTAGRAM_ACCESS_TOKEN_DEV=testtoken
 STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV=17841400000000000
 EOF
@@ -347,6 +357,7 @@ expect_ok "seed-db installs a copy from stdin" seed_from_stdin "$TMP/copy.db"
 expect_fact "seed-db adds the staging superadmin" "$BOX/data/unheard.db" \
   "user staging-admin superadmin \$argon2id\$v=19\$m=19456,t=2,p=1\$c2FsdA\$aGFzaA"
 expect_fact "seed-db adds the staging host" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "seed-db adds the second staging host" "$BOX/data/unheard.db" "user staging-host-2 host $HOST_HASH"
 expect_fact "seed-db adds the e2e host" "$BOX/data/unheard.db" "user e2e-host host $E2E_HASH"
 expect_fact "seed-db keeps production users unusable" "$BOX/data/unheard.db" "user boss superadmin !"
 
@@ -358,6 +369,7 @@ expect_fact "seed-db drops stored tokens itself" "$BOX/data/unheard.db" "setting
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDATE users SET role='admin', password_hash='old' WHERE username='staging-host'\"); c.commit()" "$BOX/data/unheard.db"
 expect_ok "users resets the staging logins in the running DB" staging users
 expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"
+expect_fact "users resets the second staging host too" "$BOX/data/unheard.db" "user staging-host-2 host $HOST_HASH"
 set_key "$BOX/.env" STAGING_HOST_PASSWORD_HASH -
 expect_refused "users refuses .env without the host hash" "a host login needs a username and an argon2 hash" staging users
 write_good
@@ -425,6 +437,31 @@ staging unhold >/dev/null
 : >"$CALLS"
 expect_ok "e2e-restart-liquidsoap" ci e2e-restart-liquidsoap
 if grep -q "restart liquidsoap" "$CALLS"; then pass "it restarts only Liquidsoap"; else fail "it restarts only Liquidsoap: $(cat "$CALLS")"; fi
+# Stub: the API answers /health and Icecast lists both mounts.
+mkdir -p "$TMP/bin-up"
+cat >"$TMP/bin-up/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "curl ${*: -1}" >>"$CALLS"
+[[ "${*: -1}" != */status-json.xsl ]] || echo '{"source":[{"listenurl":"http://x/live.mp3"},{"listenurl":"http://x/test.mp3"}]}'
+EOF
+chmod +x "$TMP/bin-up/curl"
+ci_up() { # a CI request while the containers come back
+  PATH="$TMP/bin-up:$PATH" ci "$1"
+}
+: >"$CALLS"
+expect_ok "e2e-restart-api" ci_up e2e-restart-api
+if [[ "$(cat "$CALLS")" == *"restart api"$'\n'"curl http://127.0.0.1:8000/health" ]]; then
+  pass "it restarts only the API, then waits for /health"
+else
+  fail "it restarts only the API, then waits for /health: $(cat "$CALLS")"
+fi
+: >"$CALLS"
+expect_ok "e2e-restart-icecast" ci_up e2e-restart-icecast
+if [[ "$(cat "$CALLS")" == *"restart icecast"$'\n'"curl http://127.0.0.1:8010/status-json.xsl" ]]; then
+  pass "it restarts only Icecast, then waits for both mounts"
+else
+  fail "it restarts only Icecast, then waits for both mounts: $(cat "$CALLS")"
+fi
 cut() { # e2e-cut, called from 203.0.113.7
   SSH_CLIENT="203.0.113.7 51000 22" SSH_ORIGINAL_COMMAND="e2e-cut $1" staging ci-deploy
 }
@@ -633,6 +670,7 @@ sm_secrets() {
     {"key":"INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV","value":"17841400000000000"},
     {"key":"INSTAGRAM_ACCESS_TOKEN_PROD","value":"igprodtoken"},
     {"key":"STAGING_E2E_HOST_PASSWORD","value":"%s"},
+    {"key":"STAGING_TELEGRAM_BOT_TOKEN","value":"8880403786:AApushed-token_x"},
     {"key":"TELEGRAM_BOT_TOKEN","value":"123:abc"}]' "$1" "${2-$E2E_PW}" >"$SM"
 }
 sm_secrets stationclientsecret
@@ -687,6 +725,11 @@ else
 fi
 if [[ "$out" != *stationclientsecret* ]]; then pass "push prints no Secrets Manager value"; else fail "push prints no Secrets Manager value"; fi
 if grep -q "123:abc" "$BOX/.env"; then fail "an unrelated Secrets Manager secret reached the box"; else pass "only the listed secrets come from Secrets Manager"; fi
+if grep -qx "TELEGRAM_BOT_TOKEN=8880403786:AApushed-token_x" "$BOX/.env"; then
+  pass "the box gets the Telegram test bot token"
+else
+  fail "the box gets the Telegram test bot token"
+fi
 if grep -qx "INSTAGRAM_ACCESS_TOKEN_DEV=igdevtoken" "$BOX/.env" && grep -qx "INSTAGRAM_ACCOUNT=dev" "$BOX/.env"; then
   pass "the box gets the Instagram test account"
 else
@@ -706,6 +749,9 @@ printf '[{"key":"SOUNDCLOUD_CLIENT_ID","value":"stationclientid"}]' >"$SM"
 expect_refused "a missing SoundCloud secret stops the push" "0 Secrets Manager secrets named SOUNDCLOUD_CLIENT_SECRET" push
 sm_secrets stationclientsecret ""
 expect_refused "an empty e2e login stops the push" "Secrets Manager secret STAGING_E2E_HOST_PASSWORD is empty" push
+sm_secrets stationclientsecret
+jq 'map(select(.key != "STAGING_TELEGRAM_BOT_TOKEN"))' "$SM" >"$SM.new" && mv "$SM.new" "$SM"
+expect_refused "a missing Telegram test bot token stops the push" "0 Secrets Manager secrets named STAGING_TELEGRAM_BOT_TOKEN" push
 sm_secrets stationclientsecret
 
 r2_items fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210

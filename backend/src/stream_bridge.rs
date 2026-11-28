@@ -33,6 +33,15 @@ const PRODUCER_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// dropped socket can stay open on the server for minutes (nginx: 300 s idle).
 const LIVE_AUDIO_STALE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Max time the prerecorded ffmpeg waits for data from its input URL. A stalled
+/// R2 download otherwise hangs ffmpeg for good, and the slot stays "on air".
+/// Only a read with no data at all counts: a long show plays to its end.
+/// Liquidsoap drops a silent source after 30 s too.
+#[cfg(not(test))]
+const PRERECORDED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(test)]
+const PRERECORDED_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Where the live producer ffmpeg pushes the encoded audio.
 ///
 /// This selects only the **output** leg of the live-stream ffmpeg (encoder +
@@ -594,7 +603,12 @@ impl StreamState {
             StreamError::RecordingError(format!("Failed to create segment directory: {}", e))
         })?;
 
-        let (tx, writer, child) = spawn_recorder(&seg_dir, 0)?;
+        // A session that goes on after a restart numbers on after the
+        // segments its recording already has, so the join keeps them all.
+        let next = segment_count(&seg_dir).await.map_err(|e| {
+            StreamError::RecordingError(format!("Failed to list recording segments: {}", e))
+        })?;
+        let (tx, writer, child) = spawn_recorder(&seg_dir, next)?;
 
         tracing::info!(
             "Started crash-safe segment recording to {:?} (final artifact {:?})",
@@ -811,6 +825,11 @@ fn spawn_recorder(seg_dir: &Path, start_number: usize) -> Result<Recorder, Strea
             &start_number.to_string(),
             "-segment_format",
             "mpegts",
+            // Write each packet at once: a killed recorder (API restart)
+            // then leaves its current segment with the audio it got, not
+            // empty.
+            "-segment_format_options",
+            "flush_packets=1",
             "-reset_timestamps",
             "1",
         ])
@@ -884,11 +903,15 @@ pub async fn start_prerecorded_stream(
 
         // Spawn FFmpeg with file/URL input:
         // -re: read at native frame rate (essential for streaming prerecorded content)
+        // -rw_timeout (microseconds): end on a stalled input instead of hanging.
+        let read_timeout_us = PRERECORDED_READ_TIMEOUT.as_micros().to_string();
         let mut child = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "warning",
+                "-rw_timeout",
+                read_timeout_us.as_str(),
                 "-re",
                 "-i",
                 input_url,
@@ -994,7 +1017,7 @@ pub(crate) fn is_segment_file(path: &Path) -> bool {
 /// correctly whether the segment dir is absolute or relative.
 ///
 /// Segment names are app-controlled (`seg_%05d.ts`), so no quote-escaping is needed.
-fn build_concat_list(segments: &[PathBuf]) -> String {
+pub(crate) fn build_concat_list(segments: &[PathBuf]) -> String {
     let mut list = String::new();
     for seg in segments {
         let name = seg
@@ -1039,7 +1062,14 @@ pub(crate) async fn concat_segments(seg_dir: &Path, output: &Path) -> Result<(),
         .await
         .map_err(|e| StreamError::RecordingError(format!("read segment entry: {}", e)))?
     {
-        if is_segment_file(&entry.path()) {
+        // A killed recorder can leave an empty segment. The concat demuxer
+        // stops at it without an error and drops every segment after it.
+        let empty = entry
+            .metadata()
+            .await
+            .map(|m| m.len() == 0)
+            .unwrap_or(false);
+        if is_segment_file(&entry.path()) && !empty {
             segments.push(entry.path());
         }
     }
@@ -1394,6 +1424,78 @@ mod tests {
         assert!(ms.abs_diff(20_000) < 150, "joined length is {ms} ms");
     }
 
+    /// `secs` seconds of tone in 5 s segments, numbered from `start`, as the
+    /// recorder writes them. Needs ffmpeg.
+    async fn tone_segments(dir: &Path, secs: u32, start: usize) {
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .arg("-i")
+            .arg(format!(
+                "sine=frequency=440:sample_rate=48000:duration={secs}"
+            ))
+            .args(["-c:a", "aac", "-b:a", "192k", "-ac", "2"])
+            .args(["-f", "segment", "-segment_time", "5"])
+            .arg("-segment_start_number")
+            .arg(start.to_string())
+            .args(["-segment_format", "mpegts", "-reset_timestamps", "1"])
+            .arg(dir.join("seg_%05d.ts"))
+            .status()
+            .await
+            .expect("spawn ffmpeg");
+        assert!(status.success());
+    }
+
+    /// Ticket 1098: an API restart killed the recorder and left its current
+    /// segment empty. The join used to stop there without an error and drop
+    /// the audio after the restart. Needs ffmpeg.
+    #[tokio::test]
+    async fn an_empty_segment_does_not_end_the_join() {
+        let dir = tempfile::TempDir::new().unwrap();
+        tone_segments(dir.path(), 10, 0).await;
+        let next = segment_count(dir.path()).await.unwrap();
+        std::fs::write(dir.path().join(format!("seg_{next:05}.ts")), b"").unwrap();
+        tone_segments(dir.path(), 10, next + 1).await;
+        let out = dir.path().join("raw.webm");
+
+        concat_segments(dir.path(), &out).await.unwrap();
+
+        let ms = crate::audio::get_duration(&out).await.unwrap();
+        assert!(ms.abs_diff(20_000) < 300, "joined length is {ms} ms");
+    }
+
+    /// A killed recorder (an API restart) keeps the audio of its current
+    /// segment on disk. Needs ffmpeg.
+    #[tokio::test]
+    async fn a_killed_recorder_leaves_its_audio_in_the_segment() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let webm = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi"])
+            .args(["-i", "sine=frequency=440:sample_rate=48000:duration=4"])
+            .args(["-ac", "2", "-c:a", "libopus", "-f", "webm", "pipe:1"])
+            .output()
+            .await
+            .expect("run ffmpeg")
+            .stdout;
+        let (tx, _writer, mut child) = spawn_recorder(dir.path(), 0).unwrap();
+        tx.send(webm).await.unwrap();
+        let segment = dir.path().join("seg_00000.ts");
+        // Less than one segment of audio: without flushing, nothing reaches
+        // the file before the segment ends.
+        let mut ms = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            ms = crate::audio::get_duration(&segment).await.unwrap_or(0);
+            if ms > 3_500 {
+                break;
+            }
+        }
+
+        child.kill().await.unwrap();
+
+        assert!(ms > 3_500, "the killed recorder left {ms} ms");
+        drop(tx);
+    }
+
     #[test]
     fn ffmpeg_log_lines_hide_url_passwords() {
         let clean = |line: &str, secret: Option<&str>| clean_ffmpeg_line(line.as_bytes(), secret);
@@ -1456,6 +1558,43 @@ mod tests {
             .expect("child blocked on a full stderr pipe")
             .unwrap();
         assert!(status.success());
+    }
+
+    /// A prerecorded input that stops sending must end the stream, so the slot
+    /// does not stay "on air" (a stalled R2 download did that on staging).
+    #[tokio::test]
+    async fn prerecorded_stream_ends_when_its_input_stalls() {
+        use tokio::io::AsyncReadExt;
+        // An HTTP source that sends its header, then nothing.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/set.mp3", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1000000\r\n\r\n")
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let shared = new_shared_state();
+        let target = PushTarget::Rtmp {
+            destination: "pipe:1".to_string(),
+        };
+        start_prerecorded_stream(&shared, "host".into(), &url, &target)
+            .await
+            .unwrap();
+        assert!(shared.lock().await.is_active());
+
+        // The read timeout (2 s in tests) and one watcher tick (2 s) free the slot.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while shared.lock().await.is_active() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        .expect("the stalled prerecorded stream still holds the slot");
     }
 
     #[tokio::test]

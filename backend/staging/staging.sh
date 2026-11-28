@@ -15,14 +15,15 @@
 #                                   During a hold, up and down refuse, and hold and unhold refuse a test run's
 #                                   hold; STAGING_IGNORE_HOLD=1 overrides
 #   staging.sh ci-deploy            forced command of the CI key: "status" or "deploy sha-<commit> sha256:<digest>"
-#                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap, e2e-cut,
-#                                   e2e-recordings, e2e-cleanup, e2e-free-slot; for the Instagram test: e2e-instagram on <HH:MM>|off)
+#                                   (and for the chaos test show: e2e-hold, e2e-unhold, e2e-restart-liquidsoap,
+#                                   e2e-restart-api, e2e-restart-icecast, e2e-cut, e2e-recordings, e2e-cleanup,
+#                                   e2e-free-slot; for the Instagram test: e2e-instagram on <HH:MM>|off)
 #   staging.sh install-ci-key       let the CI key (ci-deploy.pub) run only ci-deploy (part of setup)
 #   staging.sh down                 stop staging (keeps its data)
 #   staging.sh status               containers, running tag, health
 #   staging.sh export-db            ON PRODUCTION: write a scrubbed copy of the production DB to stdout
 #   staging.sh seed-db <file|->     replace the staging DB with a scrubbed copy
-#   staging.sh users                set the staging logins (staging-admin, staging-host, e2e-host) from .env
+#   staging.sh users                set the staging logins (staging-admin, staging-host, staging-host-2, e2e-host) from .env
 set -euo pipefail
 
 STAGING_DIR="${STAGING_DIR:-/opt/unheard-staging}"
@@ -44,7 +45,13 @@ SECRET_NAMES="STAGING_SECRET_KEY STAGING_SUPERADMIN_PASSWORD STAGING_HOST_PASSWO
 STAGING_R2_ACCESS_KEY_ID STAGING_R2_SECRET_ACCESS_KEY STAGING_HARBOR_TEST_PASSWORD STAGING_HARBOR_LIVE_PASSWORD
 STAGING_ICECAST_SOURCE_PASSWORD STAGING_ICECAST_ADMIN_PASSWORD STAGING_ICECAST_RELAY_PASSWORD
 STAGING_SOUNDCLOUD_CLIENT_ID STAGING_SOUNDCLOUD_CLIENT_SECRET
-STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV"
+STAGING_INSTAGRAM_ACCESS_TOKEN_DEV STAGING_INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV STAGING_TELEGRAM_BOT_TOKEN"
+
+# The Telegram test bot @moafunktestbot (the number before ':' in its token) and
+# the staging test group. Two servers cannot poll one bot, and the production
+# chats are never for tests.
+STAGING_TELEGRAM_BOT_ID=8880403786
+STAGING_TELEGRAM_CHAT_ID=-1005857809589
 
 # The station's production SoundCloud account: never the staging account.
 STATION_SOUNDCLOUD_ACCOUNT=radio-moafunk
@@ -145,6 +152,8 @@ forbidden_key() {
     SOUNDCLOUD_CLIENT_ID | SOUNDCLOUD_CLIENT_SECRET | SOUNDCLOUD_REDIRECT_URI | SOUNDCLOUD_ACCOUNT | SOUNDCLOUD_KEEP_TRACKS) return 1 ;;
     # The Instagram test account only (check_env pins INSTAGRAM_ACCOUNT=dev).
     INSTAGRAM_ACCOUNT | INSTAGRAM_ACCESS_TOKEN_DEV | INSTAGRAM_BUSINESS_ACCOUNT_ID_DEV) return 1 ;;
+    # The Telegram test bot and test group only (check_env pins them).
+    TELEGRAM_BOT_TOKEN | TELEGRAM_LIVE_CHAT_ID | TELEGRAM_ANNOUNCE_CHAT_ID) return 1 ;;
     SOUNDCLOUD_* | TELEGRAM_* | INSTAGRAM_* | FACEBOOK_* | OPENAI_* | RECOVERY_* | GITHUB_DISPATCH_TOKEN) return 0 ;;
   esac
   return 1
@@ -159,7 +168,8 @@ check_env() {
   # must use the app's only redirect URI, so every value here is required explicitly.
   for pair in APP_ENV=staging "ADMIN_BASE_URL=https://$DOMAIN" STREAM_OUTPUT=icecast \
     SOUNDCLOUD_AUTO_UPLOAD=true "SOUNDCLOUD_REDIRECT_URI=$PROD_SOUNDCLOUD_CALLBACK" \
-    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=false INSTAGRAM_ACCOUNT=dev \
+    SOUNDCLOUD_KEEP_TRACKS=10 TELEGRAM_ENABLED=true "TELEGRAM_LIVE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" \
+    "TELEGRAM_ANNOUNCE_CHAT_ID=$STAGING_TELEGRAM_CHAT_ID" INSTAGRAM_ACCOUNT=dev \
     STAGING_E2E_HOST_USERNAME=e2e-host \
     R2_BUCKET_NAME=unheard-artists-staging R2_SHOWS_BUCKET_NAME=moafunk-staging \
     "ICECAST_STATUS_URL=http://host.docker.internal:$ICECAST_PORT/status-json.xsl"; do
@@ -194,6 +204,9 @@ check_env() {
   [[ "$value" =~ ^[a-z0-9_-]+$ ]] || problem "SOUNDCLOUD_ACCOUNT must be set (permalink of the test account)"
   [[ "$value" != "$STATION_SOUNDCLOUD_ACCOUNT" ]] ||
     problem "SOUNDCLOUD_ACCOUNT must not be the station account $STATION_SOUNDCLOUD_ACCOUNT"
+
+  [[ "$(env_value TELEGRAM_BOT_TOKEN "$file")" =~ ^$STAGING_TELEGRAM_BOT_ID:[A-Za-z0-9_-]+$ ]] ||
+    problem "TELEGRAM_BOT_TOKEN must be the test bot's token ($STAGING_TELEGRAM_BOT_ID:…)"
 
   for key in $(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$file" | cut -d= -f1); do
     if forbidden_key "$key"; then problem "$key must not be set in staging"; fi
@@ -279,7 +292,8 @@ cmd_install_env() {
     esac
     case " $LOGIN_PASSWORDS " in
       *" $name "*) [[ -n "$value" ]] || die "$name is empty" ;;
-      *) [[ "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
+      # ':' for the Telegram bot token (<bot id>:<secret>).
+      *) [[ "$value" =~ ^[A-Za-z0-9._~+/=:-]+$ ]] || die "$name is empty or has characters a .env cannot hold unquoted" ;;
     esac
     [[ ! -e "$tmp/$name" ]] || die "$name was sent twice"
     printf '%s' "$value" >"$tmp/$name"
@@ -560,6 +574,14 @@ ci_e2e() {
     fi
   elif [[ "$request" == e2e-restart-liquidsoap ]]; then
     compose restart liquidsoap
+  # The API and Icecast restarts return once they serve again, so the test
+  # measures the show's recovery, not the container start.
+  elif [[ "$request" == e2e-restart-api ]]; then
+    compose restart api
+    wait_healthy
+  elif [[ "$request" == e2e-restart-icecast ]]; then
+    compose restart icecast
+    wait_mounts
   elif [[ "$request" =~ ^e2e-cut\ ([1-9]|[1-5][0-9]|60)$ ]]; then
     secs="${BASH_REMATCH[1]}"
     ip="${SSH_CLIENT:-}"
@@ -584,7 +606,7 @@ ci_e2e() {
   elif [[ "$request" =~ ^e2e-instagram\ public\ ([0-9]{1,12})$ ]]; then
     e2e_instagram public "${BASH_REMATCH[1]}"
   else
-    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-free-slot <date> <HH:MM> <HH:MM>, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
+    die "the CI key may only run: status, deploy sha-<commit> sha256:<digest>, e2e-hold <run>, e2e-unhold <run>, e2e-restart-liquidsoap, e2e-restart-api, e2e-restart-icecast, e2e-cut <1-60>, e2e-recordings <show>, e2e-cleanup, e2e-free-slot <date> <HH:MM> <HH:MM>, e2e-instagram on <HH:MM>, e2e-instagram off, e2e-instagram public <show>"
   fi
 }
 
@@ -856,8 +878,9 @@ PY
 }
 
 # The staging logins from .env, with passwords from Bitwarden: staging-admin
-# (superadmin), staging-host (host, for people) and e2e-host (host, only for
-# the e2e tests, so a person never takes over a test's stream). Needed because
+# (superadmin), staging-host and staging-host-2 (hosts for people, the second
+# one to test co-hosts; same password as staging-host) and e2e-host (host,
+# only for the e2e tests, so a person never takes over a test's stream). Needed because
 # the backend seeds a superadmin only into an empty users table, and every
 # user in a production copy has an unusable password. Resets all to the
 # Bitwarden password.
@@ -876,6 +899,7 @@ import os, sqlite3, sys
 logins = [
     (os.environ["ADMIN_NAME"], os.environ["ADMIN_HASH"], "superadmin"),
     (os.environ["HOST_NAME"], os.environ["HOST_HASH"], "host"),
+    (os.environ["HOST_NAME"] + "-2", os.environ["HOST_HASH"], "host"),
     (os.environ["E2E_NAME"], os.environ["E2E_HASH"], "host"),
 ]
 for name, hashed, role in logins:

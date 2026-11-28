@@ -28,7 +28,8 @@ The admin SPA ships inside the backend image, so one image covers API and admin.
    2. Squash merge it: `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`.
    3. When the `main` image build is green, run **DEPLOY - Release to production** with `hotfix` on, first with `dry_run` on. It skips only the staging check, and only while `main`'s head commit is that hotfix merge.
    4. Right after: the same fix as a normal PR into `staging`, label `release::fix`. Cherry-pick the commit from `main` onto a branch from `origin/staging` (`git cherry-pick <commit>`). Without it, the next release conflicts with the fix or removes it.
-6. Rollback: run **DEPLOY - Release to production** with `rollback_tag` set to the earlier tag (the deploy log prints it). This skips the staging check but keeps all other checks. Restore the DB backup only if a migration broke data; migrations only go forward.
+6. Issue labels show where a ticket's change runs (`scripts/deployed-labels.sh`). An issue counts when a merged PR links it with its full URL on a line that starts with `Refs:`, `Closes:`, `Fixes:`, `Issue:` or `Ticket:`. After each merge into `staging`, its issues get `deployed::staging` (**OPS - Label issues on staging**). After a real production deploy (not a dry run, not a rollback), the job `label-issues` gives the issues of the commits since the `r*` tag before `main`'s head `deployed::production`. Each issue has one `deployed::*` label at a time. A release that was never deployed keeps `deployed::staging`; then run `REPO=phaabe/live.moafunk.de scripts/deployed-labels.sh production rM..rN` by hand (`DRY_RUN=1` first).
+7. Rollback: run **DEPLOY - Release to production** with `rollback_tag` set to the earlier tag (the deploy log prints it). This skips the staging check but keeps all other checks. Restore the DB backup only if a migration broke data; migrations only go forward.
 
 ## What the production deploy checks
 
@@ -38,6 +39,7 @@ It stops, and changes nothing, when:
 - the code on `main` is not exactly the code that staging runs (it asks the staging box which tag it runs and compares the git trees). With `hotfix` on, it skips only this check, and only when `main`'s head commit is the merge of a PR with label `hotfix`. Otherwise the run stops.
 - the image for the commit is not built yet, or the pulled image does not have the expected digest
 - a show is on air, or a show starts or runs within the next 2 hours
+- a recording finalize, a recording or set upload, or a SoundCloud upload is running (the API's `/metrics` on the box, `moafunk_busy`). Wait and run it again.
 - another deploy is running
 
 Then it backs up the DB (SQLite backup API), starts the new image, waits until it is healthy, checks `/health` and `/api/stream/status`, and prints the rollback. The host part is `backend/deploy/deploy-production.sh`; it also runs by hand over ssh (see its header).

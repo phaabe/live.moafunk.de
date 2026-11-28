@@ -1,8 +1,11 @@
 {
   "screen": "studio-ready",
-  "hash": "85fbd85f",
-  "status": "ok",
+  "hash": "5a4c62e9",
+  "status": "drift",
   "leftOut": [],
-  "missing": [],
+  "missing": [
+    "check: Record this show",
+    "button: Go Live"
+  ],
   "extra": []
 }

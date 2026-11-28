@@ -434,7 +434,7 @@ describe('End Episode stops cleanly', () => {
 });
 
 describe('inputs', () => {
-  it('lists real inputs, hides BlackHole and names unnamed ones', async () => {
+  it('lists audio inputs, BlackHole too, and names unnamed ones', async () => {
     mediaDevices.enumerateDevices.mockResolvedValue([
       { kind: 'audioinput', deviceId: 'bh', label: 'BlackHole 2ch' },
       { kind: 'audioinput', deviceId: 'a', label: '' },
@@ -443,8 +443,15 @@ describe('inputs', () => {
     ]);
     const capture = mod.useAudioCapture();
     await capture.refreshDevices();
+    // The permission probe runs no auto gain control: it would turn the
+    // default input's system volume down.
+    expect(mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     expect(capture.devices.value).toEqual([
-      { deviceId: 'a', label: 'Audio Input 1' },
+      // A DJ program's mix arrives through BlackHole.
+      { deviceId: 'bh', label: 'BlackHole 2ch' },
+      { deviceId: 'a', label: 'Audio Input 2' },
       { deviceId: 'x', label: 'Xone:23C' },
     ]);
     // The permission prompt's stream is not kept open.
@@ -490,5 +497,33 @@ describe('inputs', () => {
     expect(onError).toHaveBeenCalledWith(
       'Permission denied. Please allow screen sharing with audio.'
     );
+  });
+});
+
+describe('the live session owns the callbacks (#1063)', () => {
+  it('keeps the audio on the broadcast when another page sets its own', async () => {
+    const { capture, recorder } = await goLive();
+    const session = { onData: vi.fn(), onError: vi.fn() };
+    mod.ownCaptureCallbacks(session);
+    // Another admin page wires the recorder to its own sink.
+    const page = { onData: vi.fn(), onError: vi.fn() };
+    mod.useAudioCapture(page);
+    capture.setOnData(page.onData);
+    capture.setOnError(page.onError);
+
+    recorder.emit(chunk(1));
+    await flush();
+    recorder.onerror?.(new Event('error'));
+    expect(session.onData).toHaveBeenCalledOnce();
+    expect(session.onError).toHaveBeenCalledWith('Recording error');
+    expect(page.onData).not.toHaveBeenCalled();
+    expect(page.onError).not.toHaveBeenCalled();
+
+    // After End Episode a page may set them again.
+    mod.ownCaptureCallbacks(null);
+    capture.setOnData(page.onData);
+    recorder.emit(chunk(2));
+    await flush();
+    expect(page.onData).toHaveBeenCalledOnce();
   });
 });

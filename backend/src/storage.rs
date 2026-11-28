@@ -602,6 +602,35 @@ pub async fn download_file_from_bucket(
     Ok((data, content_type))
 }
 
+/// Stream an object to a local file, so a long recording never sits in RAM.
+pub async fn download_to_file(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    path: &std::path::Path,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let response = state
+        .s3_client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to download file: {}", e)))?;
+    let mut file = tokio::fs::File::create(path)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to create {}: {}", path.display(), e)))?;
+    tokio::io::copy(&mut response.body.into_async_read(), &mut file)
+        .await
+        .map_err(|e| AppError::Storage(format!("Failed to read file: {}", e)))?;
+    file.flush()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to write {}: {}", path.display(), e)))?;
+    Ok(())
+}
+
 pub async fn get_presigned_url(
     state: &Arc<AppState>,
     key: &str,
@@ -619,6 +648,37 @@ pub async fn get_presigned_url_from_bucket(
     key: &str,
     expires_in_secs: u64,
 ) -> Result<String> {
+    presign_get(state, bucket, key, expires_in_secs, None).await
+}
+
+/// A presigned URL that makes the browser save the file as `filename`
+/// instead of playing it.
+pub async fn get_download_url(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    filename: &str,
+    expires_in_secs: u64,
+) -> Result<String> {
+    // Plain ASCII only, so the header value stays valid.
+    let name: String = filename
+        .chars()
+        .map(|c| match c {
+            ' ' | '!'..='~' if c != '"' && c != '\\' => c,
+            _ => '_',
+        })
+        .collect();
+    let disposition = format!("attachment; filename=\"{name}\"");
+    presign_get(state, bucket, key, expires_in_secs, Some(disposition)).await
+}
+
+async fn presign_get(
+    state: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    expires_in_secs: u64,
+    disposition: Option<String>,
+) -> Result<String> {
     let presigning_config = aws_sdk_s3::presigning::PresigningConfig::builder()
         .expires_in(std::time::Duration::from_secs(expires_in_secs))
         .build()
@@ -629,6 +689,7 @@ pub async fn get_presigned_url_from_bucket(
         .get_object()
         .bucket(bucket)
         .key(key)
+        .set_response_content_disposition(disposition)
         .presigned(presigning_config)
         .await
         .map_err(|e| AppError::Storage(format!("Failed to generate presigned URL: {}", e)))?;

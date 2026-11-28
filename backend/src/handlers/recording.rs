@@ -7,7 +7,7 @@
 use crate::auth;
 use crate::models;
 use crate::recording::{RecordingError, RecordingSession, SharedRecordingManager, TrackMarker};
-use crate::recording_finalizer::FinalizeOps;
+use crate::recording_finalizer::{FinalizeOps, FINALIZE_GRACE};
 use crate::stream_bridge::SharedStreamState;
 use crate::{audio, storage, AppError, AppState, Result};
 use axum::{
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::process::Command;
 
 /// Request body for starting a recording session.
@@ -417,11 +418,21 @@ async fn upload_session(
         let sc_state = Arc::clone(state);
         let sc_show_id = finalized.show_id;
         tokio::spawn(async move {
-            crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+            after_new_part(&sc_state, sc_show_id).await;
         });
     }
 
     Ok(finalized)
+}
+
+/// After a part of a show's recording is saved: join the parts (a reconnect
+/// after the grace makes a second one), then the SoundCloud auto-upload.
+/// Best effort; failures are logged.
+async fn after_new_part(state: &Arc<AppState>, show_id: i64) {
+    if let Err(e) = crate::recording_edit::join_parts(state, show_id).await {
+        tracing::error!(show_id, error = %e, "Failed to join the recording parts");
+    }
+    crate::soundcloud::auto_upload_on_finalize(state, show_id).await;
 }
 
 /// The persist half of [`upload_session`], against any [`RecordingStore`].
@@ -882,10 +893,12 @@ struct Leftover {
 }
 
 #[derive(Debug, Default, PartialEq)]
-struct RecoveryCounts {
-    recovered: u32,
-    skipped: u32,
-    failed: u32,
+pub(crate) struct RecoveryCounts {
+    pub(crate) recovered: u32,
+    pub(crate) skipped: u32,
+    pub(crate) failed: u32,
+    /// Cut off a moment ago: left to its producer for the grace.
+    pub(crate) deferred: u32,
 }
 
 /// Recover recordings that a crash or failed finalize left on disk.
@@ -906,14 +919,47 @@ struct RecoveryCounts {
 /// Idempotent: a second run adds no row and uploads nothing. Failures are logged
 /// and the files stay for the next attempt and the dead-man's-switch. The live
 /// session's own files are never touched.
+///
+/// A restart during a live show cuts its recording off, and the show's
+/// producer reconnects by itself. So a recording whose segments changed less
+/// than [`FINALIZE_GRACE`] ago, and that no finalize ended, waits for it: the
+/// producer goes on in the same version, and its own finalize saves it. A
+/// second pass after the grace recovers the ones nobody took over.
 pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path) {
-    recover_leftovers(state, &R2Store(state), temp_dir).await;
+    let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
+    let first = recover_once(state, temp_dir, FINALIZE_GRACE).await;
+    if first.deferred > 0 {
+        tokio::time::sleep(FINALIZE_GRACE).await;
+        recover_once(state, temp_dir, Duration::ZERO).await;
+    }
 }
 
-async fn recover_leftovers(
+/// One recovery pass against R2. A recording cut off less than
+/// `fresh_within` ago waits for its producer (see [`recover_pass`]).
+pub(crate) async fn recover_once(
+    state: &Arc<AppState>,
+    temp_dir: &Path,
+    fresh_within: Duration,
+) -> RecoveryCounts {
+    recover_pass(state, &R2Store(state), temp_dir, fresh_within).await
+}
+
+/// True when the recorder wrote into `seg_dir` less than `within` ago.
+async fn written_within(seg_dir: &Path, within: Duration) -> bool {
+    match tokio::fs::metadata(seg_dir)
+        .await
+        .and_then(|m| m.modified())
+    {
+        Ok(modified) => modified.elapsed().is_ok_and(|age| age < within),
+        Err(_) => false,
+    }
+}
+
+async fn recover_pass(
     state: &Arc<AppState>,
     store: &dyn RecordingStore,
     temp_dir: &Path,
+    fresh_within: Duration,
 ) -> RecoveryCounts {
     let mut counts = RecoveryCounts::default();
     let mut read_dir = match tokio::fs::read_dir(temp_dir).await {
@@ -968,11 +1014,37 @@ async fn recover_leftovers(
         leftovers.len()
     );
 
-    let active = state.recording_manager.lock().await.get_temp_file_path();
+    // Offer each show's newest recording that was cut off a moment ago to its
+    // producer first, before any slow call: the producer may reconnect soon.
+    let mut offered = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::new();
+    for ((show_id, version), leftover) in leftovers.iter().rev() {
+        // Versions sort by time: only a show's newest one can go on.
+        if !seen.insert(*show_id) {
+            continue;
+        }
+        let Some(seg_dir) = &leftover.seg_dir else {
+            continue;
+        };
+        if written_within(seg_dir, fresh_within).await {
+            state
+                .recording_manager
+                .lock()
+                .await
+                .offer_resume(*show_id, version);
+            offered.insert((*show_id, version.clone()));
+        }
+    }
+
     for ((show_id, version), leftover) in leftovers {
         // The joined file's path, as the live stop path names it.
         let artifact_path = temp_dir.join(format!("recording_{}_{}.webm", show_id, version));
-        if active.as_deref() == Some(artifact_path.as_path()) {
+        let live = {
+            let manager = state.recording_manager.lock().await;
+            manager.get_temp_file_path().as_deref() == Some(artifact_path.as_path())
+                || manager.was_resumed(show_id, &version)
+        };
+        if live {
             tracing::info!(
                 "Recording recovery: show {} version {} is the live session, skipping",
                 show_id,
@@ -982,7 +1054,33 @@ async fn recover_leftovers(
             continue;
         }
 
-        match crate::db::get_recording_version(&state.db, show_id, &version).await {
+        let row = crate::db::get_recording_version(&state.db, show_id, &version).await;
+        if offered.contains(&(show_id, version.clone())) {
+            // A finalize note says the episode ended: nobody goes on in it.
+            let note = store.size(&finalize_note_key(show_id, &version)).await;
+            if matches!(row, Ok(None)) && matches!(note, Ok(None)) {
+                tracing::info!(
+                    "Recording recovery: show {} version {} was cut off a moment ago; its producer may go on in it",
+                    show_id,
+                    version
+                );
+                counts.deferred += 1;
+                continue;
+            }
+        }
+        // From here recovery owns the recording: no producer takes it over.
+        let taken = {
+            let mut manager = state.recording_manager.lock().await;
+            let taken = manager.was_resumed(show_id, &version);
+            manager.withdraw_resume(show_id, &version);
+            taken
+        };
+        if taken {
+            counts.skipped += 1;
+            continue;
+        }
+
+        match row {
             Ok(Some(_)) => {
                 remove_persisted_leftover(store, show_id, &version, &leftover).await;
                 counts.skipped += 1;
@@ -1706,6 +1804,7 @@ pub async fn finalize_ws_handler(
 
 /// Handle the finalize WebSocket connection.
 async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: FinalizeQuery) {
+    let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
     let (mut sender, mut receiver) = socket.split();
 
     // Run the finalize process
@@ -1737,7 +1836,7 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
                     let sc_state = Arc::clone(&state);
                     let sc_show_id = query.show_id;
                     tokio::spawn(async move {
-                        crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+                        after_new_part(&sc_state, sc_show_id).await;
                     });
                 }
             } else {
@@ -2426,6 +2525,7 @@ mod tests {
             pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             chat_hub: Arc::new(crate::chat_bridge::ChatHub::new()),
+            peaks_jobs: Default::default(),
         });
 
         let raw_key = format!("recordings/{}/{}/raw.webm", show_id, version);
@@ -2556,6 +2656,15 @@ mod tests {
 
     const VERSION: &str = "2026-06-01T20-00-00";
 
+    /// A recovery pass that recovers every leftover at once.
+    async fn recover_leftovers(
+        state: &Arc<AppState>,
+        store: &dyn RecordingStore,
+        temp_dir: &Path,
+    ) -> RecoveryCounts {
+        recover_pass(state, store, temp_dir, Duration::ZERO).await
+    }
+
     /// An app state with in-memory SQLite and no reachable R2; the temp dir is
     /// both the recording manager's dir and the recovery scan dir.
     async fn offline_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -2586,6 +2695,7 @@ mod tests {
             pending_show_notifications: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             telegram_edit_sessions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             chat_hub: Arc::new(crate::chat_bridge::ChatHub::new()),
+            peaks_jobs: Default::default(),
         });
         (state, temp)
     }
@@ -2736,7 +2846,8 @@ mod tests {
             RecoveryCounts {
                 recovered: 0,
                 skipped: 1,
-                failed: 0
+                failed: 0,
+                deferred: 0
             }
         );
         assert_eq!(store.writes(), writes, "no upload, put or publish");
@@ -2828,6 +2939,103 @@ mod tests {
         assert!(artifact.exists() && seg_dir.exists());
         assert_eq!(store.writes(), (0, 0, 0));
         assert_eq!(row_count(&state, 11).await, 0);
+    }
+
+    /// What a restart leaves of a live recording: the recorder's segments and
+    /// the empty file of the session start. Needs ffmpeg.
+    async fn cut_off_recording(temp: &Path, show_id: i64) -> PathBuf {
+        let (seg_dir, _) = segments_and_join(temp, show_id).await;
+        leftover_webm(temp, show_id, b"").await;
+        seg_dir
+    }
+
+    /// An API restart during a live show (ticket 1098): boot recovery keeps
+    /// the cut-off recording, and the producer that comes back goes on in it.
+    #[tokio::test]
+    async fn a_producer_back_after_a_restart_goes_on_in_its_recording() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 35).await;
+        let seg_dir = cut_off_recording(temp.path(), 35).await;
+
+        let counts = recover_pass(&state, &store, temp.path(), FINALIZE_GRACE).await;
+
+        assert_eq!(counts.deferred, 1);
+        assert_eq!(counts.recovered, 0);
+        assert_eq!(store.writes(), (0, 0, 0), "nothing uploaded yet");
+        assert_eq!(row_count(&state, 35).await, 0);
+        assert!(seg_dir.exists());
+
+        let status = state
+            .recording_manager
+            .lock()
+            .await
+            .start(35)
+            .await
+            .unwrap();
+        assert_eq!(status.version.as_deref(), Some(VERSION), "same version");
+
+        // The pass after the grace leaves it to its own finalize.
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+        assert_eq!(counts.recovered, 0);
+        assert_eq!(store.writes(), (0, 0, 0));
+        assert_eq!(row_count(&state, 35).await, 0);
+        assert!(seg_dir.exists());
+    }
+
+    /// Nobody comes back within the grace: the pass after it recovers the
+    /// recording as before, and a later producer starts a new version.
+    #[tokio::test]
+    async fn a_cut_off_recording_nobody_takes_over_is_recovered_after_the_grace() {
+        let (state, temp) = offline_state().await;
+        let store = FakeStore::default();
+        add_show(&state, 36).await;
+        let seg_dir = cut_off_recording(temp.path(), 36).await;
+        let counts = recover_pass(&state, &store, temp.path(), FINALIZE_GRACE).await;
+        assert_eq!(counts.deferred, 1);
+
+        let counts = recover_leftovers(&state, &store, temp.path()).await;
+
+        assert_eq!(counts.recovered, 1);
+        assert_eq!(row_count(&state, 36).await, 1);
+        assert!(!seg_dir.exists());
+        let status = state
+            .recording_manager
+            .lock()
+            .await
+            .start(36)
+            .await
+            .unwrap();
+        assert_ne!(status.version.as_deref(), Some(VERSION), "a new version");
+    }
+
+    /// Only a recording cut off a moment ago can still get its producer back.
+    /// An old one, or one whose finalize already ran (it left a note), is
+    /// recovered at once.
+    #[tokio::test]
+    async fn an_old_or_ended_recording_is_recovered_at_once() {
+        for case in ["old", "ended"] {
+            let (state, temp) = offline_state().await;
+            let store = FakeStore::default();
+            add_show(&state, 37).await;
+            cut_off_recording(temp.path(), 37).await;
+            let fresh_within = if case == "old" {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Duration::from_millis(10)
+            } else {
+                store.insert(
+                    &finalize_note_key(37, VERSION),
+                    br#"{"write_failure":null}"#,
+                );
+                FINALIZE_GRACE
+            };
+
+            let counts = recover_pass(&state, &store, temp.path(), fresh_within).await;
+
+            assert_eq!(counts.deferred, 0, "{case}");
+            assert_eq!(counts.recovered, 1, "{case}");
+            assert_eq!(row_count(&state, 37).await, 1, "{case}");
+        }
     }
 
     /// The ticket's crash between upload and insert, on the segment path: the
@@ -2936,7 +3144,8 @@ mod tests {
             RecoveryCounts {
                 recovered: 0,
                 skipped: 0,
-                failed: 1
+                failed: 1,
+                deferred: 0
             }
         );
         assert_eq!(store.writes(), (0, 0, 0));

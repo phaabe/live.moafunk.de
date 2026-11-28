@@ -1,7 +1,7 @@
 import { createRouter, createWebHashHistory, type LocationQuery, type Router } from 'vue-router';
 import { useAuthStore } from './stores/auth';
 import { hostPage } from './hostPage';
-import { berlinToUtcDate, isShowEnded } from './showTime';
+import { isShowEnded } from './showTime';
 import { setUnauthorizedHandler, type MyShowInfo } from './api';
 
 // Lazy-loaded route components
@@ -13,6 +13,7 @@ const ShowCreatePage = () => import('./pages/ShowCreatePage.vue');
 const ShowDetailPage = () => import('./pages/ShowDetailPage.vue');
 const HostEpisodePage = () => import('./pages/HostEpisodePage.vue');
 const HostAnnouncePage = () => import('./pages/HostAnnouncePage.vue');
+const HostEditRecordingPage = () => import('./pages/HostEditRecordingPage.vue');
 const ShowSeriesPage = () => import('./pages/ShowSeriesPage.vue');
 const BookSlotPage = () => import('./pages/BookSlotPage.vue');
 const RecordingPage = () => import('./pages/RecordingPage.vue');
@@ -23,7 +24,6 @@ const OverlayEditorPage = () => import('./pages/OverlayEditorPage.vue');
 const CalendarPage = () => import('./pages/CalendarPage.vue');
 const DashboardPage = () => import('./pages/DashboardPage.vue');
 const HostDashboardPage = () => import('./pages/HostDashboardPage.vue');
-const HostSchedulePage = () => import('./pages/HostSchedulePage.vue');
 const HostMyShowsPage = () => import('./pages/HostMyShowsPage.vue');
 const ConfigPage = () => import('./pages/ConfigPage.vue');
 
@@ -81,9 +81,6 @@ export async function sendHostToEpisode(
   next(flow.show.value ? `/shows/${flow.show.value.id}` : '/shows');
 }
 
-/** The Studio opens this long before the start. */
-export const STUDIO_OPENS_MS = 30 * 60 * 1000;
-
 type FlowGuardNext = (target?: string | { path: string; query?: LocationQuery }) => void;
 
 /**
@@ -102,7 +99,7 @@ async function selectFlowShow(query: LocationQuery): Promise<string | null> {
       mine = flow.shows.value.find((s) => s.id === wanted);
     }
     if (!mine) return `/shows/${wanted}`;
-    flow.setLiveTestPassed(false);
+    // The soundcheck result stays: it tests this browser's setup, not the episode.
     // The flow hands out readonly copies; selectShow only stores it.
     flow.selectShow(mine as MyShowInfo);
   }
@@ -121,10 +118,10 @@ async function isOnAir(showId: number): Promise<boolean> {
 }
 
 /**
- * The Studio (/stream/live) opens 30 min before the start and closes at the
- * end time, unless the episode is still on air: then a host who reloaded or
- * lost the connection can go live again. A closed Studio, and a pre-recorded
- * episode, send the user to the episode. Live in this tab: On Air.
+ * The Studio (/stream/live) is open for soundchecks at any time and closes at
+ * the end time, unless the episode is still on air: then a host who reloaded
+ * or lost the connection can go live again. A closed Studio, and a
+ * pre-recorded episode, send the user to the episode. Live in this tab: On Air.
  */
 export async function studioGate(
   to: { query: LocationQuery },
@@ -145,13 +142,6 @@ export async function studioGate(
     return;
   }
   if (show.prerecorded_confirmed_at) {
-    next(episode);
-    return;
-  }
-  if (
-    show.start_time &&
-    Date.now() < berlinToUtcDate(show.date, show.start_time).getTime() - STUDIO_OPENS_MS
-  ) {
     next(episode);
     return;
   }
@@ -235,10 +225,11 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
+      // Schedule merged into the Show pages (issue 1051): on air now, next
+      // episodes and free slots are on each Show's page, reached from My Show.
       path: '/schedule',
       name: 'schedule',
-      component: HostSchedulePage,
-      meta: { requiresAuth: true, roles: ['host'] },
+      redirect: '/shows',
     },
     {
       path: '/artists',
@@ -255,7 +246,7 @@ const router = createRouter({
     {
       path: '/shows',
       name: 'shows',
-      // Hosts get My Shows (their series); admins keep the Shows page.
+      // Hosts get My Show (their series as cards); admins keep the Shows page.
       component: hostPage(HostMyShowsPage, ShowsPage),
       // Merged Shows + My Shows page — everyone except guests.
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
@@ -275,7 +266,8 @@ const router = createRouter({
       meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
-      // A Show (series) by its slug, with its episodes. Owner only (API 404).
+      // A Show (series) by its slug, with its episodes. Every host may view
+      // it; only its owner (or an admin) books (API `can_edit`).
       path: '/shows/:slug',
       name: 'show-series',
       component: ShowSeriesPage,
@@ -298,6 +290,13 @@ const router = createRouter({
       name: 'show-announce',
       component: HostAnnouncePage,
       meta: { requiresAuth: true, roles: ['host'] },
+    },
+    {
+      // Flow screens edit-recording*: the Edit recording page, from the Recording card (#883).
+      path: '/shows/:id(\\d+)/edit-recording',
+      name: 'show-edit-recording',
+      component: HostEditRecordingPage,
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       path: '/stream',
@@ -418,7 +417,7 @@ const router = createRouter({
       path: '/calendar',
       name: 'calendar',
       component: CalendarPage,
-      // Admins only: hosts have Schedule instead (the role guard sends them to Dashboard).
+      // Admins only: hosts see their dates on their Show pages (the role guard sends them to Dashboard).
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
     },
     {
@@ -438,6 +437,20 @@ const router = createRouter({
       name: 'overlay-editor',
       component: OverlayEditorPage,
       meta: { requiresAuth: true, roles: ['admin', 'superadmin'] },
+    },
+    {
+      // Flow screens profile / profile-edit (#1117): the own profile.
+      path: '/profile',
+      name: 'profile',
+      component: () => import('./pages/ProfilePage.vue'),
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
+    },
+    {
+      // Flow screen profile-view: another host's profile, read-only.
+      path: '/profile/:username',
+      name: 'profile-view',
+      component: () => import('./pages/ProfilePage.vue'),
+      meta: { requiresAuth: true, roles: ['admin', 'superadmin', 'host'] },
     },
     {
       path: '/change-password',

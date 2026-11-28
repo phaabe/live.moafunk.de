@@ -36,6 +36,7 @@ cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *127.0.0.1:8000/api/stream/status*) echo "$FAKE_STATUS" ;;
+  *127.0.0.1:8000/metrics*) [[ -n "$FAKE_METRICS" ]] || exit 7; printf '%s\n' "$FAKE_METRICS" ;;
   *"%{http_code}"*) printf 200 ;;
   *) echo "fake curl: unexpected: $*" >&2; exit 1 ;;
 esac
@@ -74,8 +75,19 @@ reset() {
   make_db none
 }
 
+# /metrics with no running work; busy_metrics finalize 1 makes one kind busy.
+busy_metrics() {
+  local kind
+  echo '# TYPE moafunk_busy gauge'
+  for kind in finalize recording_upload set_upload soundcloud_upload; do
+    if [[ "$kind" == "${1:-}" ]]; then echo "moafunk_busy{work=\"$kind\"} $2"; else echo "moafunk_busy{work=\"$kind\"} 0"; fi
+  done
+}
+IDLE_METRICS="$(busy_metrics)"
+
 deploy() { # env assignments for the script, e.g. TAG=... DIGEST=...
   env PATH="$BIN:$PATH" FAKE="$TMP/fake" FAKE_APP="$APP" FAKE_STATUS="${FAKE_STATUS:-{\"active\":false}}" \
+    FAKE_METRICS="${FAKE_METRICS-$IDLE_METRICS}" \
     FAKE_REPO_DIGEST="${FAKE_REPO_DIGEST:-$IMAGE@$DIGEST}" APP_DIR="$APP" DEPLOY_NO_LOCK=1 \
     PUBLIC=https://prod.test "$@" bash "$HERE/deploy-production.sh"
 }
@@ -111,6 +123,20 @@ if called pull; then fail "no pull when the tag already runs"; else pass "no pul
 reset
 FAKE_STATUS='{"active":true}' check "a show on air stops the deploy" 1 "FAIL  stream status" TAG=sha-1234567 DIGEST="$DIGEST"
 if called pull || [[ "$(backups)" != 0 ]]; then fail "nothing pulled or backed up while on air"; else pass "nothing pulled or backed up while on air"; fi
+
+reset
+FAKE_METRICS="$(busy_metrics finalize 1)" check "a running finalize stops the deploy" 1 "FAIL  finalize running" \
+  TAG=sha-1234567 DIGEST="$DIGEST"
+if called pull || [[ "$(backups)" != 0 ]]; then fail "nothing pulled or backed up during a finalize"; else pass "nothing pulled or backed up during a finalize"; fi
+FAKE_METRICS="$(busy_metrics soundcloud_upload 2)" check "a running SoundCloud upload stops the deploy" 1 \
+  "FAIL  soundcloud upload running" TAG=sha-1234567 DIGEST="$DIGEST"
+FAKE_METRICS="$(busy_metrics set_upload 1)" check "a dry run names the running work" 0 \
+  "FAIL  set upload running"$'\n'"OK    no show now or in the next 2 hours"$'\n'"DRY   a real deploy would stop here" \
+  TAG=sha-1234567 DIGEST="$DIGEST" DRY_RUN=1
+FAKE_METRICS="" check "unreachable metrics stop the deploy" 1 "FAIL  metrics: unreachable" TAG=sha-1234567 DIGEST="$DIGEST"
+FAKE_METRICS="moafunk_stream_active 0" check "an API without the busy gauge only warns" 0 \
+  "WARN  the running API does not report running work" TAG=sha-1234567 DIGEST="$DIGEST" DRY_RUN=1
+check "no running work is reported" 0 "OK    no finalize or upload running" TAG=sha-1234567 DIGEST="$DIGEST" DRY_RUN=1
 
 reset
 make_db 1

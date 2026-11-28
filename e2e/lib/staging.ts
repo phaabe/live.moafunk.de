@@ -148,26 +148,25 @@ export async function createShow(page: Page, name: string): Promise<{ id: number
 export async function bookSlot(page: Page, start: Date, end: Date): Promise<number> {
   const from = berlinSlot(start);
   const to = berlinSlot(end);
-  // shortcut: a slot that runs past midnight is cut at 23:59; runs start long before.
+  // shortcut: a slot that runs past midnight is cut at 23:59, because staging.sh
+  // e2e-free-slot clears one date only; runs start long before midnight.
   const endTime = to.date === from.date ? to.time : '23:59';
   // Staging has copies of production shows and people's own test shows: move the ones in this slot away.
   console.log(staging(`e2e-free-slot ${from.date} ${from.time} ${endTime}`));
-  await page.getByLabel('Date').fill(from.date);
-  await page.getByLabel('Start time').fill(from.time);
-  await page.getByLabel('End time').fill(endTime);
+  // Book Slot's Edit manually takes typed times; an end before the start is the next day.
+  await page.getByRole('button', { name: 'Edit manually' }).click();
+  await page.getByLabel('Date', { exact: true }).fill(from.date);
+  await page.getByLabel('Start', { exact: true }).fill(from.time);
+  await page.getByLabel('End', { exact: true }).fill(endTime);
   const booked = page.waitForResponse(
     (r) => r.url().endsWith('/episodes') && r.request().method() === 'POST'
   );
-  await page.getByRole('button', { name: 'Book slot' }).click();
+  await page.getByRole('button', { name: 'Book episode' }).click();
   // A refused booking (a taken slot) keeps the form open: fail now, not at the test timeout.
   const res = await booked;
   if (!res.ok()) throw new Error(`booking refused (${res.status()}): ${await res.text()}`);
   await page.waitForURL(/#\/shows\/\d+$/);
-  const id = Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
-  // Booking arms the on-air story; without this every live test posts to the Instagram test account.
-  const story = await page.request.delete(`/api/shows/${id}/announcements/onair`);
-  if (!story.ok()) throw new Error(`cancel on-air story: ${story.status()} ${await story.text()}`);
-  return id;
+  return Number(page.url().match(/#\/shows\/(\d+)$/)![1]);
 }
 
 /**
