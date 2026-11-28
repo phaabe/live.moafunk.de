@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
-const { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
@@ -17,6 +17,8 @@ const checks = [
   { file: 'epic-ci.yml', job: 'backend', name: 'backend-ci', scope: 'backend-scope', output: 'backend' },
   { file: 'stream-system.yml', job: 'system', name: 'stream-system', scope: 'stream-scope', output: 'stream' },
 ];
+// The Studio soundcheck: not a required check, so its workflow keeps its paths.
+const studio = { file: 'e2e-unit.yml', job: 'studio-soundcheck', scope: 'studio-scope', output: 'studio' };
 
 const patternOf = ({ file, scope }) => {
   const step = load(file).jobs[scope].steps.find((s) => s.id === 'touches');
@@ -89,26 +91,32 @@ test('pr-touches.sh: only a PR into staging can skip, and only when no file matc
   }
 });
 
+// The job waits for its scope job and runs unless the scope says false.
+function assertScoped(c) {
+  const workflow = load(c.file);
+  const job = workflow.jobs[c.job];
+  assert.equal(job.needs, c.scope);
+  // A failed or empty scope runs the check; only an explicit false skips it.
+  assert.equal(job.if, `\${{ !cancelled() && needs.${c.scope}.outputs.${c.output} != 'false' }}`);
+
+  const scope = workflow.jobs[c.scope];
+  assert.equal(scope.if, undefined);
+  assert.equal(scope.outputs[c.output], `\${{ steps.touches.outputs.${c.output} }}`);
+  assert.equal(scope.steps[0].uses, 'actions/checkout@v4');
+  assert.equal(scope.steps[0].with['fetch-depth'], 2);
+  const touches = scope.steps.find((s) => s.id === 'touches');
+  assert.deepEqual(touches.env, { EVENT: '${{ github.event_name }}', BASE_REF: '${{ github.base_ref }}' });
+  // An assignment of its own: inside echo, a failed script would not stop the step.
+  assert.match(touches.run, /set -euo pipefail\n\w+="\$\(scripts\/pr-touches\.sh '/);
+  assert.match(touches.run, new RegExp(`echo "${c.output}=\\$\\w+" >>"\\$GITHUB_OUTPUT"`));
+}
+
 test('backend-ci and stream-system keep their names and always start', () => {
   for (const c of checks) {
     const workflow = load(c.file);
     assert.equal(workflow.on.pull_request.paths, undefined, `${c.file}: a required check must always start`);
-    const job = workflow.jobs[c.job];
-    assert.equal(job.name, c.name);
-    assert.equal(job.needs, c.scope);
-    // A failed or empty scope runs the check; only an explicit false skips it.
-    assert.equal(job.if, `\${{ !cancelled() && needs.${c.scope}.outputs.${c.output} != 'false' }}`);
-
-    const scope = workflow.jobs[c.scope];
-    assert.equal(scope.if, undefined);
-    assert.equal(scope.outputs[c.output], `\${{ steps.touches.outputs.${c.output} }}`);
-    assert.equal(scope.steps[0].uses, 'actions/checkout@v4');
-    assert.equal(scope.steps[0].with['fetch-depth'], 2);
-    const touches = scope.steps.find((s) => s.id === 'touches');
-    assert.deepEqual(touches.env, { EVENT: '${{ github.event_name }}', BASE_REF: '${{ github.base_ref }}' });
-    // An assignment of its own: inside echo, a failed script would not stop the step.
-    assert.match(touches.run, /set -euo pipefail\n\w+="\$\(scripts\/pr-touches\.sh '/);
-    assert.match(touches.run, new RegExp(`echo "${c.output}=\\$\\w+" >>"\\$GITHUB_OUTPUT"`));
+    assert.equal(workflow.jobs[c.job].name, c.name);
+    assertScoped(c);
   }
 });
 
@@ -177,5 +185,61 @@ test('the scope patterns cover what each check tests', () => {
     'docs/stream-rework/notes.md',
   ]) {
     assert.ok(!matches(stream, file), `stream-system may skip ${file}`);
+  }
+});
+
+test('the Studio soundcheck runs only on PRs that change what its specs run', () => {
+  assertScoped(studio);
+  const pattern = patternOf(studio);
+  for (const file of [
+    'frontend/src/admin/pages/flow/FlowLive.vue',
+    'frontend/src/admin/pages/flow/StudioOnAir.vue',
+    // The episode page and its Soundcheck and Show time tabs.
+    'frontend/src/admin/pages/HostEpisodePage.vue',
+    'frontend/src/admin/components/episode/SoundcheckCard.vue',
+    'frontend/src/admin/components/live-panel/LivePanel.vue',
+    'frontend/src/admin/components/LiveSetupTest.vue',
+    // The admin test leaves the Recording page while on air.
+    'frontend/src/admin/pages/RecordingPage.vue',
+    'frontend/src/admin/composables/useSoundcheck.ts',
+    'frontend/src/admin/composables/useWakeLock.ts',
+    // The on-air bar on the other admin pages.
+    'frontend/src/admin/App.vue',
+    'frontend/src/admin/liveSession.ts',
+    'frontend/src/admin/router.ts',
+    'frontend/src/admin/studioLog.ts',
+    'frontend/scripts/studio-mock.mjs',
+    'frontend/vite.config.ts',
+    'frontend/package-lock.json',
+    'e2e/tests-local/studio-soundcheck.spec.ts',
+    'e2e/tests-local/background-stream.spec.ts',
+    'e2e/lib/studio.ts',
+    'e2e/lib/staging.ts',
+    'e2e/playwright.config.ts',
+    'e2e/playwright.local.config.ts',
+    'e2e/local-setup.ts',
+    'e2e/global-setup.ts',
+    'e2e/package-lock.json',
+    '.github/workflows/e2e-unit.yml',
+    '.github/actions/apt-install/action.yml',
+    'scripts/pr-touches.sh',
+  ]) {
+    // A renamed file must not drop out of the pattern unnoticed.
+    assert.ok(existsSync(path.join(root, file)), `${file} is gone: update the studio-scope pattern`);
+    assert.ok(matches(pattern, file), `studio-soundcheck must run for ${file}`);
+  }
+  for (const file of [
+    'frontend/src/admin/pages/ProfilePage.vue',
+    'frontend/src/admin/pages/BookSlotPage.vue',
+    'frontend/src/admin/components/PromotionCard.vue',
+    'frontend/src/admin/routerx.ts',
+    'frontend/src/shared/components/NavBar.vue',
+    'frontend/scripts/fetch_soundcloud_tracks.py',
+    'e2e/tests/chaos-show.spec.ts',
+    'e2e/ci/stack.sh',
+    'backend/src/main.rs',
+    'docs/stream-rework/studio-soundcheck-local.md',
+  ]) {
+    assert.ok(!matches(pattern, file), `studio-soundcheck may skip ${file}`);
   }
 });

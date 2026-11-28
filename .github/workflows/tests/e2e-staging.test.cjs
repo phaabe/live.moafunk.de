@@ -262,7 +262,8 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
     },
   });
   assert.deepEqual(unit.permissions, { contents: 'read' });
-  assert.deepEqual(Object.keys(unit.jobs), ['e2e-unit', 'studio-soundcheck']);
+  // The scope job and the Studio files it checks: pr-scope.test.cjs.
+  assert.deepEqual(Object.keys(unit.jobs), ['e2e-unit', 'studio-scope', 'studio-soundcheck']);
   // The soundcheck runs against the local mock, never the staging show.
   const soundcheck = unit.jobs['studio-soundcheck'].steps;
   assert.equal(soundcheck[0].with['persist-credentials'], false);
