@@ -578,6 +578,7 @@ pub async fn api_series_upload_finalize(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let user = require_show_creator(&state, &headers).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
     let series = load_series_for_editor(&state, &user, &slug).await?;
     let upload = open_upload(&state, series.id, &session_id).await?;
     if upload.file_key.is_some() {
