@@ -1017,7 +1017,7 @@ pub(crate) fn is_segment_file(path: &Path) -> bool {
 /// correctly whether the segment dir is absolute or relative.
 ///
 /// Segment names are app-controlled (`seg_%05d.ts`), so no quote-escaping is needed.
-fn build_concat_list(segments: &[PathBuf]) -> String {
+pub(crate) fn build_concat_list(segments: &[PathBuf]) -> String {
     let mut list = String::new();
     for seg in segments {
         let name = seg

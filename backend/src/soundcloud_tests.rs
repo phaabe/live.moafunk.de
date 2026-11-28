@@ -389,8 +389,8 @@ async fn show_with_take(state: &Arc<AppState>, r2: &FakeR2) -> i64 {
 
 #[test]
 fn auto_upload_only_when_enabled_and_configured() {
-    // Happy path: on + configured (fires even if the show already has a
-    // track — a new recording replaces that track's audio).
+    // Happy path: on + configured (a show with a track is skipped later, in
+    // `auto_upload_on_finalize`).
     assert!(should_auto_upload(true, true));
 
     // Either blocker prevents the upload.
@@ -1087,8 +1087,8 @@ async fn upload_sends_a_private_track_and_stores_it() {
     );
 }
 
-/// Without a manual recording, the newest finalized version wins over the
-/// newest streamed archive; the archive comes from the shows bucket.
+/// Without a manual recording, a part's finalized mp3 wins over its streamed
+/// archive; the archive comes from the shows bucket.
 #[tokio::test]
 async fn upload_source_order() {
     let (state, _temp, fake, r2) = setup(json!({})).await;
@@ -1122,19 +1122,110 @@ async fn upload_source_order() {
         .is_none());
 
     sqlx::query(
-        "INSERT INTO recording_versions (show_id, version, status, final_key) \
-         VALUES (?, 'v0', 'finalized', 'final/v0.mp3')",
+        "UPDATE recording_versions SET status = 'finalized', final_key = 'final/v1.mp3' \
+         WHERE show_id = ?",
     )
     .bind(id)
     .execute(&state.db)
     .await
     .unwrap();
-    r2.insert(&state, "final/v0.mp3", b"final");
+    r2.insert(&state, "final/v1.mp3", b"final");
     fake.calls.lock().unwrap().clear();
     upload_track(&state, id).await.unwrap();
     assert_eq!(
         fake.call("POST /tracks").body["track[asset_data]"],
-        json!({"file": "v0.mp3", "len": 5})
+        json!({"file": "v1.mp3", "len": 5})
+    );
+}
+
+/// Two parts of a show recording go up as one track that holds both, joined
+/// in time order. A failed part is left out.
+#[tokio::test]
+async fn two_parts_go_up_as_one_track() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = add_show(&state, "Late Night", None).await;
+    let mp3 = ["-c:a", "libmp3lame", "-b:a", "128k"];
+    let parts = [("v1", "raw", 3), ("v2", "failed", 2), ("v3", "raw", 2)];
+    for (version, status, secs) in parts {
+        let key = format!("shows/late-night-{version}.mp3");
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, archive_key, duration_ms) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(version)
+        .bind(status)
+        .bind(&key)
+        .bind(secs * 1000)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let data = crate::recording_tests::tone(secs as u32, &mp3, "mp3").await;
+        r2.objects
+            .lock()
+            .unwrap()
+            .insert(format!("{}/{key}", state.config.r2_shows_bucket_name), data);
+    }
+
+    assert!(upload_track(&state, id).await.unwrap().success);
+    let stored = show(&state, id).await;
+    let key = stored.soundcloud_source_key.unwrap();
+    assert!(
+        key.starts_with(&format!("recordings/{id}/joined/")),
+        "{key}"
+    );
+    let joined = r2.object(&state, &key).unwrap();
+    // v1 + v3; the failed v2 is not in it.
+    let secs = crate::recording_tests::seconds(&joined).await;
+    assert!((secs - 5.0).abs() < 0.2, "{secs}");
+    assert_eq!(
+        fake.call("POST /tracks").body["track[asset_data]"],
+        json!({"file": "v1.mp3", "len": joined.len()})
+    );
+}
+
+/// Parts that cannot be joined send nothing: SoundCloud never gets one part
+/// as the whole show.
+#[tokio::test]
+async fn parts_that_cannot_be_joined_upload_nothing() {
+    let (state, _temp, fake, r2) = setup(json!({})).await;
+    let id = add_show(&state, "Late Night", None).await;
+    for version in ["v1", "v2"] {
+        let key = format!("final/{version}.mp3");
+        sqlx::query(
+            "INSERT INTO recording_versions (show_id, version, status, final_key) \
+             VALUES (?, ?, 'finalized', ?)",
+        )
+        .bind(id)
+        .bind(version)
+        .bind(&key)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        r2.insert(&state, &key, b"not audio");
+    }
+    let err = upload_track(&state, id).await.unwrap_err().to_string();
+    assert!(err.contains("ffmpeg failed"), "{err}");
+    assert!(fake.routes().is_empty(), "{:?}", fake.routes());
+}
+
+/// The auto-upload after a new part never touches a track the show has:
+/// nothing deletes it by itself.
+#[tokio::test]
+async fn auto_upload_keeps_an_existing_track() {
+    let (state, _temp, fake, r2) = setup(json!({ "soundcloud_auto_upload": true })).await;
+    let id = show_with_take(&state, &r2).await;
+    sqlx::query("UPDATE shows SET soundcloud_track_id = '111' WHERE id = ?")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    auto_upload_on_finalize(&state, id).await;
+    assert!(fake.routes().is_empty(), "{:?}", fake.routes());
+    assert_eq!(
+        show(&state, id).await.soundcloud_track_id.as_deref(),
+        Some("111")
     );
 }
 

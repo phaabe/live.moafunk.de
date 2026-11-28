@@ -274,9 +274,10 @@ pub fn picked_source(show: &models::Show) -> Source {
 
 /// One file of the show, `None` when it does not exist:
 ///   - own: the uploaded file (`recording_key`, default bucket),
-///   - show: the latest *finalized* live recording (final.mp3, default bucket),
-///     else the latest streamed *archive* MP3 (shows bucket) — streamed shows
-///     stay `raw` with only an archive_key.
+///   - show: with two or more parts, their joined file once it is made (see
+///     [`join_parts`]); else the latest *finalized* live recording (final.mp3,
+///     default bucket), else the latest streamed *archive* MP3 (shows bucket) —
+///     streamed shows stay `raw` with only an archive_key.
 pub async fn resolve_file(
     state: &Arc<AppState>,
     show: &models::Show,
@@ -292,6 +293,9 @@ pub async fn resolve_file(
                 .unwrap_or_else(|| "recording.mp3".to_string()),
             duration_ms: None,
         }));
+    }
+    if let Some(joined) = joined_show_file(state, show.id).await? {
+        return Ok(Some(joined));
     }
     if let Some(version) =
         crate::db::get_latest_finalized_recording_version(&state.db, show.id).await?
@@ -320,6 +324,139 @@ pub async fn resolve_file(
         }));
     }
     Ok(None)
+}
+
+// ============================================================================
+// Recording parts
+// ============================================================================
+
+/// The file of one part (`recording_versions` row): its finalized mp3, else
+/// its archive mp3. `None` for a failed part and a part without a file.
+fn part_file(state: &AppState, v: &models::RecordingVersion) -> Option<RecordingSource> {
+    let (bucket, key) = match (v.status.as_str(), &v.final_key, &v.archive_key) {
+        ("finalized", Some(key), _) => (&state.config.r2_bucket_name, key),
+        (status, _, Some(key)) if status != "failed" => (&state.config.r2_shows_bucket_name, key),
+        _ => return None,
+    };
+    Some(RecordingSource {
+        bucket: bucket.clone(),
+        key: key.clone(),
+        filename: format!("{}.mp3", v.version),
+        duration_ms: v.duration_ms,
+    })
+}
+
+/// The usable parts of the show recording, oldest first. A reconnect after
+/// the finalize grace starts a new part.
+async fn show_parts(state: &AppState, show_id: i64) -> Result<Vec<RecordingSource>> {
+    let mut versions = crate::db::list_recording_versions(&state.db, show_id).await?;
+    versions.sort_by_key(|v| v.id);
+    Ok(versions
+        .iter()
+        .filter_map(|v| part_file(state, v))
+        .collect())
+}
+
+/// Where the joined file of `parts` goes. The key comes from the parts, so a
+/// new part makes a new file, and an edit of the old file goes stale.
+fn joined_file(state: &AppState, show_id: i64, parts: &[RecordingSource]) -> RecordingSource {
+    use sha2::{Digest, Sha256};
+    let names: Vec<String> = parts
+        .iter()
+        .map(|p| format!("{}/{}", p.bucket, p.key))
+        .collect();
+    let hash = format!("{:x}", Sha256::digest(names.join("\n").as_bytes()));
+    RecordingSource {
+        bucket: state.config.r2_bucket_name.clone(),
+        key: format!("recordings/{show_id}/joined/{}.mp3", &hash[..16]),
+        filename: parts[0].filename.clone(),
+        duration_ms: parts.iter().map(|p| p.duration_ms).sum(),
+    }
+}
+
+/// The joined file of the show recording: `Some` when it has two or more
+/// parts and the joined file is made. Until then the latest part stands in.
+pub async fn joined_show_file(state: &AppState, show_id: i64) -> Result<Option<RecordingSource>> {
+    let parts = show_parts(state, show_id).await?;
+    if parts.len() < 2 {
+        return Ok(None);
+    }
+    let joined = joined_file(state, show_id, &parts);
+    let made = storage::object_size(&state.s3_client, &joined.bucket, &joined.key).await?;
+    Ok(made.map(|_| joined))
+}
+
+/// Joins the parts of the show recording in time order into one mp3, once
+/// per set of parts. Does nothing for a show with fewer than two parts.
+pub async fn join_parts(state: &Arc<AppState>, show_id: i64) -> Result<()> {
+    let parts = show_parts(state, show_id).await?;
+    if parts.len() < 2 {
+        return Ok(());
+    }
+    let joined = joined_file(state, show_id, &parts);
+    if storage::object_size(&state.s3_client, &joined.bucket, &joined.key)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let dir = job_dir("recording_join").await?;
+    let result = async {
+        let mut files = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            let path = dir.join(format!("part_{i:05}.mp3"));
+            storage::download_to_file(state, &part.bucket, &part.key, &path).await?;
+            files.push(path);
+        }
+        let list = dir.join("parts.txt");
+        tokio::fs::write(&list, crate::stream_bridge::build_concat_list(&files))
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to write the part list: {e}")))?;
+        let output = dir.join("joined.mp3");
+        // Stream copy: the parts are mp3s with the same settings, so nothing is
+        // encoded again and the length is the sum of the parts.
+        let run = Command::new("ffmpeg")
+            .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-y"])
+            .args(["-f", "concat", "-safe", "0", "-i"])
+            .arg(&list)
+            .args(["-c", "copy", "-f", "mp3"])
+            .arg(&output)
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let out = tokio::time::timeout(FFMPEG_TIMEOUT, run)
+            .await
+            .map_err(|_| AppError::Internal("ffmpeg timed out".to_string()))?
+            .map_err(|e| AppError::Internal(format!("Failed to run ffmpeg: {e}")))?;
+        if !out.status.success() {
+            return Err(AppError::Internal(ffmpeg_error(&out.stderr)));
+        }
+        let body = aws_sdk_s3::primitives::ByteStream::from_path(&output)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to open the joined mp3: {e}")))?;
+        state
+            .s3_client
+            .put_object()
+            .bucket(&joined.bucket)
+            .key(&joined.key)
+            .body(body)
+            .content_type("audio/mpeg")
+            .send()
+            .await
+            .map_err(|e| AppError::Storage(format!("Failed to upload {}: {e}", joined.key)))?;
+        Ok(())
+    }
+    .await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+    if result.is_ok() {
+        tracing::info!(
+            show_id,
+            parts = parts.len(),
+            key = joined.key.as_str(),
+            "Joined the recording parts"
+        );
+    }
+    result
 }
 
 /// The picked file and which one it is.
@@ -370,6 +507,15 @@ pub async fn upload_source(state: &Arc<AppState>, show: &models::Show) -> Result
         source,
         edited: false,
     }))
+}
+
+/// [`upload_source`] for the upload itself: a picked show recording with
+/// several parts is joined first, so SoundCloud never gets only one part.
+pub async fn prepare_upload(state: &Arc<AppState>, show: &models::Show) -> Result<Option<Upload>> {
+    if picked_source(show) == Source::Show {
+        join_parts(state, show.id).await?;
+    }
+    upload_source(state, show).await
 }
 
 /// Peaks of `source_key`, cached in the default bucket. Not `.peaks.json`: a

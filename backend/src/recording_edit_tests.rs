@@ -1247,3 +1247,74 @@ async fn the_snippets_of_the_picked_file_become_clips_in_slot_order() {
     let length: f64 = p["format"]["duration"].as_str().unwrap().parse().unwrap();
     assert!((length - 6.0).abs() < 0.2, "{length}");
 }
+
+// ── Several parts ───────────────────────────────────────────────────────────
+
+/// Parts of the show recording are joined in time order into one file. Then
+/// the editor, the show detail and the upload all use it. An edit of the
+/// joined file goes up until a new part makes a new joined file.
+#[tokio::test]
+async fn parts_are_joined_into_one_show_recording() {
+    let s = setup().await;
+    let joined_dir = format!("recordings/{}/joined/", s.id);
+    let part = |v: &str| format!("recordings/{}/{v}/final.mp3", s.id);
+    add_finalized(&s, "v1", &part("v1"), 3).await;
+
+    // One part works as before: nothing is joined.
+    join_parts(&s.state, s.id).await.unwrap();
+    assert!(s
+        .r2
+        .keys_in(&s.state.config.r2_bucket_name, &joined_dir)
+        .is_empty());
+    assert_eq!(
+        upload(&s).await,
+        (Source::Show, false, part("v1"), "v1.mp3".into())
+    );
+
+    // Until the join is made, the latest part stands in.
+    add_finalized(&s, "v2", &part("v2"), 2).await;
+    assert_eq!(upload(&s).await.2, part("v2"));
+
+    join_parts(&s.state, s.id).await.unwrap();
+    let (source, edited, joined, filename) = upload(&s).await;
+    assert_eq!((source, edited), (Source::Show, false));
+    // Named after the first part.
+    assert_eq!(filename, "v1.mp3");
+    assert!(joined.starts_with(&joined_dir), "{joined}");
+    let secs = seconds(&s.r2.object(&s.state, &joined).unwrap()).await;
+    assert!((secs - 5.0).abs() < 0.2, "{secs}");
+    // Made once per set of parts.
+    join_parts(&s.state, s.id).await.unwrap();
+    assert_eq!(s.r2.count(&s.state, "PUT", &joined), 1);
+
+    // The editor and the show detail see the joined file and its length.
+    assert_eq!(get_edit(&s).await.1["source"]["duration"], 5.0);
+    let d = detail(&s).await;
+    assert_eq!(d["latest_recording"]["duration_ms"], 5000);
+    let url = d["latest_recording"]["download_url"].as_str().unwrap();
+    assert!(url.contains(&joined), "{url}");
+
+    // A rendered edit of the joined file goes up instead of it.
+    let edited_key = format!("recordings/{}/edited/show-1.mp3", s.id);
+    sql(
+        &s,
+        &format!(
+            "INSERT INTO recording_edits (show_id, source, edit_json, status, edited_key, \
+             source_key) VALUES (?, 'show', '{{}}', 'done', '{edited_key}', '{joined}')"
+        ),
+    )
+    .await;
+    assert_eq!(
+        upload(&s).await,
+        (Source::Show, true, edited_key, "v1-edited.mp3".into())
+    );
+
+    // A third part: a new joined file, and the edit of the old one is stale.
+    add_finalized(&s, "v3", &part("v3"), 2).await;
+    join_parts(&s.state, s.id).await.unwrap();
+    let (_, edited, newer, _) = upload(&s).await;
+    assert!(!edited);
+    assert!(newer.starts_with(&joined_dir) && newer != joined, "{newer}");
+    let secs = seconds(&s.r2.object(&s.state, &newer).unwrap()).await;
+    assert!((secs - 7.0).abs() < 0.2, "{secs}");
+}
