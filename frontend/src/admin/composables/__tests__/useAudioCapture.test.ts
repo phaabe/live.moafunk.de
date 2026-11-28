@@ -434,7 +434,7 @@ describe('End Episode stops cleanly', () => {
 });
 
 describe('inputs', () => {
-  it('lists real inputs, hides BlackHole and names unnamed ones', async () => {
+  it('lists audio inputs, BlackHole too, and names unnamed ones', async () => {
     mediaDevices.enumerateDevices.mockResolvedValue([
       { kind: 'audioinput', deviceId: 'bh', label: 'BlackHole 2ch' },
       { kind: 'audioinput', deviceId: 'a', label: '' },
@@ -443,8 +443,15 @@ describe('inputs', () => {
     ]);
     const capture = mod.useAudioCapture();
     await capture.refreshDevices();
+    // The permission probe runs no auto gain control: it would turn the
+    // default input's system volume down.
+    expect(mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     expect(capture.devices.value).toEqual([
-      { deviceId: 'a', label: 'Audio Input 1' },
+      // A DJ program's mix arrives through BlackHole.
+      { deviceId: 'bh', label: 'BlackHole 2ch' },
+      { deviceId: 'a', label: 'Audio Input 2' },
       { deviceId: 'x', label: 'Xone:23C' },
     ]);
     // The permission prompt's stream is not kept open.
