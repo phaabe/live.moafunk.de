@@ -418,11 +418,21 @@ async fn upload_session(
         let sc_state = Arc::clone(state);
         let sc_show_id = finalized.show_id;
         tokio::spawn(async move {
-            crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+            after_new_part(&sc_state, sc_show_id).await;
         });
     }
 
     Ok(finalized)
+}
+
+/// After a part of a show's recording is saved: join the parts (a reconnect
+/// after the grace makes a second one), then the SoundCloud auto-upload.
+/// Best effort; failures are logged.
+async fn after_new_part(state: &Arc<AppState>, show_id: i64) {
+    if let Err(e) = crate::recording_edit::join_parts(state, show_id).await {
+        tracing::error!(show_id, error = %e, "Failed to join the recording parts");
+    }
+    crate::soundcloud::auto_upload_on_finalize(state, show_id).await;
 }
 
 /// The persist half of [`upload_session`], against any [`RecordingStore`].
@@ -1824,7 +1834,7 @@ async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: 
                     let sc_state = Arc::clone(&state);
                     let sc_show_id = query.show_id;
                     tokio::spawn(async move {
-                        crate::soundcloud::auto_upload_on_finalize(&sc_state, sc_show_id).await;
+                        after_new_part(&sc_state, sc_show_id).await;
                     });
                 }
             } else {

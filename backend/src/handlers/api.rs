@@ -2045,7 +2045,8 @@ pub struct ShowDetailResponse {
     can_manage: bool,
     /// The most recent live-stream recording (from `recording_versions`), distinct
     /// from the manual `recording_*`/`prerecorded_*` uploads above. `None` when the
-    /// show was never recorded. See [`LatestRecordingInfo`].
+    /// show was never recorded. See [`LatestRecordingInfo`]. With several parts,
+    /// its length and download are those of the joined file.
     latest_recording: Option<LatestRecordingInfo>,
     /// The Show (series) this episode belongs to, if linked.
     series_slug: Option<String>,
@@ -2880,7 +2881,7 @@ pub async fn api_show_detail(
     // above): surfaced so the show page can show capture status and a download. The
     // download comes from the finalized mp3 when present, else the auto-published
     // archive mp3 (a different bucket). A load failure must not break the page.
-    let latest_recording = match crate::db::get_latest_recording_version(&state.db, id).await {
+    let mut latest_recording = match crate::db::get_latest_recording_version(&state.db, id).await {
         Ok(Some(v)) => {
             let download_url = match recording_download(&v) {
                 Some((RecordingBucket::Default, key)) => {
@@ -2914,6 +2915,20 @@ pub async fn api_show_detail(
             None
         }
     };
+    // Several parts: the show recording is their joined file, so its length
+    // and download replace the latest part's.
+    if let Some(info) = latest_recording.as_mut() {
+        match crate::recording_edit::joined_show_file(&state, id).await {
+            Ok(Some(joined)) => {
+                info.duration_ms = joined.duration_ms;
+                info.download_url = storage::get_presigned_url(&state, &joined.key, 3600 * 24)
+                    .await
+                    .ok();
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!("Failed to load the joined recording for show {id}: {e}"),
+        }
+    }
 
     // The recording editor's state. A load failure must not break the page.
     let edit = match crate::recording_edit::view(&state, &show).await {

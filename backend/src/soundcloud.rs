@@ -370,8 +370,8 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
         .ok_or_else(|| AppError::NotFound("Show not found".to_string()))?;
 
     // The picked file: its rendered edit when there is one, else the file (see
-    // `recording_edit::upload_source`).
-    let upload = crate::recording_edit::upload_source(state, &show)
+    // `recording_edit::upload_source`). Several parts are joined first.
+    let upload = crate::recording_edit::prepare_upload(state, &show)
         .await?
         .ok_or_else(|| AppError::BadRequest("Show has no recording to upload".to_string()))?;
     let crate::recording_edit::RecordingSource {
@@ -790,10 +790,10 @@ pub(crate) fn should_auto_upload(enabled: bool, configured: bool) -> bool {
 /// Best-effort automatic SoundCloud upload, fired when a recording finishes
 /// finalizing (streamed shows via `upload_session`, UNHEARD via
 /// `handle_finalize_socket`). Uploads as a private track with the show's title +
-/// description via [`upload_track`] — which, if the show already has a track,
-/// replaces that track's audio in place so a re-recording updates the same
-/// SoundCloud track. Never returns an error: every failure is logged and swallowed
-/// so it can run detached. No-ops when disabled or unconfigured.
+/// description via [`upload_track`]. A show that already has a track keeps it:
+/// nothing deletes a track by itself, only the host's "Upload again" replaces
+/// it. Never returns an error: every failure is logged and swallowed so it can
+/// run detached. No-ops when disabled or unconfigured.
 pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
     if !should_auto_upload(state.config.soundcloud_auto_upload, is_configured(state)) {
         tracing::debug!(
@@ -836,14 +836,15 @@ pub async fn auto_upload_on_finalize(state: &Arc<AppState>, show_id: i64) {
         );
         return;
     }
+    // A new part must not cost the track an earlier part made.
     if show.soundcloud_track_id.is_some() {
         tracing::info!(
             show_id,
-            "Auto-upload: superseding show's SoundCloud track (delete + re-upload)"
+            "Skipping SoundCloud auto-upload (the show already has a track)"
         );
-    } else {
-        tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
+        return;
     }
+    tracing::info!(show_id, "Auto-uploading finalized recording to SoundCloud");
     match upload_track(state, show_id).await {
         Ok(result) if result.success => {
             if let Some(ref url) = result.track_url {
