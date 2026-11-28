@@ -74,6 +74,8 @@ jobs:
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
+      # Same as backend-ci (epic-ci.yml): debug info with file and line only.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     steps:
       - uses: actions/checkout@v4

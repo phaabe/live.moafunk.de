@@ -128,6 +128,14 @@ test('Rust builds are cached; only staging pushes save the cache', () => {
   }
 });
 
+test('CI Rust builds keep only line tables as debug info', () => {
+  for (const c of checks) {
+    // On the job, not in Cargo.toml: local builds keep full debug info.
+    // The test profile inherits it from dev.
+    assert.equal(load(c.file).jobs[c.job].env.CARGO_PROFILE_DEV_DEBUG, 'line-tables-only', c.file);
+  }
+});
+
 test('the scope patterns cover what each check tests', () => {
   const backend = patternOf(checks[0]);
   for (const file of [
