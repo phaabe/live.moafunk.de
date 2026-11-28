@@ -146,6 +146,21 @@ test('build preserves SHA tags and exports the digest, exact image and source SH
   });
 });
 
+test('the image plays the stream mounts of the host that serves it', () => {
+  // Staging and production run the same image. A full URL here made staging's
+  // "What listeners hear" play the production stream
+  // (https://github.com/phaabe/live.moafunk.de/issues/1114).
+  const image = build.steps.find((step) => step.id === 'image');
+  const args = Object.fromEntries(
+    image.with['build-args']
+      .trim()
+      .split('\n')
+      .map((line) => line.trim().split(/=(.*)/s, 2))
+  );
+  assert.equal(args.VITE_STREAM_ICECAST_LIVE_URL, '/live.mp3');
+  assert.equal(args.VITE_STREAM_ICECAST_TEST_URL, '/test.mp3');
+});
+
 test('image summary records the exact image and source without contacting a host', () => {
   const step = build.steps.find((step) => step.id === 'image-reference');
   assert.ok(step);

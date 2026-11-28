@@ -85,10 +85,12 @@ jobs:
           file: backend/Dockerfile
           platforms: linux/amd64
           # Bake the stream URLs into the admin SPA (Vite inlines them at build
-          # time). Same repo Variables the Pages build uses; empty → no-op.
+          # time). The mounts are paths on the host that serves the admin:
+          # staging and production run the same image, and each must play its
+          # own stream (issue https://github.com/phaabe/live.moafunk.de/issues/1114).
           build-args: |
-            VITE_STREAM_ICECAST_LIVE_URL=${{ vars.VITE_STREAM_ICECAST_LIVE_URL }}
-            VITE_STREAM_ICECAST_TEST_URL=${{ vars.VITE_STREAM_ICECAST_TEST_URL }}
+            VITE_STREAM_ICECAST_LIVE_URL=/live.mp3
+            VITE_STREAM_ICECAST_TEST_URL=/test.mp3
             VITE_STREAM_STATUS_URL=${{ vars.VITE_STREAM_STATUS_URL }}
             GIT_SHA=${{ github.sha }}
           # Always push — workflow only runs on main or manual dispatch
