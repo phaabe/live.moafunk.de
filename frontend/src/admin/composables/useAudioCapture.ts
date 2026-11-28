@@ -160,13 +160,12 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
   }
 
   /**
-   * Map raw device descriptors to our AudioDevice shape, hiding BlackHole
-   * virtual devices (not relevant to hosts for now).
+   * Map raw device descriptors to our AudioDevice shape. Virtual devices
+   * such as BlackHole stay: a DJ program (e.g. Mixxx) sends its mix there.
    */
   function mapInputDevices(all: MediaDeviceInfo[]): AudioDevice[] {
     return all
       .filter((d) => d.kind === 'audioinput')
-      .filter((d) => !/blackhole/i.test(d.label))
       .map((device, index) => ({
         deviceId: device.deviceId,
         label: device.label || `Audio Input ${index + 1}`,
