@@ -6,11 +6,6 @@ import { pickInput, runSoundcheck } from "../lib/studio";
 
 const MOCK = process.env.STUDIO_MOCK_URL ?? "http://localhost:8000";
 
-test.skip(
-  ({ browserName }) => browserName !== "chromium",
-  "Chromium fake media is enough here",
-);
-
 interface StudioLog {
   soundcheck?: { input: string; checks: { name: string; state: string }[] };
   on_air?: { input: string; ended: boolean };

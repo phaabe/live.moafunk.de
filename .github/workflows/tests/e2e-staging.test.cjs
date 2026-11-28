@@ -264,10 +264,15 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
   assert.deepEqual(unit.permissions, { contents: 'read' });
   // The scope job and the Studio files it checks: pr-scope.test.cjs.
   assert.deepEqual(Object.keys(unit.jobs), ['e2e-unit', 'studio-scope', 'studio-soundcheck']);
-  // The soundcheck runs against the local mock, never the staging show.
-  const soundcheck = unit.jobs['studio-soundcheck'].steps;
+  // The soundcheck runs against the local mock, never the staging show,
+  // in parallel shards; every shard runs, even when another one fails.
+  const { strategy, steps: soundcheck } = unit.jobs['studio-soundcheck'];
+  assert.deepEqual(strategy, { 'fail-fast': false, matrix: { shard: [1, 2, 3, 4] } });
   assert.equal(soundcheck[0].with['persist-credentials'], false);
-  assert.match(soundcheck.at(-2).run, /^npm run local$/m);
+  assert.match(soundcheck.at(-2).run, /^npm run local -- --shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ strategy\.job-total \}\}$/m);
+  // One report per shard: artifact names must not clash.
+  assert.equal(soundcheck.at(-1).uses, 'actions/upload-artifact@v4');
+  assert.equal(soundcheck.at(-1).with.name, 'studio-soundcheck-report-${{ matrix.shard }}');
   const { steps, defaults } = unit.jobs['e2e-unit'];
   assert.deepEqual(defaults, { run: { 'working-directory': 'e2e' } });
   assert.equal(steps[0].with['persist-credentials'], false);

@@ -10,8 +10,6 @@ const DEVICE_ENDED = 'Audio device is no longer active. Re-select your device.';
 /** How long each page stays open while the chunks are counted. */
 const DWELL_MS = 5000;
 
-test.skip(({ browserName }) => browserName !== 'chromium', 'Chromium fake media is enough here');
-
 interface MockLive {
   live: number;
   chunks: number[];

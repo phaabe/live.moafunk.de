@@ -66,6 +66,13 @@ jobs:
     if: ${{ !cancelled() && needs.studio-scope.outputs.studio != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Each shard runs its share of the tests against its own mock and dev
+    # server (playwright.local.config.ts). One worker per shard: the tests
+    # of a shard share its mock.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,12 +105,12 @@ jobs:
         run: |
           set -euo pipefail
           pulseaudio --start --exit-idle-time=-1
-          npm run local
+          npm run local -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: studio-soundcheck-report
+          name: studio-soundcheck-report-${{ matrix.shard }}
           path: |
             e2e/playwright-report
             e2e/test-results
