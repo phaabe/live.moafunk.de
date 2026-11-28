@@ -33,7 +33,7 @@ COPY frontend ./
 # Stream URLs are baked into the admin SPA at build time (Vite inlines
 # import.meta.env.VITE_*). Without these the admin's stream config is empty —
 # e.g. "Test Your Stream" reports "not configured". Passed as build args from CI
-# (same repo Variables the Pages build uses); empty is a safe no-op fallback.
+# (backend.yml); empty is a safe no-op fallback.
 ARG VITE_STREAM_ICECAST_LIVE_URL=""
 ARG VITE_STREAM_ICECAST_TEST_URL=""
 ARG VITE_STREAM_STATUS_URL=""
