@@ -34,6 +34,16 @@ export const BROWSER_UNSUPPORTED_MESSAGE =
   "This browser can't stream. Use Chrome or Firefox, or update Safari to 18.4 or newer.";
 
 /**
+ * Raw audio for every getUserMedia call. Browser processing harms music, and
+ * its auto gain control changes the device's system input volume.
+ */
+const NO_PROCESSING = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
+} as const satisfies MediaTrackConstraints;
+
+/**
  * The MIME type to record the broadcast with, or null when this browser can't.
  * The backend producer reads WebM (`ffmpeg -f webm`). Safari records WebM only
  * from 18.4; older Safari (and iOS) throws on `new MediaRecorder`.
@@ -178,8 +188,10 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
    */
   async function refreshDevices(): Promise<void> {
     try {
-      // Request permission first to get device labels
-      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Request permission first to get device labels. Processing off: with the
+      // defaults the browser's auto gain control turns the default input's
+      // system volume down (seen on BlackHole: 100 % → 44 %).
+      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: NO_PROCESSING });
       tempStream.getTracks().forEach((track) => track.stop());
 
       const allDevices = await navigator.mediaDevices.enumerateDevices();
@@ -221,9 +233,7 @@ export function useAudioCapture(options: UseAudioCaptureOptions = {}) {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           deviceId: { exact: deviceId },
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
+          ...NO_PROCESSING,
           sampleRate: 48000,
           channelCount: 2,
         },

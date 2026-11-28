@@ -443,6 +443,11 @@ describe('inputs', () => {
     ]);
     const capture = mod.useAudioCapture();
     await capture.refreshDevices();
+    // The permission probe runs no auto gain control: it would turn the
+    // default input's system volume down.
+    expect(mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     expect(capture.devices.value).toEqual([
       // A DJ program's mix arrives through BlackHole.
       { deviceId: 'bh', label: 'BlackHole 2ch' },
