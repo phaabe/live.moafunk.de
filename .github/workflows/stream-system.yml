@@ -82,13 +82,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install ffmpeg
-        uses: ./.github/actions/apt-install
-        with:
-          packages: ffmpeg
-          options: --no-install-recommends
-
-      - name: Pull the stream stack images
+      # The images need no Rust, so they are pulled and built in the
+      # background while ffmpeg and Rust install. "Wait for the stream stack
+      # images" stops the job if this fails.
+      - name: Prepare the stream stack images in the background
         run: |
           set -euo pipefail
           # Anonymous pulls from shared runner addresses hit registry rate
@@ -108,18 +105,60 @@ jobs:
             echo "Could not pull $target from any mirror" >&2
             return 1
           }
-          # The Icecast-KH Dockerfile starts FROM debian:12-slim.
-          pull debian:12-slim \
-            mirror.gcr.io/library/debian:12-slim \
-            public.ecr.aws/docker/library/debian:12-slim
-          pull moafunk/liquidsoap:ci \
-            "mirror.gcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}" \
-            "ghcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}"
+          prepare() {
+            # The Icecast-KH Dockerfile starts FROM debian:12-slim.
+            pull debian:12-slim \
+              mirror.gcr.io/library/debian:12-slim \
+              public.ecr.aws/docker/library/debian:12-slim
+            pull moafunk/liquidsoap:ci \
+              "mirror.gcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}" \
+              "ghcr.io/savonet/liquidsoap@${LIQUIDSOAP_DIGEST}"
+            docker build -f docs/stream-rework/prod/icecast-kh.Dockerfile \
+              -t moafunk/icecast-kh:ci docs/stream-rework/prod
+          }
+          # The inner subshell stops at the first error. All output goes to
+          # the log, so the step ends at once.
+          (
+            set +e
+            (set -e; prepare)
+            echo $? >"$RUNNER_TEMP/stack-images.exit"
+          ) >"$RUNNER_TEMP/stack-images.log" 2>&1 &
 
-      - name: Build Icecast-KH from the production Dockerfile
+      - name: Install ffmpeg
+        uses: ./.github/actions/apt-install
+        with:
+          packages: ffmpeg
+          options: --no-install-recommends
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      # Restores the dependency builds of the last staging push. Only staging
+      # pushes save, so PR runs cannot evict each other's caches.
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
+
+      - name: Wait for the stream stack images
         run: |
-          docker build -f docs/stream-rework/prod/icecast-kh.Dockerfile \
-            -t moafunk/icecast-kh:ci docs/stream-rework/prod
+          set -euo pipefail
+          exit_file="$RUNNER_TEMP/stack-images.exit"
+          log="$RUNNER_TEMP/stack-images.log"
+          for _ in $(seq 1 600); do
+            [[ -s "$exit_file" ]] && break
+            sleep 1
+          done
+          code=$(cat "$exit_file" 2>/dev/null) || code="none after 10 minutes"
+          if [[ "$code" != 0 ]]; then
+            cat "$log"
+            echo "::error::Pulling or building the stream stack images failed (exit code: $code)"
+            exit 1
+          fi
+          echo "::group::Image pull and build log"
+          cat "$log"
+          echo "::endgroup::"
 
       - name: Start Icecast with the production config
         run: |
@@ -140,6 +179,12 @@ jobs:
             -v "$PWD/docs/stream-rework/prod/moafunk.liq:/moafunk.liq:ro" \
             moafunk/liquidsoap:ci liquidsoap /moafunk.liq
 
+      # Builds while Liquidsoap and Icecast start. The test step below then
+      # only runs the tests.
+      - name: Build the system tests
+        working-directory: backend
+        run: cargo test --locked --no-run
+
       - name: Wait for both mounts
         run: |
           set -euo pipefail
@@ -155,17 +200,6 @@ jobs:
           done
           echo "Mounts not up: /live.mp3 $live, /test.mp3 $preview" >&2
           exit 1
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.98.0
-
-      # Restores the dependency builds of the last staging push. Only staging
-      # pushes save, so PR runs cannot evict each other's caches.
-      - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: backend
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       # cargo is green with "0 passed" when the filter matches nothing, so
       # the step checks that every system test in the source ran and passed.

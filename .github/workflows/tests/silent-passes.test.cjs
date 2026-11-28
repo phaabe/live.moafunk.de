@@ -73,6 +73,65 @@ test('the stream-system step fails when the source has no system tests', () => {
   }
 });
 
+const systemSteps = load('stream-system.yml').jobs.system.steps;
+const stepNamed = (name) => systemSteps.find((s) => s.name === name);
+const prepareStep = 'Prepare the stream stack images in the background';
+const waitStep = 'Wait for the stream stack images';
+
+test('stream-system prepares the images while Rust builds and waits before the stack starts', () => {
+  const names = systemSteps.map((s) => s.name);
+  const order = [
+    prepareStep,
+    'Install ffmpeg',
+    'Install Rust',
+    'Cache Rust builds',
+    waitStep,
+    'Start Icecast with the production config',
+    'Start Liquidsoap with the production script',
+    'Build the system tests',
+    'Wait for both mounts',
+    'Run the system tests',
+  ];
+  const positions = order.map((name) => names.indexOf(name));
+  assert.ok(!positions.includes(-1), `missing step: ${order[positions.indexOf(-1)]}`);
+  assert.deepEqual(positions, [...positions].sort((a, b) => a - b));
+  assert.equal(stepNamed('Build the system tests').run, 'cargo test --locked --no-run');
+  for (const name of [prepareStep, waitStep]) assert.equal(stepNamed(name)['continue-on-error'], undefined);
+});
+
+// Runs the background step, then the wait step, with a fake docker that
+// fails on the subcommand in FAIL_ON.
+function prepareImages(failOn = '') {
+  const dir = mkdtempSync(path.join(tmpdir(), 'stream-system-images-'));
+  const bin = path.join(dir, 'bin');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'docker'), '#!/bin/bash\necho "docker $1"\n[[ "$1" != "$FAIL_ON" ]]\n');
+  chmodSync(path.join(bin, 'docker'), 0o755);
+  const bash = (script) =>
+    execFileSync('/bin/bash', ['--noprofile', '--norc', '-e', '-c', script], {
+      cwd: dir,
+      env: { PATH: `${bin}:/usr/bin:/bin`, RUNNER_TEMP: dir, LIQUIDSOAP_DIGEST: 'sha256:0', FAIL_ON: failOn },
+      stdio: 'pipe',
+    }).toString();
+  try {
+    bash(stepNamed(prepareStep).run);
+    return bash(stepNamed(waitStep).run);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('the image wait step passes when the pulls and the build pass', () => {
+  assert.match(prepareImages(), /::group::.*\ndocker pull\ndocker tag\ndocker pull\ndocker tag\ndocker build\n::endgroup::/);
+});
+
+test('the image wait step fails and shows the log when a pull or the build fails', () => {
+  const error = /::error::Pulling or building the stream stack images failed \(exit code: 1\)/;
+  fails(() => prepareImages('build'), new RegExp(`docker build\\n${error.source}`));
+  // A failed command stops the rest: no build after a failed tag.
+  fails(() => prepareImages('tag'), new RegExp(`^docker pull\\ndocker tag\\n${error.source}`));
+});
+
 test('both Playwright configs refuse test.only on CI', () => {
   for (const file of ['playwright.config.ts', 'playwright.local.config.ts']) {
     const text = readFileSync(path.join(root, 'e2e', file), 'utf8');
