@@ -135,7 +135,10 @@ pub async fn get_current_user(state: &Arc<AppState>, token: Option<&str>) -> Opt
     .await
     .ok()?;
 
-    user
+    // The account end ends the session too, by the same rule as login. Not the
+    // guest's `login_date`: that day is in Berlin time, and a show may run past
+    // midnight. The guest account ends later, at the show day's 23:59:59 UTC.
+    user.filter(|user| !user.is_expired())
 }
 
 pub fn get_session_from_cookies<B>(request: &Request<B>) -> Option<String> {
