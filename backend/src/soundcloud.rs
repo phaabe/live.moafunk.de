@@ -374,6 +374,7 @@ pub async fn build_title(state: &Arc<AppState>, show: &models::Show) -> Result<S
 /// Sets title, description, artwork from the show's cover image.
 /// Stores the resulting track_id and URL in the database.
 pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCloudUploadResult> {
+    let _busy = crate::metrics::busy(crate::metrics::Work::SoundcloudUpload);
     ensure_enabled(state).await?;
     let access_token = get_access_token(state).await?;
 

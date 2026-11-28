@@ -3,8 +3,8 @@
 # "DEPLOY - Release to production" workflow pipes it in over ssh, and it also runs by hand:
 #   ssh root@<prod> 'TAG=sha-1234567 DIGEST=sha256:<64 hex> DRY_RUN=1 bash -s' < backend/deploy/deploy-production.sh
 #
-# Refuses when a show is on air or due within 2 hours, or when the pulled
-# image is not DIGEST. Then backs up the DB (SQLite backup API), starts the
+# Refuses when a show is on air or due within 2 hours, while a recording
+# finalize or upload runs, or when the pulled image is not DIGEST. Then backs up the DB (SQLite backup API), starts the
 # image, waits for health and prints the rollback. DRY_RUN=1 pulls and checks
 # the image but backs up and switches nothing. Never edits .env: the tag goes
 # to this one compose call as UNHEARD_TAG.
@@ -74,6 +74,29 @@ case "$status" in
   *'"active":false'*) echo "OK    nothing on air" ;;
   *) echo "FAIL  stream status: $status"; blocked=1 ;;
 esac
+# A finalize or upload must finish first. /metrics is on the box only (nginx
+# answers 404 for it); moafunk_busy{work="..."} counts the running work.
+metrics="$(curl -fsS -m 5 http://127.0.0.1:8000/metrics || echo unreachable)"
+busy_re='^moafunk_busy\{work="([a-z_]+)"\} [1-9]'
+running=""
+while IFS= read -r line; do
+  if [[ "$line" =~ $busy_re ]]; then
+    work="${BASH_REMATCH[1]}"
+    running="$running${running:+, }${work//_/ } running"
+  fi
+done <<<"$metrics"
+if [[ "$metrics" == unreachable ]]; then
+  echo "FAIL  metrics: unreachable"
+  blocked=1
+elif [[ -n "$running" ]]; then
+  echo "FAIL  $running"
+  blocked=1
+elif [[ "$metrics" != *moafunk_busy* ]]; then
+  # Only an API from before this check: it cannot report running work.
+  echo "WARN  the running API does not report running work; not checked"
+else
+  echo "OK    no finalize or upload running"
+fi
 if ! SHOW_GUARD_HOURS="$SHOW_GUARD_HOURS" python3 - <<'PY'; then blocked=1; fi
 import datetime, os, sqlite3, sys
 from zoneinfo import ZoneInfo

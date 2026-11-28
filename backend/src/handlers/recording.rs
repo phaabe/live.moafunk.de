@@ -916,6 +916,7 @@ pub(crate) struct RecoveryCounts {
 /// producer goes on in the same version, and its own finalize saves it. A
 /// second pass after the grace recovers the ones nobody took over.
 pub async fn recover_orphaned_recordings(state: &Arc<AppState>, temp_dir: &Path) {
+    let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
     let first = recover_once(state, temp_dir, FINALIZE_GRACE).await;
     if first.deferred > 0 {
         tokio::time::sleep(FINALIZE_GRACE).await;
@@ -1793,6 +1794,7 @@ pub async fn finalize_ws_handler(
 
 /// Handle the finalize WebSocket connection.
 async fn handle_finalize_socket(socket: WebSocket, state: Arc<AppState>, query: FinalizeQuery) {
+    let _busy = crate::metrics::busy(crate::metrics::Work::Finalize);
     let (mut sender, mut receiver) = socket.split();
 
     // Run the finalize process

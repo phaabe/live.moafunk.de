@@ -252,6 +252,7 @@ pub async fn finalize_recording_upload(
     Json(req): Json<FinalizeRequest>,
 ) -> Result<impl IntoResponse> {
     let (user, show) = require_show_editor(&state, &headers, show_id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::RecordingUpload);
 
     tracing::info!(
         "Chunked recording upload: finalize for session_id={}, show_id={}",

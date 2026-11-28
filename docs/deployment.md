@@ -39,6 +39,7 @@ It stops, and changes nothing, when:
 - the code on `main` is not exactly the code that staging runs (it asks the staging box which tag it runs and compares the git trees). With `hotfix` on, it skips only this check, and only when `main`'s head commit is the merge of a PR with label `hotfix`. Otherwise the run stops.
 - the image for the commit is not built yet, or the pulled image does not have the expected digest
 - a show is on air, or a show starts or runs within the next 2 hours
+- a recording finalize, a recording or set upload, or a SoundCloud upload is running (the API's `/metrics` on the box, `moafunk_busy`). Wait and run it again.
 - another deploy is running
 
 Then it backs up the DB (SQLite backup API), starts the new image, waits until it is healthy, checks `/health` and `/api/stream/status`, and prints the rollback. The host part is `backend/deploy/deploy-production.sh`; it also runs by hand over ssh (see its header).

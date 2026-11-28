@@ -4571,6 +4571,7 @@ pub async fn api_upload_show_recording(
 ) -> Result<impl IntoResponse> {
     // The show's host (or its creator, or an admin) may upload its recording.
     let (user, show) = require_show_editor(&state, &headers, id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::RecordingUpload);
 
     // Process uploaded file
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
@@ -5410,6 +5411,7 @@ pub async fn api_my_show_upload(
     mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
 
     let mut file_data: Option<(String, Vec<u8>, String)> = None;
 
@@ -5629,6 +5631,7 @@ pub async fn api_my_show_upload_finalize(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse> {
     let (_user, show) = require_user_show(&state, &headers, query.show_id).await?;
+    let _busy = crate::metrics::busy(crate::metrics::Work::SetUpload);
 
     tracing::info!(
         "Prerecorded upload finalize for session_id={}, show_id={}",
