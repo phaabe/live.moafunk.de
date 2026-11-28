@@ -40,6 +40,9 @@ const mocks = vi.hoisted(() => ({
   result: null as null | SoundcheckResult,
   // The captured input's track: unplugging it ends it.
   track: null as null | (EventTarget & { readyState: string }),
+  // Input gain, 0..2.
+  gain: null as null | Ref<number>,
+  setInputVolume: vi.fn(),
 }));
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.push }) }));
@@ -95,6 +98,8 @@ vi.mock('@admin/composables', async () => {
       error: ref(null),
       mediaStream: ref({ getAudioTracks: () => [mocks.track] }),
       processedStream: ref(null),
+      inputVolume: mocks.gain,
+      setInputVolume: mocks.setInputVolume,
       refreshDevices: vi.fn(async () => {}),
       listDevices: vi.fn(),
       captureDevice: mocks.captureDevice,
@@ -228,6 +233,8 @@ beforeEach(() => {
   mocks.showsGet.mockReset().mockResolvedValue({ on_air: false });
   mocks.result = createSoundcheckResult();
   mocks.track = Object.assign(new EventTarget(), { readyState: 'live' });
+  mocks.gain = ref(1);
+  mocks.setInputVolume.mockReset().mockImplementation((v: number) => (mocks.gain!.value = v));
   vi.stubGlobal('navigator', {
     ...navigator,
     mediaDevices: { addEventListener: vi.fn(), removeEventListener: vi.fn() },
@@ -288,6 +295,19 @@ describe('Studio soundcheck', () => {
       expect(text()).not.toContain(gone);
     }
     expect(goLive().disabled).toBe(true);
+  });
+
+  it('sets the input gain, the same fader as on air', async () => {
+    await mount();
+    const fader = root.querySelector<HTMLInputElement>('input[type="range"]')!;
+    const field = fader.closest('label')!;
+    expect(field.querySelector('.ls-label')!.textContent).toBe('Input gain');
+    expect(field.querySelector('.ls-fader-value')!.textContent).toBe('100 %');
+    fader.value = '60';
+    fader.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(mocks.setInputVolume).toHaveBeenCalledWith(0.6);
+    expect(field.querySelector('.ls-fader-value')!.textContent).toBe('60 %');
   });
 
   it('tests the music, then the mic, proposes OK and opens Go Live', async () => {
