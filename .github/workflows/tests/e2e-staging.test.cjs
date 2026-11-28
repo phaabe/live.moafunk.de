@@ -255,11 +255,11 @@ if (args === checks) {
 
 test('PRs that change e2e/ or the frontend get the e2e checks and the local Studio soundcheck without staging or secrets', () => {
   const unit = load('e2e-unit.yml');
+  const paths = ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml', '.github/actions/apt-install/**'];
+  // Staging pushes run it too: they save the cache the PR runs restore.
   assert.deepEqual(unit.on, {
-    pull_request: {
-      branches: ['staging', 'main'],
-      paths: ['e2e/**', 'frontend/**', '.github/workflows/e2e-unit.yml', '.github/actions/apt-install/**'],
-    },
+    pull_request: { branches: ['staging', 'main'], paths },
+    push: { branches: ['staging'], paths },
   });
   assert.deepEqual(unit.permissions, { contents: 'read' });
   // The scope job and the Studio files it checks: pr-scope.test.cjs.
@@ -273,6 +273,39 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
   // One report per shard: artifact names must not clash.
   assert.equal(soundcheck.at(-1).uses, 'actions/upload-artifact@v4');
   assert.equal(soundcheck.at(-1).with.name, 'studio-soundcheck-report-${{ matrix.shard }}');
+
+  // frontend/node_modules: every shard restores it; only shard 1 of a
+  // staging push saves it, with the restored key, before the tests run.
+  const restore = soundcheck.find((s) => s.uses === 'actions/cache/restore@v4');
+  const save = soundcheck.find((s) => s.uses === 'actions/cache/save@v4');
+  const install = soundcheck.find((s) => /npm ci --prefix frontend/.test(s.run ?? ''));
+  assert.equal(restore.with.path, 'frontend/node_modules');
+  assert.match(restore.with.key, /-\$\{\{ hashFiles\('frontend\/package-lock\.json'\) \}\}$/);
+  assert.deepEqual(save.with, { path: restore.with.path, key: `\${{ steps.${restore.id}.outputs.cache-primary-key }}` });
+  assert.equal(save.if, `github.event_name == 'push' && matrix.shard == 1 && steps.${restore.id}.outputs.cache-hit != 'true'`);
+  const at = (step) => soundcheck.indexOf(step);
+  assert.ok(at(restore) < at(install) && at(install) < at(save) && at(save) < soundcheck.length - 2);
+  assert.deepEqual(install.env, { FRONTEND_CACHED: `\${{ steps.${restore.id}.outputs.cache-hit }}` });
+  // A cache hit skips only the frontend's npm ci.
+  const { dir, run, done } = runner({
+    npm: '#!/bin/sh\necho "npm $*" >>"$CALLS"\n',
+    npx: '#!/bin/sh\necho "npx $*" >>"$CALLS"\n',
+  });
+  try {
+    const calls = path.join(dir, 'calls');
+    const installWith = (cached) => {
+      rmSync(calls, { force: true });
+      run(`mkdir -p "${dir}/e2e" && cd "${dir}"\n${install.run}`, { CALLS: calls, FRONTEND_CACHED: cached });
+      return readFileSync(calls, 'utf8').trim().split('\n');
+    };
+    const rest = ['npm ci --prefix e2e', 'npx playwright install --with-deps chromium firefox'];
+    assert.deepEqual(installWith('true'), rest);
+    assert.deepEqual(installWith('false'), ['npm ci --prefix frontend', ...rest]);
+    assert.deepEqual(installWith(''), ['npm ci --prefix frontend', ...rest]);
+  } finally {
+    done();
+  }
+
   const { steps, defaults } = unit.jobs['e2e-unit'];
   assert.deepEqual(defaults, { run: { 'working-directory': 'e2e' } });
   assert.equal(steps[0].with['persist-credentials'], false);
