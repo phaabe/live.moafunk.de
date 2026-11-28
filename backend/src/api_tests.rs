@@ -1333,6 +1333,81 @@ async fn the_cleanup_deletes_expired_users_who_host_a_show() {
     assert_eq!((show.host_user_id, show.created_by), (None, Some(p.host)));
 }
 
+async fn add_series(state: &Arc<AppState>, owner: i64, name: &str) {
+    sqlx::query("INSERT INTO show_templates (owner_user_id, name) VALUES (?, ?)")
+        .bind(owner)
+        .bind(name)
+        .execute(&state.db)
+        .await
+        .unwrap();
+}
+
+async fn user_ids(state: &Arc<AppState>) -> Vec<i64> {
+    sqlx::query_scalar("SELECT id FROM users ORDER BY id")
+        .fetch_all(&state.db)
+        .await
+        .unwrap()
+}
+
+async fn series_count(state: &Arc<AppState>) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM show_templates")
+        .fetch_one(&state.db)
+        .await
+        .unwrap()
+}
+
+/// A series has no other owner, so its owner is kept and nothing changes.
+#[tokio::test]
+async fn deleting_a_series_owner_is_refused() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_series(&state, p.host, "Late Night").await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    let users = user_ids(&state).await;
+    let delete = api::api_delete_user(
+        State(state.clone()),
+        Path(p.host),
+        headers(&state, p.admin).await,
+    );
+    let (code, body) = reply(delete.await).await;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(
+        body["error"],
+        "This user owns the series \"Late Night\". Delete the series first."
+    );
+    assert_eq!(user_ids(&state).await, users);
+    assert_eq!(series_count(&state).await, 1);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!(
+        (show.host_user_id, show.created_by),
+        (Some(p.host), Some(p.host))
+    );
+}
+
+/// The cleanup keeps an expired series owner and deletes the other user.
+#[tokio::test]
+async fn the_cleanup_keeps_an_expired_series_owner() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_series(&state, p.host, "Late Night").await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    sqlx::query("UPDATE users SET expires_at = '2020-01-01' WHERE id IN (?, ?)")
+        .bind(p.host)
+        .bind(p.other_host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    assert_eq!(db::delete_expired_users(&state.db).await.unwrap(), 1);
+    assert_eq!(
+        user_ids(&state).await,
+        [p.guest, p.host, p.admin, p.superadmin]
+    );
+    assert_eq!(series_count(&state).await, 1);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!(show.host_user_id, Some(p.host));
+}
+
 #[tokio::test]
 #[ignore = "https://github.com/phaabe/live.moafunk.de/issues/927"]
 async fn the_session_of_an_expired_account_is_refused() {

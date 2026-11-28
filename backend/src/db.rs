@@ -1013,7 +1013,12 @@ pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::
             .fetch_optional(pool)
             .await?;
         if let Some(id) = stray {
-            delete_user(pool, id).await?;
+            // Fail closed: a kept `dev` login would be a backdoor.
+            if let UserDeletion::OwnsSeries(series) = delete_user(pool, id).await? {
+                return Err(sqlx::Error::Protocol(format!(
+                    "stray '{DEV_USERNAME}' user owns the series {series:?}; delete them first"
+                )));
+            }
             tracing::warn!("Removed stray '{DEV_USERNAME}' user: APP_ENV is not development");
         }
         return Ok(());
@@ -1043,16 +1048,34 @@ pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Delete a user in one transaction. Used by the admin delete and the expired
-/// account cleanup.
+/// What [`delete_user`] did.
+#[derive(Debug, PartialEq)]
+pub enum UserDeletion {
+    Deleted,
+    /// Nothing changed: the user owns these series (names). A series has no
+    /// other owner, so it would go with the user.
+    OwnsSeries(Vec<String>),
+}
+
+/// Delete a user in one transaction. Used by the admin delete, the expired
+/// account cleanup and the stray dev-user removal.
 ///
+/// A user who owns a series is kept (see [`UserDeletion::OwnsSeries`]).
 /// Shows, artists and posts stay; the user is cleared from them. The schema's
 /// ON DELETE handles the rest: it removes the user's profile, links,
-/// chalkboard notes, co-host seats, recovery rows, series uploads and own
-/// series (its episodes stay), and clears `added_by` and `users.created_by`.
-/// The profile photo in R2 (`users/<id>/photo`) stays.
-pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+/// chalkboard notes, co-host seats, recovery rows and series uploads, and
+/// clears `added_by` and `users.created_by`. The profile photo in R2
+/// (`users/<id>/photo`) stays.
+pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<UserDeletion, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    let series: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM show_templates WHERE owner_user_id = ? ORDER BY name")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    if !series.is_empty() {
+        return Ok(UserDeletion::OwnsSeries(series));
+    }
     for sql in [
         // Foreign keys without ON DELETE: they block the delete.
         "UPDATE shows SET host_user_id = NULL WHERE host_user_id = ?",
@@ -1067,11 +1090,13 @@ pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> 
     ] {
         sqlx::query(sql).bind(id).execute(&mut *tx).await?;
     }
-    tx.commit().await
+    tx.commit().await?;
+    Ok(UserDeletion::Deleted)
 }
 
 /// Delete every expired account, each in its own transaction, so one user
-/// that fails does not keep the others. Returns how many were deleted.
+/// that fails does not keep the others. A user who owns a series is kept.
+/// Returns how many were deleted.
 pub async fn delete_expired_users(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
     let ids: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
@@ -1081,7 +1106,10 @@ pub async fn delete_expired_users(pool: &SqlitePool) -> Result<u64, sqlx::Error>
     let mut deleted = 0;
     for id in ids {
         match delete_user(pool, id).await {
-            Ok(()) => deleted += 1,
+            Ok(UserDeletion::Deleted) => deleted += 1,
+            Ok(UserDeletion::OwnsSeries(series)) => {
+                tracing::warn!("Kept expired user {id}: owns the series {series:?}")
+            }
             Err(e) => tracing::error!("Failed to delete expired user {id}: {e}"),
         }
     }
@@ -1684,6 +1712,18 @@ mod tests {
         // Idempotent when already absent.
         seed_dev_user(&pool, false).await.unwrap();
         assert_eq!(count_user(&pool, DEV_USERNAME).await, 0);
+    }
+
+    /// A stray `dev` user who owns a series stops the start instead of
+    /// staying as a login or taking the series with it.
+    #[tokio::test]
+    async fn seed_dev_user_refuses_a_dev_login_that_owns_a_series() {
+        let pool = mem_db().await;
+        let dev = insert_user(&pool, DEV_USERNAME).await;
+        insert_template(&pool, dev, "Late Night").await;
+
+        assert!(seed_dev_user(&pool, false).await.is_err());
+        assert_eq!(count_user(&pool, DEV_USERNAME).await, 1);
     }
 
     /// A foreign key to `users` without ON DELETE blocks `delete_user` unless

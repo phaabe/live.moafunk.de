@@ -4370,7 +4370,18 @@ pub async fn api_delete_user(
         }
     }
 
-    crate::db::delete_user(&state.db, id).await?;
+    if let crate::db::UserDeletion::OwnsSeries(series) =
+        crate::db::delete_user(&state.db, id).await?
+    {
+        let names = series
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AppError::Conflict(format!(
+            "This user owns the series {names}. Delete the series first."
+        )));
+    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
