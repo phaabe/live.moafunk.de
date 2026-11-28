@@ -6,6 +6,16 @@ import { useAuthStore } from '../stores/auth';
 import ProfilePage from '../pages/ProfilePage.vue';
 import type { Profile, ProfileInput, ProfilePlatform } from '../api';
 import { expectFlow } from '../flow/expectFlow';
+import {
+  cropButton,
+  cropDialog,
+  cropper,
+  loadCropImage,
+  resetCropper,
+  stubImages,
+} from './cropFakes';
+
+vi.mock('cropperjs', () => import('./cropFakes'));
 
 const platform = (
   key: string,
@@ -116,17 +126,22 @@ let app: App | undefined;
 let root: HTMLDivElement;
 let requests: string[];
 let saved: ProfileInput | undefined;
+let sentPhoto: FormData | undefined;
 let lena: Profile;
 
 beforeEach(() => {
   requests = [];
   saved = undefined;
+  sentPhoto = undefined;
   lena = JSON.parse(JSON.stringify(LENA));
   root = document.createElement('div');
   document.body.appendChild(root);
   // jsdom has no object URLs; the photo preview needs one.
   URL.createObjectURL = () => 'blob:photo';
   URL.revokeObjectURL = () => {};
+  // A square photo: it skips the crop dialog.
+  stubImages();
+  resetCropper();
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, options?: RequestInit) => {
@@ -138,6 +153,7 @@ beforeEach(() => {
         return Response.json(lena);
       }
       if (url === '/api/profile/photo') {
+        if (method === 'POST') sentPhoto = options?.body as FormData;
         lena = {
           ...lena,
           photo_srcset: method === 'POST' ? '/api/img?k=users/1/photo 160w' : null,
@@ -335,6 +351,29 @@ describe('Profile', () => {
     const auth = useAuthStore();
     expect(auth.user?.photo_srcset).toContain('/api/img');
     expect(router.currentRoute.value.path).toBe('/profile');
+  });
+
+  it('crops a photo that is not square before Save sends it', async () => {
+    stubImages({ 'blob:photo': [1200, 800] });
+    await mount('/profile');
+    await click('Edit profile');
+    const input = root.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', {
+      value: [new File(['wide'], 'me.png', { type: 'image/png' })],
+      configurable: true,
+    });
+    input.dispatchEvent(new Event('change'));
+    await settle();
+    expect(cropDialog()?.querySelector('.modal-title')?.textContent).toBe('Crop photo');
+
+    loadCropImage();
+    expect(cropper.options[0]).toMatchObject({ aspectRatio: 1 });
+    cropButton('Use crop').click();
+    await vi.waitFor(() => expect(cropDialog()).toBeNull());
+    await click('Save');
+    const photo = sentPhoto?.get('photo') as File;
+    expect(photo.name).toBe('me.png');
+    expect(photo.size).toBe('cropped'.length);
   });
 
   it('the own name in the address opens the own profile', async () => {

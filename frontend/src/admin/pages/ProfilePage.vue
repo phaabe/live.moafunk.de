@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BaseButton } from '@shared/components';
 import BoardIcon from '../components/BoardIcon.vue';
+import ImageCropDialog from '../components/ImageCropDialog.vue';
 import { profileApi, type Profile, type ProfilePlatform } from '../api';
 import { useAuthStore } from '../stores/auth';
 
@@ -64,6 +65,7 @@ let nextId = 1;
 const photoChange = ref<File | 'remove' | null>(null);
 const photoPreview = ref<string | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+const cropDialog = ref<InstanceType<typeof ImageCropDialog> | null>(null);
 
 const byKey = computed(() => new Map(platforms.value.map((p) => [p.key, p])));
 const commonPlatforms = computed(() => platforms.value.filter((p) => p.group === 'common'));
@@ -131,11 +133,13 @@ function setPhoto(change: File | 'remove' | null) {
 }
 onBeforeUnmount(() => setPhoto(null));
 
-function onFile(event: Event) {
+async function onFile(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = '';
-  if (file) setPhoto(file);
+  // A photo that is not square opens "Crop photo" first; Cancel keeps the old one.
+  const picked = file && (await cropDialog.value?.crop(file));
+  if (picked) setPhoto(picked);
 }
 
 /** What the photo box shows: the pending change while editing, else the saved photo. */
@@ -251,6 +255,7 @@ const roleLabel = computed(() => (profile.value?.role === 'host' ? 'Host' : 'Adm
                 hidden
                 @change="onFile"
               />
+              <ImageCropDialog ref="cropDialog" title="Crop photo" />
             </template>
           </div>
 

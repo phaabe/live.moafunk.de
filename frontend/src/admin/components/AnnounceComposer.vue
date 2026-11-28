@@ -13,6 +13,7 @@ import {
 } from '../api';
 import BoardIcon from './BoardIcon.vue';
 import BookTime from './BookTime.vue';
+import ImageCropDialog from './ImageCropDialog.vue';
 import type { Snippet } from './recording-editor/edit';
 import SnippetEditor from './recording-editor/SnippetEditor.vue';
 import {
@@ -76,9 +77,20 @@ const when = ref('');
 const layout = ref<'band' | 'split'>('band');
 /** `when` value of the "Post now" choice (pre slot only). */
 const NOW = 'now';
+const cropDialog = ref<InstanceType<typeof ImageCropDialog> | null>(null);
 
 /** Feed posts have text and people; the story has neither. */
 const feed = computed(() => props.slot !== 'onair');
+/**
+ * Shape (width / height) of the photo in the image the server draws
+ * (announcement_image.rs): pre band 1080×1350, pre split 1080×810, on-air
+ * square, post 936×693. The server center-crops the rest.
+ */
+const photoAspect = computed(() => {
+  if (props.slot === 'onair') return 1;
+  if (props.slot === 'pre' && layout.value === 'band') return 4 / 5;
+  return 4 / 3;
+});
 const current = computed(() => inSlot(list.value, props.slot));
 /** After it is sent the caption is frozen. */
 const sent = computed(() => current.value?.state === 'sent');
@@ -220,13 +232,17 @@ async function pickPhoto(event: Event) {
   const file = input.files?.[0];
   if (!file) return;
   photoError.value = checkPhoto(file);
-  if (photoError.value) {
+  // A photo of another shape opens "Crop photo" first; Cancel uploads nothing.
+  const picked = photoError.value ? null : await cropDialog.value?.crop(file, photoAspect.value);
+  // A cropped PNG can be bigger than the picked file.
+  if (picked) photoError.value = checkPhoto(picked);
+  if (!picked || photoError.value) {
     input.value = '';
     return;
   }
   uploading.value = true;
   try {
-    imageKey.value = (await announcementsApi.upload(props.showId, file)).image_key;
+    imageKey.value = (await announcementsApi.upload(props.showId, picked)).image_key;
   } catch (e) {
     photoError.value = e instanceof Error ? e.message : 'Could not upload the photo';
     input.value = '';
@@ -353,6 +369,7 @@ function picked(value: string) {
               :disabled="uploading"
               @change="pickPhoto"
             />
+            <ImageCropDialog ref="cropDialog" title="Crop photo" />
             <p class="hint">
               {{
                 uploading
