@@ -2,7 +2,7 @@
   "format": "flow-contract",
   "version": 1,
   "flow": "moafunk",
-  "rev": 41,
+  "rev": 43,
   "screens": [
     {
       "id": "dashboard",
@@ -798,7 +798,7 @@
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
       "hash": "34d7cfff",
-      "notesHash": "f8f66f9d",
+      "notesHash": "2136e1ca",
       "elements": [
         {
           "k": "back",
@@ -1170,7 +1170,7 @@
       "lane": "plan",
       "path": "admin.live.moafunk.de/#/shows/brunchtime/book",
       "hash": "fe9ad71c",
-      "notesHash": "8d1938b3",
+      "notesHash": "c81966a5",
       "elements": [
         {
           "k": "back",
@@ -2738,8 +2738,8 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "5e94b0cd",
-      "notesHash": "886a6e45",
+      "hash": "c4c59017",
+      "notesHash": "c1bc1e25",
       "elements": [
         {
           "k": "back",
@@ -2764,6 +2764,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -2837,7 +2842,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "8f6dff6c",
+      "hash": "dee37f5a",
       "notesHash": "54b583db",
       "elements": [
         {
@@ -2863,6 +2868,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -2936,7 +2946,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "85fbd85f",
+      "hash": "5a4c62e9",
       "notesHash": "f0534f9e",
       "elements": [
         {
@@ -2962,6 +2972,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",
@@ -3046,7 +3061,7 @@
       "who": "shared",
       "lane": "showday",
       "path": "admin.live.moafunk.de/#/stream/live",
-      "hash": "753f759c",
+      "hash": "9d7596b2",
       "notesHash": "eacaa2a2",
       "elements": [
         {
@@ -3072,6 +3087,11 @@
           "k": "field",
           "text": "Audio input",
           "value": "Focusrite USB ▾"
+        },
+        {
+          "k": "field",
+          "text": "Input gain",
+          "value": "100 %"
         },
         {
           "k": "text",

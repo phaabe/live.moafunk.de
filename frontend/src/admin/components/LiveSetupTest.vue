@@ -293,6 +293,12 @@ const sentStream = computed(() =>
 );
 const sentMeter = useDbMeter(sentStream);
 
+// Input gain: the same fader as on air (0..150 %), so a host can run the mixer at its normal level.
+const gainPct = computed(() => Math.round(audioCapture.inputVolume.value * 100));
+function onGain(event: Event) {
+  audioCapture.setInputVolume(Number((event.target as HTMLInputElement).value) / 100);
+}
+
 // One context for the return feed. Made in a click, so it may play.
 let returnContext: AudioContext | null = null;
 const noReturn: ReturnFeed = {
@@ -404,10 +410,8 @@ onUnmounted(() => {
     <section class="studio-step">
       <span class="step-icon" aria-hidden="true"><BoardIcon name="mic" :size="18" /></span>
       <div class="step-body">
-        <DbMeter
-          :media-stream="readOnly ? null : audioCapture.mediaStream.value"
-          label="Input level"
-        />
+        <!-- After the gain: the level that is sent and tested. -->
+        <DbMeter :media-stream="sentStream" label="Input level" />
         <div v-if="readOnly" class="ls-field">
           <span class="ls-label">Audio input</span>
           <p class="ls-select ls-value">{{ log?.input ?? 'Not chosen yet' }}</p>
@@ -425,6 +429,14 @@ onUnmounted(() => {
             </option>
             <option value="screen">Screen audio</option>
           </select>
+        </label>
+        <!-- The value is a span, not <output>: the label would name it instead of the slider. -->
+        <label v-if="!readOnly && !inputOnly" class="ls-field ls-fader">
+          <span class="ls-fader-head">
+            <span class="ls-label label">Input gain</span>
+            <span class="ls-fader-value">{{ gainPct }} %</span>
+          </span>
+          <input type="range" min="0" max="150" step="5" :value="gainPct" @input="onGain" />
         </label>
         <p v-if="!inputOnly" class="ls-muted">
           Music and mic use this one input. You do not need two: test them one after the other
@@ -998,6 +1010,24 @@ onUnmounted(() => {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.ls-fader-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ls-fader-value {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.ls-fader input {
+  width: 100%;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--color-primary);
 }
 
 .studio-chain .ls-select {

@@ -27,6 +27,19 @@ test('a tone passes the soundcheck and opens Go Live', async ({ page }) => {
   await soundcheckAndGoLive(page);
 });
 
+test('the input gain sets the level that is metered and tested', async ({ page }) => {
+  await mode(page, 'ok');
+  await page.goto(STUDIO);
+  await pickInput(page);
+  await page.getByLabel('Input gain').fill('0');
+  await expect(page.locator('.db-meter-readout').first()).toHaveText(/∞/);
+  await soundcheckRow(page, 'Music').getByRole('button', { name: 'Start test' }).click();
+  // The meter's peak hold may still carry the level from before the fader moved.
+  await expect(soundcheckRow(page, 'Music')).toContainText(/No signal|Too quiet/, {
+    timeout: 30_000,
+  });
+});
+
 test('Go Live stays closed when the server gets no audio', async ({ page }) => {
   await mode(page, 'no-chunks');
   await page.goto(STUDIO);
