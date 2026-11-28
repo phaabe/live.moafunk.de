@@ -1071,7 +1071,8 @@ async fn main() -> anyhow::Result<()> {
     // Spawn the pre-recorded show auto-start scheduler: fires go-live once a
     // confirmed pre-recorded show reaches its scheduled start, so it doesn't
     // depend on an admin having the waiting-room page open (issue #240). Runs
-    // every 30s; self-guards via the `prerecorded_started_at` column.
+    // every 30s; self-guards via the `prerecorded_started_at` column. It also
+    // notes the episode on air, for booking over idle shows.
     {
         let state = state.clone();
         tokio::spawn(async move {
@@ -1079,6 +1080,7 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 interval.tick().await;
                 scheduler::check_prerecorded_show_start(state.clone(), chrono::Utc::now()).await;
+                handlers::api::note_on_air(&state, chrono::Utc::now()).await;
             }
         });
     }

@@ -450,6 +450,9 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     add_column_if_missing(pool, "shows", "prerecorded_duration_secs", "INTEGER").await?;
     // What the host's browser measured in the Studio and the live panel (JSON).
     add_column_if_missing(pool, "shows", "studio_log", "TEXT").await?;
+    // Last time the server saw the episode on air (RFC 3339, every 30 s):
+    // Book Slot may book over a show that was not on air for 10 min.
+    add_column_if_missing(pool, "shows", "on_air_at", "TEXT").await?;
     // The file the host picked for SoundCloud: 'show' (recorded on air) or
     // 'own' (`recording_key`). NULL: the own file when there is one, else 'show'.
     add_column_if_missing(pool, "shows", "recording_source", "TEXT").await?;

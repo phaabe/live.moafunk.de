@@ -127,6 +127,9 @@ pub struct BookRequest {
     mode: String,
     /// A finished upload of this series; required for "prerecorded".
     upload_id: Option<String>,
+    /// The host confirmed to book over idle shows (`api::can_take_over`).
+    #[serde(default)]
+    take_over: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -186,10 +189,46 @@ fn check_free_choice(slot: &Slot, now: DateTime<Utc>) -> Result<()> {
     }
 }
 
+/// The shows this booking books over. A clash with a show that is not idle
+/// is a 409, as before. A clash with idle shows only (`api::can_take_over`)
+/// is a 409 too, unless the host confirmed `take_over`.
+async fn shows_to_take_over(
+    state: &AppState,
+    slot: &Slot,
+    take_over: bool,
+    now: DateTime<Utc>,
+) -> Result<Vec<api::BookedShow>> {
+    let (Ok(day), Some(window)) = (
+        NaiveDate::parse_from_str(&slot.date, "%Y-%m-%d"),
+        api::show_window(&slot.date, &slot.start_time, Some(&slot.end_time)),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let clashes = api::clashing_shows(state, day, window, None).await?;
+    for show in &clashes {
+        if !api::can_take_over(state, show.id, &show.date, &show.start_time, now).await? {
+            return Err(AppError::Conflict(format!(
+                "This time overlaps an existing show \"{}\" on {}",
+                show.title, show.date
+            )));
+        }
+    }
+    if let (Some(show), false) = (clashes.first(), take_over) {
+        return Err(AppError::Conflict(format!(
+            "The show booked on {} at {} has not been on air for {} min. Confirm to book over it.",
+            show.date,
+            show.start_time,
+            api::TAKE_OVER_IDLE_MINUTES
+        )));
+    }
+    Ok(clashes)
+}
+
 /// POST /api/series/:slug/episodes — book a free date and time as a live or
 /// a pre-recorded episode. Returns the new episode. Any free time ahead
 /// works, also for a series with a rhythm (its slots are only the preset),
-/// and also one that starts now or passes midnight.
+/// and also one that starts now or passes midnight. With `take_over` it may
+/// book over idle shows: each one then ends where the new episode starts.
 pub async fn api_book_episode(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -204,16 +243,11 @@ pub async fn api_book_episode(
         start_time: req.start_time,
         end_time: req.end_time,
     };
-    check_free_choice(&slot, Utc::now())?;
-    // Someone may have taken the time since the page loaded: 409.
-    api::ensure_no_show_conflict(
-        &state,
-        &slot.date,
-        Some(&slot.start_time),
-        Some(&slot.end_time),
-        None,
-    )
-    .await?;
+    let now = Utc::now();
+    check_free_choice(&slot, now)?;
+    // Someone may have taken the time since the page loaded, or an idle show
+    // came on air: 409.
+    let idle = shows_to_take_over(&state, &slot, req.take_over, now).await?;
     let prerecorded = match req.mode.as_str() {
         "live" => false,
         "prerecorded" => true,
@@ -230,6 +264,22 @@ pub async fn api_book_episode(
     } else {
         None
     };
+    // An idle show started earlier, so it now ends where this one starts
+    // (an end at or before its start reads as the next day).
+    for show in &idle {
+        sqlx::query("UPDATE shows SET end_time = ? WHERE id = ?")
+            .bind(&slot.start_time)
+            .bind(show.id)
+            .execute(&mut *tx)
+            .await?;
+        tracing::info!(
+            "Booking over idle show {} ({} {}): it now ends at {}",
+            show.id,
+            show.date,
+            show.start_time,
+            slot.start_time
+        );
+    }
     let number: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM shows WHERE template_id = ?")
         .bind(series.id)
         .fetch_one(&mut *tx)

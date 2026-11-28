@@ -1248,6 +1248,8 @@ export interface BookedTime {
   date: string;
   start_time: string;
   end_time: string | null;
+  /** Started 10+ min ago and not on air for 10 min: Book Slot may book over it after a confirm. */
+  take_over?: boolean;
 }
 
 export interface BookedEpisode extends SeriesSlot {
@@ -1297,8 +1299,10 @@ export const seriesApi = {
     api.get<{ times: BookedTime[] }>(`/api/booked-times?from=${from}&to=${to}`),
 
   /** Book a slot. A slot someone else took in the meantime is rejected. */
-  book: (slug: string, body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string }) =>
-    api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
+  book: (
+    slug: string,
+    body: SeriesSlot & { mode: 'live' | 'prerecorded'; upload_id?: string; take_over?: boolean }
+  ) => api.post<BookedEpisode>(`${seriesPath(slug)}/episodes`, body),
 
   /** Chunked upload of a pre-recorded set before it is booked. */
   uploadSet: async (

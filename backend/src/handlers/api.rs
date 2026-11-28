@@ -3139,19 +3139,28 @@ pub(crate) fn check_show_times(start_time: &str, end_time: &str) -> Result<()> {
     Ok(())
 }
 
-/// The first other show whose window clashes with `window` (title, date). It
-/// looks at the day before (an overnight show reaches into `date`), `date`
-/// and the day after (this window may pass midnight). `exclude_id` skips the
-/// show being edited.
-pub(crate) async fn clashing_show(
+/// A booked show with a start time, as the clash checks read it.
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct BookedShow {
+    pub id: i64,
+    pub title: String,
+    pub date: String,
+    pub start_time: String,
+    pub end_time: Option<String>,
+}
+
+/// Every other show whose window clashes with `window`. It looks at the day
+/// before (an overnight show reaches into `date`), `date` and the day after
+/// (this window may pass midnight). `exclude_id` skips the show being edited.
+pub(crate) async fn clashing_shows(
     state: &AppState,
     date: chrono::NaiveDate,
     window: (chrono::NaiveDateTime, chrono::NaiveDateTime),
     exclude_id: Option<i64>,
-) -> Result<Option<(String, String)>> {
+) -> Result<Vec<BookedShow>> {
     let day = |d: Option<chrono::NaiveDate>| d.unwrap_or(date).format("%Y-%m-%d").to_string();
-    let others: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT title, date, start_time, end_time FROM shows \
+    let others: Vec<BookedShow> = sqlx::query_as(
+        "SELECT id, title, date, start_time, end_time FROM shows \
          WHERE date BETWEEN ? AND ? AND id != ? AND start_time IS NOT NULL",
     )
     .bind(day(date.pred_opt()))
@@ -3161,11 +3170,76 @@ pub(crate) async fn clashing_show(
     .await?;
     Ok(others
         .into_iter()
-        .find_map(|(title, other_date, start, end)| {
-            show_window(&other_date, &start, end.as_deref())
-                .filter(|other| windows_overlap(window, *other))
-                .map(|_| (title, other_date))
-        }))
+        .filter(|other| {
+            show_window(&other.date, &other.start_time, other.end_time.as_deref())
+                .is_some_and(|w| windows_overlap(window, w))
+        })
+        .collect())
+}
+
+/// The first other show whose window clashes with `window` (title, date).
+/// See [`clashing_shows`].
+pub(crate) async fn clashing_show(
+    state: &AppState,
+    date: chrono::NaiveDate,
+    window: (chrono::NaiveDateTime, chrono::NaiveDateTime),
+    exclude_id: Option<i64>,
+) -> Result<Option<(String, String)>> {
+    Ok(clashing_shows(state, date, window, exclude_id)
+        .await?
+        .into_iter()
+        .next()
+        .map(|show| (show.title, show.date)))
+}
+
+/// Book Slot may book over a show that started at least this long ago and
+/// has not been on air for this long: it was booked, but nobody came.
+pub(crate) const TAKE_OVER_IDLE_MINUTES: i64 = 10;
+
+/// The scheduler loop (every 30 s): note the episode on air in
+/// `shows.on_air_at`, so [`can_take_over`] knows when it was last on air,
+/// with or without listeners.
+pub(crate) async fn note_on_air(state: &AppState, now: chrono::DateTime<chrono::Utc>) {
+    let Some(show_id) = super::series::on_air_show_id(state).await else {
+        return;
+    };
+    let result = sqlx::query("UPDATE shows SET on_air_at = ? WHERE id = ?")
+        .bind(now.to_rfc3339())
+        .bind(show_id)
+        .execute(&state.db)
+        .await;
+    if let Err(e) = result {
+        tracing::warn!("Could not note show {show_id} as on air: {e}");
+    }
+}
+
+/// Whether another host may book over this show: it started at least
+/// [`TAKE_OVER_IDLE_MINUTES`] ago, it is not on air (a dropped stream counts
+/// as on air for the reconnect grace), and it was not on air in that time
+/// (`on_air_at`, see [`note_on_air`]).
+pub(crate) async fn can_take_over(
+    state: &AppState,
+    show_id: i64,
+    date: &str,
+    start_time: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    let idle_since = now - chrono::Duration::minutes(TAKE_OVER_IDLE_MINUTES);
+    if crate::scheduler::show_start_utc(date, start_time).is_none_or(|start| start > idle_since) {
+        return Ok(false);
+    }
+    if super::series::on_air_show_id(state).await == Some(show_id) {
+        return Ok(false);
+    }
+    let on_air_at: Option<String> = sqlx::query_scalar("SELECT on_air_at FROM shows WHERE id = ?")
+        .bind(show_id)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
+    let on_air_lately = on_air_at
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok())
+        .is_some_and(|at| at > idle_since);
+    Ok(!on_air_lately)
 }
 
 /// Reject if the proposed window overlaps another show, also one that passes
@@ -3208,7 +3282,8 @@ const BOOKED_TIMES_MAX_DAYS: i64 = 62;
 /// GET /api/booked-times?from=YYYY-MM-DD&to=YYYY-MM-DD — the date, start and
 /// end of every booked show from the day before `from` (an overnight show
 /// reaches into `from`) to `to`, so Book Slot can mark taken times. Times
-/// only, no names. Hosts and admins.
+/// only, no names. `take_over` marks a show another host may book over
+/// ([`can_take_over`]). Hosts and admins.
 pub async fn api_booked_times(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -3226,20 +3301,22 @@ pub async fn api_booked_times(
         )));
     }
     let first = from.pred_opt().unwrap_or(from);
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT date, start_time, end_time FROM shows \
+    let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, date, start_time, end_time FROM shows \
          WHERE date BETWEEN ? AND ? AND start_time IS NOT NULL ORDER BY date, start_time",
     )
     .bind(first.format("%Y-%m-%d").to_string())
     .bind(to.format("%Y-%m-%d").to_string())
     .fetch_all(&state.db)
     .await?;
-    let times: Vec<_> = rows
-        .into_iter()
-        .map(|(date, start_time, end_time)| {
-            serde_json::json!({ "date": date, "start_time": start_time, "end_time": end_time })
-        })
-        .collect();
+    let now = chrono::Utc::now();
+    let mut times = Vec::with_capacity(rows.len());
+    for (id, date, start_time, end_time) in rows {
+        let take_over = can_take_over(&state, id, &date, &start_time, now).await?;
+        times.push(serde_json::json!({
+            "date": date, "start_time": start_time, "end_time": end_time, "take_over": take_over,
+        }));
+    }
     Ok(Json(serde_json::json!({ "times": times })))
 }
 
