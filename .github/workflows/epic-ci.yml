@@ -92,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          save-if: true  # TEMP: lets this PR save, for a warm run. Revert before merge.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       - name: Check backend formatting
         run: cargo fmt --check
@@ -120,7 +120,6 @@ jobs:
             --output-path ../results/coverage.json
           cargo llvm-cov report --lcov --ignore-filename-regex "$ignore" \
             --output-path ../results/lcov.info
-          jq -c '.data[0].totals' ../results/coverage.json  # TEMP
 
       # Only the critical modules in backend/coverage-floors.json are gated;
       # all other coverage is reported on the test dashboard.

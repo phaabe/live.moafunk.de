@@ -139,7 +139,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          save-if: true  # TEMP: lets this PR save, for a warm run. Revert before merge.
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       - name: Wait for the stream stack images
         run: |

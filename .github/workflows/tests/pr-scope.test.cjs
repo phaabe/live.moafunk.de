@@ -120,7 +120,7 @@ test('Rust builds are cached; only staging pushes save the cache', () => {
     assert.equal(cache.uses, 'Swatinem/rust-cache@v2');
     assert.deepEqual(cache.with, {
       workspaces: 'backend',
-      'save-if': true, // TEMP
+      'save-if': "${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}",
     });
     assert.equal(names.indexOf('Cache Rust builds'), names.indexOf('Install Rust') + 1);
     const firstCargo = steps.findIndex((s) => /\bcargo\b/.test(s.run ?? ''));
