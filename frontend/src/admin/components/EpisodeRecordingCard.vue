@@ -283,6 +283,8 @@ async function setPublic(makePublic: boolean) {
       return;
     }
     publicNow.value = makePublic;
+    // A private track has a secret link, so the link changes with the sharing.
+    if (trackUrl.value && result.track_url) trackUrl.value = result.track_url;
     emit('changed');
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Could not change the track on SoundCloud';

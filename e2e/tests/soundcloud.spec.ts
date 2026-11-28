@@ -78,9 +78,10 @@ test('a host uploads a recording and sends it to SoundCloud', async () => {
 
   await test.step('Upload to SoundCloud gives a track link', async () => {
     await send.click();
-    await expect(page.getByRole('link', { name: 'Open on SoundCloud' })).toBeVisible({
-      timeout: 3 * 60_000,
-    });
+    const link = page.getByRole('link', { name: 'Open on SoundCloud' });
+    await expect(link).toBeVisible({ timeout: 3 * 60_000 });
+    // The track is private: only its secret link opens it.
+    await expect(link).toHaveAttribute('href', /^https:\/\/soundcloud\.com\/.+\/s-[A-Za-z0-9]+$/);
     await expect(page.getByRole('alert')).toHaveCount(0);
     const res = await page.request.get(`/api/shows/${episode}`);
     expect(res.ok(), `GET /api/shows/${episode}: ${res.status()}`).toBe(true);
