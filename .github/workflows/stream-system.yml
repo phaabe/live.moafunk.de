@@ -124,23 +124,17 @@ jobs:
             echo $? >"$RUNNER_TEMP/stack-images.exit"
           ) >"$RUNNER_TEMP/stack-images.log" 2>&1 &
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+
       - name: Install ffmpeg
         uses: ./.github/actions/apt-install
         with:
           packages: ffmpeg
           options: --no-install-recommends
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.98.0
-
-      # Restores the dependency builds of the last staging push. Only staging
-      # pushes save, so PR runs cannot evict each other's caches.
-      - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: backend
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
-
+      # The stack starts before the Rust cache restore: right after the
+      # restore, starting a container took 8 s instead of 0 s.
       - name: Wait for the stream stack images
         run: |
           set -euo pipefail
@@ -178,6 +172,14 @@ jobs:
             -e HARBOR_LIVE_PASSWORD -e HARBOR_TEST_PASSWORD -e ICECAST_SOURCE_PASSWORD \
             -v "$PWD/docs/stream-rework/prod/moafunk.liq:/moafunk.liq:ro" \
             moafunk/liquidsoap:ci liquidsoap /moafunk.liq
+
+      # Restores the dependency builds of the last staging push. Only staging
+      # pushes save, so PR runs cannot evict each other's caches.
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}
 
       # Builds while Liquidsoap and Icecast start. The test step below then
       # only runs the tests.

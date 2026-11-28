@@ -122,7 +122,8 @@ test('Rust builds are cached; only staging pushes save the cache', () => {
       workspaces: 'backend',
       'save-if': "${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' }}",
     });
-    assert.equal(names.indexOf('Cache Rust builds'), names.indexOf('Install Rust') + 1);
+    // The cache key uses the installed rustc version.
+    assert.ok(names.indexOf('Install Rust') >= 0 && names.indexOf('Install Rust') < names.indexOf('Cache Rust builds'));
     const firstCargo = steps.findIndex((s) => /\bcargo\b/.test(s.run ?? ''));
     assert.ok(names.indexOf('Cache Rust builds') < firstCargo, `${c.file}: cache before the first cargo step`);
   }

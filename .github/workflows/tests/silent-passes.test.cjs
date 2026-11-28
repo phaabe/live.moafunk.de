@@ -82,12 +82,12 @@ test('stream-system prepares the images while Rust builds and waits before the s
   const names = systemSteps.map((s) => s.name);
   const order = [
     prepareStep,
-    'Install ffmpeg',
     'Install Rust',
-    'Cache Rust builds',
+    'Install ffmpeg',
     waitStep,
     'Start Icecast with the production config',
     'Start Liquidsoap with the production script',
+    'Cache Rust builds',
     'Build the system tests',
     'Wait for both mounts',
     'Run the system tests',
