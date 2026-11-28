@@ -1008,15 +1008,13 @@ const DEV_PASSWORD: &str = "dev";
 /// backdoor — making the account strictly dev-only.
 pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::Error> {
     if !is_dev {
-        let deleted = sqlx::query("DELETE FROM users WHERE username = ?")
+        let stray: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
             .bind(DEV_USERNAME)
-            .execute(pool)
-            .await?
-            .rows_affected();
-        if deleted > 0 {
-            tracing::warn!(
-                "Removed {deleted} stray '{DEV_USERNAME}' user(s): APP_ENV is not development"
-            );
+            .fetch_optional(pool)
+            .await?;
+        if let Some(id) = stray {
+            delete_user(pool, id).await?;
+            tracing::warn!("Removed stray '{DEV_USERNAME}' user: APP_ENV is not development");
         }
         return Ok(());
     }
@@ -1043,6 +1041,51 @@ pub async fn seed_dev_user(pool: &SqlitePool, is_dev: bool) -> Result<(), sqlx::
         "DEV MODE: '{DEV_USERNAME}' / '{DEV_PASSWORD}' login is enabled (APP_ENV=development)"
     );
     Ok(())
+}
+
+/// Delete a user in one transaction. Used by the admin delete and the expired
+/// account cleanup.
+///
+/// Shows, artists and posts stay; the user is cleared from them. The schema's
+/// ON DELETE handles the rest: it removes the user's profile, links,
+/// chalkboard notes, co-host seats, recovery rows, series uploads and own
+/// series (its episodes stay), and clears `added_by` and `users.created_by`.
+/// The profile photo in R2 (`users/<id>/photo`) stays.
+pub async fn delete_user(pool: &SqlitePool, id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for sql in [
+        // Foreign keys without ON DELETE: they block the delete.
+        "UPDATE shows SET host_user_id = NULL WHERE host_user_id = ?",
+        "UPDATE shows SET created_by = NULL WHERE created_by = ?",
+        "UPDATE artists SET user_id = NULL WHERE user_id = ?",
+        // No foreign key, but they name the user.
+        "UPDATE announcements SET created_by = NULL WHERE created_by = ?",
+        "UPDATE telegram_onair_messages SET created_by = NULL WHERE created_by = ?",
+        // Older databases have `sessions.user_id` without a foreign key.
+        "DELETE FROM sessions WHERE user_id = ?",
+        "DELETE FROM users WHERE id = ?",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await
+}
+
+/// Delete every expired account, each in its own transaction, so one user
+/// that fails does not keep the others. Returns how many were deleted.
+pub async fn delete_expired_users(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut deleted = 0;
+    for id in ids {
+        match delete_user(pool, id).await {
+            Ok(()) => deleted += 1,
+            Err(e) => tracing::error!("Failed to delete expired user {id}: {e}"),
+        }
+    }
+    Ok(deleted)
 }
 
 // ============================================================================
@@ -1641,6 +1684,28 @@ mod tests {
         // Idempotent when already absent.
         seed_dev_user(&pool, false).await.unwrap();
         assert_eq!(count_user(&pool, DEV_USERNAME).await, 0);
+    }
+
+    /// A foreign key to `users` without ON DELETE blocks `delete_user` unless
+    /// `delete_user` clears it. A new one must be added there.
+    #[tokio::test]
+    async fn delete_user_clears_every_foreign_key_without_on_delete() {
+        let pool = mem_db().await;
+        let blocking: Vec<(String, String)> = sqlx::query_as(
+            "SELECT m.name, f.\"from\" FROM sqlite_master m, pragma_foreign_key_list(m.name) f \
+             WHERE m.type = 'table' AND f.\"table\" = 'users' AND f.on_delete = 'NO ACTION' \
+             ORDER BY 1, 2",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let cleared = [
+            ("artists", "user_id"),
+            ("shows", "created_by"),
+            ("shows", "host_user_id"),
+        ]
+        .map(|(t, c)| (t.to_string(), c.to_string()));
+        assert_eq!(blocking, cleared);
     }
 
     async fn insert_template(pool: &SqlitePool, owner: i64, name: &str) -> i64 {

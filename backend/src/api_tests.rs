@@ -1285,18 +1285,52 @@ async fn me_reads_the_session() {
     );
 }
 
+/// The show and the artist stay, with the user cleared.
 #[tokio::test]
-#[ignore = "https://github.com/phaabe/live.moafunk.de/issues/926"]
 async fn deleting_a_user_who_hosts_a_show_is_no_database_error() {
     let (state, _temp) = state().await;
     let p = people(&state).await;
     add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    add_artist(&state, 1, Some(p.host)).await;
     let delete = api::api_delete_user(
         State(state.clone()),
         Path(p.host),
         headers(&state, p.admin).await,
     );
-    assert_ne!(status(delete.await), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status(delete.await), OK);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!((show.host_user_id, show.created_by), (None, None));
+    assert_eq!(artist_user(&state, 1).await, None);
+}
+
+/// An expired guest who hosts a show does not keep the other expired user.
+#[tokio::test]
+async fn the_cleanup_deletes_expired_users_who_host_a_show() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.guest), Some(p.host)).await;
+    headers(&state, p.guest).await;
+    sqlx::query("UPDATE users SET expires_at = '2020-01-01' WHERE id IN (?, ?)")
+        .bind(p.guest)
+        .bind(p.other_host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    assert_eq!(db::delete_expired_users(&state.db).await.unwrap(), 2);
+    let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM users ORDER BY id")
+        .fetch_all(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(left, [p.host, p.admin, p.superadmin]);
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = ?")
+        .bind(p.guest)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0);
+    let show = show_row(&state, 1).await.unwrap();
+    assert_eq!((show.host_user_id, show.created_by), (None, Some(p.host)));
 }
 
 #[tokio::test]

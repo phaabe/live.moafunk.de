@@ -986,18 +986,10 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             tracing::info!("Running expired user cleanup...");
-            match sqlx::query(
-                "DELETE FROM users WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            )
-            .execute(&cleanup_db)
-            .await
-            {
-                Ok(result) => {
-                    if result.rows_affected() > 0 {
-                        tracing::info!(
-                            "Cleaned up {} expired user accounts",
-                            result.rows_affected()
-                        );
+            match db::delete_expired_users(&cleanup_db).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        tracing::info!("Cleaned up {} expired user accounts", deleted);
                     }
                 }
                 Err(e) => tracing::error!("Failed to clean up expired users: {}", e),
