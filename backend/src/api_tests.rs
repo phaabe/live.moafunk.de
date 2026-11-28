@@ -1300,7 +1300,6 @@ async fn deleting_a_user_who_hosts_a_show_is_no_database_error() {
 }
 
 #[tokio::test]
-#[ignore = "https://github.com/phaabe/live.moafunk.de/issues/927"]
 async fn the_session_of_an_expired_account_is_refused() {
     let (state, _temp) = state().await;
     let p = people(&state).await;
@@ -1318,6 +1317,48 @@ async fn the_session_of_an_expired_account_is_refused() {
     assert_eq!(
         status(api::api_my_show(State(state), session).await),
         NOBODY
+    );
+}
+
+/// A guest's session ends with the guest account: the show day's 23:59:59
+/// UTC, as `api_create_guest` writes it. A live account keeps its session.
+#[tokio::test]
+async fn a_session_lasts_until_the_account_ends() {
+    let (state, _temp) = state().await;
+    let p = people(&state).await;
+    add_show(&state, 1, Some(p.host), Some(p.host)).await;
+    let day = |days: i64| (chrono::Utc::now() + chrono::Duration::days(days)).format("%Y-%m-%d");
+    let guest = |name: &'static str, login_date: String| {
+        let state = state.clone();
+        async move {
+            let id = add_user(&state, name, "guest").await;
+            sqlx::query(
+                "UPDATE users SET login_date = ?1, expires_at = ?1 || 'T23:59:59' WHERE id = ?2",
+            )
+            .bind(login_date)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+            headers(&state, id).await
+        }
+    };
+    let after_show_day = guest("yesterday", day(-1).to_string()).await;
+    let on_show_day = guest("today", day(0).to_string()).await;
+    sqlx::query("UPDATE users SET expires_at = '2099-12-31' WHERE id = ?")
+        .bind(p.host)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    let host = headers(&state, p.host).await;
+
+    let me = |session: HeaderMap| api::api_me(State(state.clone()), session);
+    assert_eq!(status(me(after_show_day).await), NOBODY);
+    assert_eq!(status(me(on_show_day).await), OK);
+    assert_eq!(status(me(host.clone()).await), OK);
+    assert_eq!(
+        status(api::api_my_show(State(state.clone()), host).await),
+        OK
     );
 }
 
