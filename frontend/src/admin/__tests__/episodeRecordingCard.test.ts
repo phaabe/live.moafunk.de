@@ -90,7 +90,14 @@ beforeEach(() => {
         return Response.json({
           success: true,
           track_id: '556',
-          track_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31-2',
+          track_url: 'https://soundcloud.com/radio-moafunk/brunchtime-31-2/s-Secret1',
+        });
+      // A private track has a secret link.
+      if (url === '/api/shows/42/soundcloud/privacy' && method === 'POST')
+        return Response.json({
+          success: true,
+          track_id: '556',
+          track_url: `https://soundcloud.com/radio-moafunk/brunchtime-31-2${(body as { public: boolean }).public ? '' : '/s-Secret1'}`,
         });
       throw new Error(`Unexpected API request: ${method} ${url}`);
     })
@@ -344,8 +351,20 @@ describe('Recording tab · SoundCloud', () => {
     await vi.waitFor(() => expect(changed).toHaveBeenCalled());
     expect(requests.filter((r) => r.url.endsWith('/soundcloud/upload'))).toHaveLength(1);
     expect(summary('SoundCloud')).toBe('Private');
-    expect(root.querySelector('a[href$="brunchtime-31-2"]')?.textContent).toBe(
+    expect(root.querySelector('a[href$="brunchtime-31-2/s-Secret1"]')?.textContent).toBe(
       'Open on SoundCloud'
+    );
+
+    // The link follows the sharing: plain once public, secret again once private.
+    button('Public')!.click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('a[href$="brunchtime-31-2"]')?.textContent).toBe(
+        'Open on SoundCloud'
+      )
+    );
+    button('Private')!.click();
+    await vi.waitFor(() =>
+      expect(root.querySelector('a[href$="brunchtime-31-2/s-Secret1"]')).not.toBeNull()
     );
   });
 

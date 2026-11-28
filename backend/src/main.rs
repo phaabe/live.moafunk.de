@@ -1104,6 +1104,13 @@ async fn main() -> anyhow::Result<()> {
     {
         let state = state.clone();
         tokio::spawn(async move {
+            match soundcloud::repair_private_links(&state).await {
+                Ok(fixed) if !fixed.is_empty() => {
+                    tracing::info!(?fixed, "SoundCloud: stored secret links of private tracks")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!("SoundCloud private link repair failed: {e}"),
+            }
             let every = soundcloud::PUBLIC_CHECK_EVERY.to_std().expect("positive");
             let mut interval = tokio::time::interval(every);
             loop {

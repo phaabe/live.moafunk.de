@@ -47,6 +47,21 @@ struct OAuthTokenResponse {
 pub struct SoundCloudTrack {
     pub id: i64,
     pub permalink_url: Option<String>,
+    pub sharing: Option<String>,
+    /// Part of the secret link of a private track (`s-…`).
+    pub secret_token: Option<String>,
+}
+
+impl SoundCloudTrack {
+    /// The link that opens the track. A private track opens only with its
+    /// secret token; the plain permalink shows "track not found".
+    fn link(&self) -> Option<String> {
+        let url = self.permalink_url.as_deref()?.trim_end_matches('/');
+        Some(match self.secret_token.as_deref() {
+            Some(token) if self.sharing.as_deref() != Some("public") => format!("{url}/{token}"),
+            _ => url.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -511,7 +526,7 @@ pub async fn upload_track(state: &Arc<AppState>, show_id: i64) -> Result<SoundCl
     let track_numeric_id = track.id;
     let track_id = track.id.to_string();
     let track_url = track
-        .permalink_url
+        .link()
         .unwrap_or_else(|| format!("https://soundcloud.com/radio-moafunk/{}", track.id));
 
     tracing::info!(
@@ -1093,34 +1108,20 @@ pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
     }
     let access_token = get_access_token(state).await?;
 
-    #[derive(Deserialize)]
-    struct Sharing {
-        sharing: Option<String>,
-    }
     let client = reqwest::Client::new();
     let mut marked = Vec::new();
     for (show_id, track_id) in rows {
-        let resp = client
-            .get(format!("{}/tracks/{}", api_base(), track_id))
-            .header("Authorization", format!("OAuth {}", access_token))
-            .send()
-            .await;
-        let track = match resp {
-            Ok(r) if r.status().is_success() => r.json::<Sharing>().await.ok(),
-            Ok(r) => {
-                tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
-                None
-            }
-            Err(e) => {
-                tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
-                None
-            }
+        let Some(track) = fetch_track(&client, &access_token, show_id, &track_id).await else {
+            continue;
         };
-        if track.and_then(|t| t.sharing).as_deref() == Some("public") {
-            sqlx::query("UPDATE shows SET soundcloud_public = 1 WHERE id = ?")
-                .bind(show_id)
-                .execute(&state.db)
-                .await?;
+        if track.sharing.as_deref() == Some("public") {
+            sqlx::query(
+                "UPDATE shows SET soundcloud_public = 1, soundcloud_url = COALESCE(?, soundcloud_url) WHERE id = ?",
+            )
+            .bind(track.link())
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
             tracing::info!(
                 show_id,
                 track_id,
@@ -1130,6 +1131,66 @@ pub async fn sync_public_tracks(state: &Arc<AppState>) -> Result<Vec<i64>> {
         }
     }
     Ok(marked)
+}
+
+/// `GET /tracks/:id`; a refusal or an error is logged and gives `None`.
+async fn fetch_track(
+    client: &reqwest::Client,
+    access_token: &str,
+    show_id: i64,
+    track_id: &str,
+) -> Option<SoundCloudTrack> {
+    let resp = client
+        .get(format!("{}/tracks/{}", api_base(), track_id))
+        .header("Authorization", format!("OAuth {}", access_token))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => r.json().await.ok(),
+        Ok(r) => {
+            tracing::warn!(show_id, track_id, status = %r.status(), "SoundCloud track check refused");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(show_id, track_id, "SoundCloud track check failed: {e}");
+            None
+        }
+    }
+}
+
+/// Private tracks stored before secret links have a link that shows "track
+/// not found". Ask SoundCloud once for each and store the secret link.
+/// Returns the shows fixed.
+pub async fn repair_private_links(state: &Arc<AppState>) -> Result<Vec<i64>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, soundcloud_track_id FROM shows \
+         WHERE soundcloud_track_id IS NOT NULL AND COALESCE(soundcloud_public, 0) = 0 \
+           AND (soundcloud_url IS NULL OR soundcloud_url NOT LIKE '%/s-%') \
+         ORDER BY id",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() || !is_configured(state) || !has_token(state).await {
+        return Ok(Vec::new());
+    }
+    let access_token = get_access_token(state).await?;
+    let client = reqwest::Client::new();
+    let mut fixed = Vec::new();
+    for (show_id, track_id) in rows {
+        let Some(link) = fetch_track(&client, &access_token, show_id, &track_id)
+            .await
+            .and_then(|t| t.link())
+        else {
+            continue;
+        };
+        sqlx::query("UPDATE shows SET soundcloud_url = ? WHERE id = ?")
+            .bind(&link)
+            .bind(show_id)
+            .execute(&state.db)
+            .await?;
+        fixed.push(show_id);
+    }
+    Ok(fixed)
 }
 
 pub async fn set_track_privacy(
@@ -1192,9 +1253,16 @@ pub async fn set_track_privacy(
         });
     }
 
-    // Update DB
-    sqlx::query("UPDATE shows SET soundcloud_public = ? WHERE id = ?")
+    // The link changes with the sharing: a private track needs its secret link.
+    let link = resp
+        .json::<SoundCloudTrack>()
+        .await
+        .ok()
+        .and_then(|t| t.link())
+        .or_else(|| show.soundcloud_url.clone());
+    sqlx::query("UPDATE shows SET soundcloud_public = ?, soundcloud_url = ? WHERE id = ?")
         .bind(public as i32)
+        .bind(&link)
         .bind(show_id)
         .execute(&state.db)
         .await?;
@@ -1211,7 +1279,7 @@ pub async fn set_track_privacy(
     Ok(SoundCloudUploadResult {
         success: true,
         track_id: Some(track_id.clone()),
-        track_url: show.soundcloud_url.clone(),
+        track_url: link,
         error: None,
     })
 }

@@ -31,6 +31,9 @@ struct ScCall {
     body: Value,
 }
 
+/// The secret token of every fake track.
+const SECRET: &str = "s-Secret1";
+
 /// A playlist as `(id, title, track ids)`.
 type Playlist = (i64, String, Vec<i64>);
 
@@ -159,13 +162,19 @@ async fn fake_request(
         }))
         .into_response(),
         ("POST", ["tracks"]) => {
-            let mut track = json!({ "id": 555 });
+            let mut track = json!({ "id": 555, "sharing": "private", "secret_token": SECRET });
             if let Some(url) = fake.permalink.lock().unwrap().clone() {
                 track["permalink_url"] = json!(url);
             }
             (StatusCode::CREATED, Json(track)).into_response()
         }
-        ("DELETE" | "PUT", ["tracks", _]) => Json(json!({})).into_response(),
+        ("DELETE", ["tracks", _]) => Json(json!({})).into_response(),
+        // A track as its owner sees it: with the secret token, public or not.
+        ("PUT", ["tracks", id]) => Json(json!({
+            "id": id.parse::<i64>().unwrap(), "sharing": body["track"]["sharing"],
+            "permalink_url": format!("https://soundcloud.com/radio-moafunk/t{id}"), "secret_token": SECRET
+        }))
+        .into_response(),
         ("GET", ["tracks", id]) => {
             let id: i64 = id.parse().unwrap();
             let sharing = if fake.public.lock().unwrap().contains(&id) {
@@ -173,7 +182,11 @@ async fn fake_request(
             } else {
                 "private"
             };
-            Json(json!({ "id": id, "sharing": sharing })).into_response()
+            Json(json!({
+                "id": id, "sharing": sharing,
+                "permalink_url": format!("https://soundcloud.com/radio-moafunk/t{id}"), "secret_token": SECRET
+            }))
+            .into_response()
         }
         ("GET", ["me"]) => {
             let mut me = json!({ "id": 1, "permalink": *fake.me.lock().unwrap() });
@@ -1027,9 +1040,10 @@ async fn upload_sends_a_private_track_and_stores_it() {
     let result = upload_track(&state, id).await.unwrap();
     assert!(result.success);
     assert_eq!(result.track_id.as_deref(), Some("555"));
+    // A private track opens only with its secret link.
     assert_eq!(
         result.track_url.as_deref(),
-        Some("https://soundcloud.com/radio-moafunk/new")
+        Some("https://soundcloud.com/radio-moafunk/new/s-Secret1")
     );
 
     let upload = fake.call("POST /tracks");
@@ -1051,7 +1065,7 @@ async fn upload_sends_a_private_track_and_stores_it() {
     assert_eq!(stored.soundcloud_track_id.as_deref(), Some("555"));
     assert_eq!(
         stored.soundcloud_url.as_deref(),
-        Some("https://soundcloud.com/radio-moafunk/new")
+        Some("https://soundcloud.com/radio-moafunk/new/s-Secret1")
     );
     assert!(stored.soundcloud_uploaded_at.is_some());
     assert_eq!(stored.soundcloud_public, Some(false));
@@ -1328,12 +1342,29 @@ async fn privacy_toggle_updates_the_track() {
         .unwrap();
     let result = set_track_privacy(&state, id, true).await.unwrap();
     assert!(result.success);
-    assert_eq!(result.track_url.as_deref(), Some("u"));
+    // Public: the plain link.
+    let public = "https://soundcloud.com/radio-moafunk/t555";
+    assert_eq!(result.track_url.as_deref(), Some(public));
     assert_eq!(
         fake.call("PUT /tracks/555").body,
         json!({"track": {"sharing": "public"}})
     );
-    assert_eq!(show(&state, id).await.soundcloud_public, Some(true));
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (stored.soundcloud_public, stored.soundcloud_url.as_deref()),
+        (Some(true), Some(public))
+    );
+
+    // Private again: the secret link.
+    let private = "https://soundcloud.com/radio-moafunk/t555/s-Secret1";
+    let result = set_track_privacy(&state, id, false).await.unwrap();
+    assert_eq!(result.track_url.as_deref(), Some(private));
+    let stored = show(&state, id).await;
+    assert_eq!(
+        (stored.soundcloud_public, stored.soundcloud_url.as_deref()),
+        (Some(false), Some(private))
+    );
+    set_track_privacy(&state, id, true).await.unwrap();
 
     fake.fail("PUT /tracks/555", 500);
     let result = set_track_privacy(&state, id, false).await.unwrap();
@@ -1423,7 +1454,13 @@ async fn a_track_made_public_on_soundcloud_is_marked_for_an_unsent_post() {
 
     fake.public.lock().unwrap().extend([555, 556]);
     assert_eq!(sync_public_tracks(&state).await.unwrap(), [waiting]);
-    assert_eq!(show(&state, waiting).await.soundcloud_public, Some(true));
+    let stored = show(&state, waiting).await;
+    assert_eq!(stored.soundcloud_public, Some(true));
+    assert_eq!(
+        stored.soundcloud_url.as_deref(),
+        Some("https://soundcloud.com/radio-moafunk/t555"),
+        "public: the plain link"
+    );
     assert_eq!(show(&state, no_post).await.soundcloud_public, Some(false));
 
     // Marked public: not asked again.
@@ -1440,6 +1477,65 @@ async fn a_track_made_public_on_soundcloud_is_marked_for_an_unsent_post() {
     fake.fail("GET /tracks/555", 500);
     assert!(sync_public_tracks(&state).await.unwrap().is_empty());
     assert_eq!(show(&state, waiting).await.soundcloud_public, Some(false));
+}
+
+/// Private tracks stored with a plain link get their secret link once.
+#[tokio::test]
+async fn private_tracks_get_their_secret_link_once() {
+    let (state, _temp, fake, _r2) = setup(json!({})).await;
+    let plain = add_show(&state, "Late Night", None).await;
+    let secret = add_show(&state, "Early Bird", None).await;
+    let public = add_show(&state, "Noon", None).await;
+    let gone = add_show(&state, "Gone", None).await;
+    for (id, track, url, is_public) in [
+        (plain, "555", "https://soundcloud.com/radio-moafunk/t555", 0),
+        (
+            secret,
+            "556",
+            "https://soundcloud.com/radio-moafunk/t556/s-Old",
+            0,
+        ),
+        (
+            public,
+            "557",
+            "https://soundcloud.com/radio-moafunk/t557",
+            1,
+        ),
+        (gone, "558", "https://soundcloud.com/radio-moafunk/t558", 0),
+    ] {
+        sqlx::query(
+            "UPDATE shows SET soundcloud_track_id = ?, soundcloud_url = ?, soundcloud_public = ? WHERE id = ?",
+        )
+        .bind(track)
+        .bind(url)
+        .bind(is_public)
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+    }
+    fake.fail("GET /tracks/558", 404);
+
+    assert_eq!(repair_private_links(&state).await.unwrap(), [plain]);
+    assert_eq!(fake.routes(), ["GET /tracks/555", "GET /tracks/558"]);
+    let url = |id| {
+        let state = state.clone();
+        async move { show(&state, id).await.soundcloud_url.unwrap() }
+    };
+    assert_eq!(
+        url(plain).await,
+        "https://soundcloud.com/radio-moafunk/t555/s-Secret1"
+    );
+    assert_eq!(
+        url(secret).await,
+        "https://soundcloud.com/radio-moafunk/t556/s-Old"
+    );
+    assert_eq!(url(gone).await, "https://soundcloud.com/radio-moafunk/t558");
+
+    // Fixed: not asked again.
+    fake.calls.lock().unwrap().clear();
+    repair_private_links(&state).await.unwrap();
+    assert_eq!(fake.routes(), ["GET /tracks/558"]);
 }
 
 #[tokio::test]
