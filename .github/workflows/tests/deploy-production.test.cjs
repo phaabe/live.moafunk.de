@@ -30,7 +30,8 @@ test('production deploy runs only by hand, from main, one at a time', () => {
   assert.equal(inputs.hotfix.default, false, 'the staging check runs unless asked otherwise');
   assert.deepEqual(workflow.permissions, { contents: 'read', 'pull-requests': 'read' });
   assert.deepEqual(workflow.concurrency, { group: 'production-deploy', 'cancel-in-progress': false });
-  assert.deepEqual(Object.keys(workflow.jobs), ['deploy']);
+  // label-issues runs after the deploy; deployed-labels.test.cjs checks it.
+  assert.deepEqual(Object.keys(workflow.jobs), ['deploy', 'label-issues']);
   assert.equal(job.if, "github.ref == 'refs/heads/main'");
   assert.deepEqual(job.environment, { name: 'api-production', url: 'https://admin.live.moafunk.de' });
   assert.equal(job.steps[0].id, 'gate', 'the gate runs before anything else');
