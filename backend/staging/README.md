@@ -127,7 +127,7 @@ ssh root@178.104.160.103 'bash -s -- export-db' < backend/staging/staging.sh \
   | ssh root@<staging-ip> '/opt/unheard-staging/staging.sh seed-db -'
 ```
 
-The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. `seed-db` adds `staging-admin`, `staging-host`, `staging-host-2` and `e2e-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
+The copy has no sessions, no stored tokens (SoundCloud), no reset links or recovery emails, no pending uploads and no usable passwords. The scrub refuses the copy if a column that looks like a credential holds data it does not know about. Staging keeps its own settings (`app_settings`): its SoundCloud login, service switches and test settings stay, so a seed does not log staging out of SoundCloud. `seed-db` adds `staging-admin`, `staging-host`, `staging-host-2` and `e2e-host`. Other users you create by hand are gone after a seed. To test as a production user, reset that user's password in the staging admin. Files in the production buckets (artist images, recordings) are not copied, so older entries show no media on staging.
 
 ## Tests
 

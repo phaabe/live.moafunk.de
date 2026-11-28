@@ -366,6 +366,18 @@ expect_ok "seed-db scrubs a copy that was not scrubbed" seed_from_stdin "$TMP/ra
 expect_fact "seed-db empties sessions itself" "$BOX/data/unheard.db" "sessions 0"
 expect_fact "seed-db drops stored tokens itself" "$BOX/data/unheard.db" "settings notifications_enabled"
 
+# Staging's own SoundCloud login survives a seed; production's never arrives.
+python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.executemany('INSERT INTO app_settings VALUES (?, ?)', [('soundcloud_access_token', 'STAGING-token'), ('soundcloud_refresh_token', 'STAGING-refresh')]); c.commit()" "$BOX/data/unheard.db"
+expect_ok "seed-db installs a raw copy over a logged-in staging" seed_from_stdin "$TMP/raw.db"
+expect_fact "seed-db keeps staging's own settings" "$BOX/data/unheard.db" \
+  "settings notifications_enabled,soundcloud_access_token,soundcloud_refresh_token"
+token="$(python3 -c "import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute(\"SELECT value FROM app_settings WHERE key='soundcloud_access_token'\").fetchone()[0])" "$BOX/data/unheard.db")"
+if [[ "$token" == STAGING-token ]]; then
+  pass "seed-db keeps staging's SoundCloud token, not production's"
+else
+  fail "seed-db keeps staging's SoundCloud token, not production's: got '$token'"
+fi
+
 python3 -c "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"UPDATE users SET role='admin', password_hash='old' WHERE username='staging-host'\"); c.commit()" "$BOX/data/unheard.db"
 expect_ok "users resets the staging logins in the running DB" staging users
 expect_fact "users gives staging-host back its role and Bitwarden password" "$BOX/data/unheard.db" "user staging-host host $HOST_HASH"

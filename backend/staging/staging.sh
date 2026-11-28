@@ -926,6 +926,30 @@ print("staging logins: " + ", ".join(f"{name} ({role})" for name, _, role in log
 PY
 }
 
+# The box's own app_settings rows (its SoundCloud login, service switches and
+# test settings) go into the new DB. The copy's rows were scrubbed, so without
+# this a seed logs staging out of SoundCloud and the release soak fails.
+keep_box_settings() { # box-db new-db
+  python3 - "$1" "$2" <<'PY'
+import sqlite3, sys
+
+box = sqlite3.connect(sys.argv[1], timeout=30)
+new = sqlite3.connect(sys.argv[2])
+box_cols = [r[1] for r in box.execute("PRAGMA table_info(app_settings)")]
+new_cols = [r[1] for r in new.execute("PRAGMA table_info(app_settings)")]
+cols = [c for c in box_cols if c in new_cols]
+if "key" not in cols or "value" not in cols:
+    print("no settings of the box to keep", file=sys.stderr)
+    sys.exit(0)
+names = ", ".join(f'"{c}"' for c in cols)
+rows = box.execute(f"SELECT {names} FROM app_settings").fetchall()
+new.execute("DELETE FROM app_settings")
+new.executemany(f"INSERT INTO app_settings ({names}) VALUES ({', '.join('?' * len(cols))})", rows)
+new.commit()
+print(f"kept the box's settings: {len(rows)} (SoundCloud login, switches)", file=sys.stderr)
+PY
+}
+
 cmd_seed_db() {
   local src="${1:-}" data="$STAGING_DIR/data" was_running=0
   [[ -n "$src" ]] || die "usage: staging.sh seed-db <file>, or - to read the copy from stdin"
@@ -949,6 +973,12 @@ cmd_seed_db() {
     was_running=1
     compose stop api
   fi
+  # After the stop: a running API could still rotate the SoundCloud refresh token.
+  if [[ -f "$data/unheard.db" ]] && ! keep_box_settings "$data/unheard.db" "$data/seed.tmp.db"; then
+    rm -f "$data/seed.tmp.db"
+    if ((was_running)); then compose start api; fi
+    die "staging DB not changed"
+  fi
   mv "$data/seed.tmp.db" "$data/unheard.db"
   rm -f "$data/unheard.db-wal" "$data/unheard.db-shm"
   [[ "$src" == - ]] || rm -f "$src"
@@ -956,7 +986,8 @@ cmd_seed_db() {
     compose start api
     wait_healthy
   fi
-  echo "staging DB is now a scrubbed copy of production: no sessions, no stored tokens, no usable passwords."
+  echo "staging DB is now a scrubbed copy of production: no sessions, no production tokens, no usable passwords."
+  echo "Staging kept its own settings, including its SoundCloud login."
   echo "Log in as staging-admin or staging-host; to test as a production user, reset that user's password in the admin."
 }
 
