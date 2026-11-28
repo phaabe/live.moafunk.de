@@ -282,7 +282,7 @@ test('PRs that change e2e/ or the frontend get the e2e checks and the local Stud
   assert.equal(restore.with.path, 'frontend/node_modules');
   assert.match(restore.with.key, /-\$\{\{ hashFiles\('frontend\/package-lock\.json'\) \}\}$/);
   assert.deepEqual(save.with, { path: restore.with.path, key: `\${{ steps.${restore.id}.outputs.cache-primary-key }}` });
-  assert.equal(save.if, `github.event_name == 'push' && matrix.shard == 1 && steps.${restore.id}.outputs.cache-hit != 'true'`);
+  assert.equal(save.if, `matrix.shard == 1 && steps.${restore.id}.outputs.cache-hit != 'true'`);
   const at = (step) => soundcheck.indexOf(step);
   assert.ok(at(restore) < at(install) && at(install) < at(save) && at(save) < soundcheck.length - 2);
   assert.deepEqual(install.env, { FRONTEND_CACHED: `\${{ steps.${restore.id}.outputs.cache-hit }}` });

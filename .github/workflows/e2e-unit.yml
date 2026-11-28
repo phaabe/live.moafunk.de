@@ -119,7 +119,7 @@ jobs:
       # that other PRs cannot read. Before the tests: the dev server writes
       # node_modules/.vite.
       - name: Save the frontend dependencies
-        if: github.event_name == 'push' && matrix.shard == 1 && steps.frontend-deps.outputs.cache-hit != 'true'
+        if: matrix.shard == 1 && steps.frontend-deps.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: frontend/node_modules
