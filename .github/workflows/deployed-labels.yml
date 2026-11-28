@@ -1,0 +1,32 @@
+name: OPS - Label issues on staging
+
+# After a merge into staging, the issues that the merged PRs link in their body
+# (Refs:, Closes:, Fixes:, Issue:, Ticket:) get deployed::staging and lose
+# deployed::production (scripts/deployed-labels.sh). The production deploy
+# sets deployed::production (deploy-production.yml, job label-issues).
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  label-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Label the linked issues deployed::staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: scripts/deployed-labels.sh staging "$BEFORE..$AFTER"

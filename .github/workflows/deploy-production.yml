@@ -211,3 +211,32 @@ jobs:
           [[ " $running " == *"@$DIGEST "* ]] || fail "unheard-api runs ${running:-nothing}, not $DIGEST"
           echo "Smoke test passed: /health, /api/stream/status, the admin page, and unheard-api runs $DIGEST" |
             tee -a "$GITHUB_STEP_SUMMARY"
+
+  # After a real deploy of main (a release or a hotfix): the issues of the
+  # deployed commits get deployed::production and lose deployed::staging. Own
+  # job, so the job with the production keys gets no write access to GitHub.
+  label-issues:
+    needs: deploy
+    if: ${{ !inputs.dry_run && inputs.rollback_tag == '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Label the issues of this release deployed::production
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        # shortcut: from the r* tag before main's head, so a release that was
+        # never deployed keeps deployed::staging; run the script by hand then.
+        run: |
+          set -euo pipefail
+          prev="$(git describe --tags --abbrev=0 --match 'r[0-9]*' HEAD^)"
+          scripts/deployed-labels.sh production "$prev..HEAD"
