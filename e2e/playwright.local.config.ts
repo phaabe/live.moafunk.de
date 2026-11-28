@@ -6,6 +6,9 @@ import staging from './playwright.config';
 export default defineConfig({
   ...staging,
   forbidOnly: !!process.env.CI,
+  // CI shards by test, not by file (--shard in e2e-unit.yml). Still one
+  // worker: the tests share one mock.
+  fullyParallel: true,
   testDir: './tests-local',
   globalSetup: './local-setup.ts',
   globalTeardown: undefined,
@@ -14,6 +17,9 @@ export default defineConfig({
     { name: 'chromium' },
     {
       name: 'firefox',
+      // Chromium fake media is enough here. Left out, not skipped in the spec:
+      // --shard counts a test skipped at run time as work.
+      testIgnore: /(background-stream|studio-log)\.spec\.ts$/,
       use: {
         browserName: 'firefox',
         // Firefox has no "microphone" permission in Playwright: prefs grant it.
